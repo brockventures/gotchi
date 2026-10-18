@@ -1,0 +1,9 @@
+.pio/
+build/
+.esphome/
+*.bin
+*.elf
+secrets.yaml
+config.local.json
+.DS_Store
+__pycache__/
