@@ -116,7 +116,7 @@ Both **USB-C Serial (`115200` baud, newline-delimited JSON)** and **HTTP (`POST 
 | Command | Payload Parameters | Behavior |
 | :--- | :--- | :--- |
 | `get_config` | `{"schema": true}` (optional) | Returns active NVS configuration values (secrets masked) plus JSON schema of all configurable keys, types, and enums. |
-| `set_config` | `{"key": "val", ...}` | Validates against schema, persists to NVS, and applies live without recompiling (`hub_url`, `node_id`, `wake_mode`, `audio_out_mode`, `display_mode`). |
+| `set_config` | `{"key": "val", ...}` | Validates against schema, persists to NVS, and applies live without recompiling (`hub_url`, `voice_url`, `node_id`, `wake_mode`, `audio_out_mode`, `display_mode`). |
 | `set_wifi` | `{"ssid": "...", "psk": "...", "slot": 0}` | Stores primary (Home) or secondary (Hotspot) Wi-Fi credentials in encrypted NVS. |
 | `self_test` | `{}` | Runs full hardware loop: speaker tone -> PDM mic RMS -> camera sensor ID + JPEG frame CRC -> e-paper pattern, returning structured JSON pass/fail receipts. |
 | `get_logs` | `{"lines": 50}` | Returns recent ring-buffer diagnostic logs (scrubbed of tokens/PSKs). |
