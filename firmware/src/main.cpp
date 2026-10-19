@@ -63,6 +63,8 @@ void loadConfig() {
     cfg.node_id        = prefs.getString("node_id", cfg.node_id);
     cfg.wake_mode      = prefs.getString("wake_mode", cfg.wake_mode);
     cfg.audio_out_mode = prefs.getString("audio_out_mode", cfg.audio_out_mode);
+    cfg.skin           = prefs.getString("skin", cfg.skin);
+    cfg.bearer_token   = prefs.getString("bearer_token", "");
     cfg.wifi_ssid      = prefs.getString("wifi_ssid", "");
     cfg.wifi_psk       = prefs.getString("wifi_psk", "");
     prefs.end();
@@ -75,6 +77,8 @@ void saveConfig() {
     prefs.putString("node_id", cfg.node_id);
     prefs.putString("wake_mode", cfg.wake_mode);
     prefs.putString("audio_out_mode", cfg.audio_out_mode);
+    prefs.putString("skin", cfg.skin);
+    prefs.putString("bearer_token", cfg.bearer_token);
     prefs.putString("wifi_ssid", cfg.wifi_ssid);
     prefs.putString("wifi_psk", cfg.wifi_psk);
     prefs.end();
@@ -100,6 +104,8 @@ String handleJsonRpc(const String& jsonLine) {
         res["node_id"] = cfg.node_id;
         res["wake_mode"] = cfg.wake_mode;
         res["audio_out_mode"] = cfg.audio_out_mode;
+        res["skin"] = cfg.skin;
+        res["bearer_token_set"] = (cfg.bearer_token.length() > 0);
         res["wifi_ssid"] = cfg.wifi_ssid;
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
@@ -109,6 +115,8 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["audio_out_mode"].is<const char*>()) cfg.audio_out_mode = req["audio_out_mode"].as<String>();
+        if (req["skin"].is<const char*>()) cfg.skin = req["skin"].as<String>();
+        if (req["bearer_token"].is<const char*>()) cfg.bearer_token = req["bearer_token"].as<String>();
         saveConfig();
     } else if (cmd == "set_wifi") {
         cfg.wifi_ssid = req["ssid"] | cfg.wifi_ssid;
@@ -128,6 +136,7 @@ String handleJsonRpc(const String& jsonLine) {
         res["status"] = "cleared_nvs";
     } else if (cmd == "draw_state") {
         GotchiUIState ui;
+        ui.skin = req["skin"].is<const char*>() ? req["skin"].as<String>() : cfg.skin;
         ui.state = uiStateFromString(req["state"] | "idle");
         if (req["status_text"].is<const char*>()) ui.status_text = req["status_text"].as<String>();
         bool force_full = req["force_full"] | false;
@@ -178,6 +187,7 @@ void setup() {
 
     panel.begin();
     GotchiUIState boot_ui;
+    boot_ui.skin = cfg.skin;
     if (wifi_configured && !wifi_up) {
         boot_ui.state = UiState::OFFLINE;
         boot_ui.status_text = "NO WIFI";
@@ -185,6 +195,14 @@ void setup() {
     panel.draw(boot_ui);
 
     httpServer.on("/api/rpc", HTTP_POST, []() {
+        if (cfg.bearer_token.length() > 0) {
+            String auth = httpServer.header("Authorization");
+            String expected = "Bearer " + cfg.bearer_token;
+            if (!constantTimeEquals(auth, expected)) {
+                httpServer.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+                return;
+            }
+        }
         String resp = handleJsonRpc(httpServer.arg("plain"));
         httpServer.send(200, "application/json", resp);
     });
@@ -202,6 +220,7 @@ static bool pttStable(bool pressed) {
 
 static void showIdle() {
     GotchiUIState idle_ui;
+    idle_ui.skin = cfg.skin;
     panel.draw(idle_ui);
 }
 
@@ -212,12 +231,8 @@ static void onVoiceState(const GotchiUIState& ui) {
 
 // One PTT turn: hold to record, release to send. Returns to idle when done.
 static void runPttTurn() {
-    gotchi_audio::playChime("ptt_start");
     GotchiUIState ui;
-    ui.state = UiState::LISTENING;
-    ui.status_text = "REC 16kHz PDM MIC...";
-    panel.draw(ui);
-
+    ui.skin = cfg.skin;
     if (!gotchi_audio::beginPttRecording()) {
         ui.state = UiState::ERROR;
         ui.error_code = "mic";
@@ -227,13 +242,21 @@ static void runPttTurn() {
         showIdle();
         return;
     }
+    // Start Core 0 DMA drain task BEFORE playing chime & drawing LISTENING so zero speech is dropped
+    bool async_running = gotchi_audio::startAsyncPttTask();
+    gotchi_audio::playChime("ptt_start");
+    ui.state = UiState::LISTENING;
+    ui.status_text = "REC 16kHz PDM MIC...";
+    panel.draw(ui);
 
     uint32_t t0 = millis();
     while (millis() - t0 < PTT_MAX_MS) {
         if (pttStable(false)) break;
-        gotchi_audio::pollPttRecording();
+        if (!async_running) gotchi_audio::pollPttRecording();
         httpServer.handleClient();
+        delay(2);
     }
+    gotchi_audio::stopAsyncPttTask();
     gotchi_audio::playChime("ptt_stop");
     gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
 
@@ -259,7 +282,7 @@ static void runPttTurn() {
     ui.status_text = "TRANSCRIBING...";
     panel.draw(ui);
 
-    bool ok = gotchi_voice::interact(wav, cfg.voice_url, cfg.node_id, ui, onVoiceState);
+    bool ok = gotchi_voice::interact(wav, cfg.voice_url, cfg.node_id, ui, onVoiceState, cfg.bearer_token);
     if (!ok) {
         // Hold the error / busy / offline sprite briefly so it is visible.
         delay(2000);

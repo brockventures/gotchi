@@ -1,6 +1,8 @@
 #include "audio_hal.h"
 #include "pins.h"
 #include <driver/i2s.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/base64.h>
 #include <math.h>
 #include <string.h>
@@ -152,6 +154,47 @@ size_t pollPttRecording() {
         s_rec_samples += bytes_read / sizeof(int16_t);
     }
     return s_rec_samples;
+}
+
+static volatile bool s_ptt_task_running = false;
+static TaskHandle_t  s_ptt_task_handle  = nullptr;
+
+static void pttRecordTaskFn(void* /*arg*/) {
+    while (s_ptt_task_running) {
+        pollPttRecording();
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    s_ptt_task_handle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+bool startAsyncPttTask() {
+    if (s_ptt_task_running) return true;
+    s_ptt_task_running = true;
+    BaseType_t rc = xTaskCreatePinnedToCore(
+        pttRecordTaskFn,
+        "gotchi_ptt_rx",
+        4096,
+        nullptr,
+        configMAX_PRIORITIES - 2,
+        &s_ptt_task_handle,
+        0  // Pin to Core 0 so Core 1 chime + SPI e-paper refresh never starve I2S RX DMA
+    );
+    if (rc != pdPASS) {
+        s_ptt_task_running = false;
+        s_ptt_task_handle = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void stopAsyncPttTask() {
+    if (!s_ptt_task_running) return;
+    s_ptt_task_running = false;
+    uint32_t t0 = millis();
+    while (s_ptt_task_handle != nullptr && (millis() - t0) < 100) {
+        delay(2);
+    }
 }
 
 WavView finishPttRecording() {
