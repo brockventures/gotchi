@@ -4,6 +4,7 @@
 //   - Multipart WAV (+ optional JPEG snapshot & prompt) upload over WiFiClient.
 //   - Streaming SSE reply parser; `sentence` / `audio_chunk` PCM plays as it
 //     arrives through gotchi_audio::playBase64PcmChunk with 42ms Barge-In / Cancel poll.
+//   - Supports configurable `audio_out_mode`: "speaker" | "discord_voice" | "ble_phone" (F8/T3.3).
 // Wire contract: docs/MIRRORMERE_VOICE_CLIENT.md ("Live gateway").
 // ============================================================================
 
@@ -37,10 +38,11 @@ struct ImageAttachment {
 using AbortPollFn = InteractResult (*)();
 
 // Uploads the WAV (+ optional JPEG attachment & prompt), parses the SSE reply,
-// and plays audio as it arrives. Returns true if the stream reached `done`.
+// and plays audio as it arrives (unless audio_out_mode is discord_voice or ble_phone).
+// Returns true if the stream reached `done`.
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
               GotchiUIState& ui, StateCb cb, const String& bearer_token = "",
               const ImageAttachment* image = nullptr, AbortPollFn abort_poll = nullptr,
-              InteractResult* out_result = nullptr);
+              InteractResult* out_result = nullptr, const String& audio_out_mode = "speaker");
 
 } // namespace gotchi_voice
