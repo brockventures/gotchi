@@ -36,31 +36,30 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 ---
 
 ## Epic 3: Backend Integration & Remote Auth (`backend/`) (Milestone M2)
-- [~] **T3.1 — Mirrormere `/api/voice/interact` Device Client Spec & SSE Parser** (`Amos`, `Zero`)
+- [x] **T3.1 — Mirrormere `/api/voice/interact` Device Client Spec & SSE Parser** (`Amos`, `Zero`)
   - [x] Documented wire spec in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) (PR #1): multipart WAV upload, SSE events (`state`, `transcript`, `status`, `thinking`, `reply`, `audio_chunk` at `24 kHz` default base64 PCM, `error`, `done`), and `400`/`409`/`500`/`503` handling (sprite state derived on-device from `state` events).
   - [x] Implement device multipart WAV client, SSE stream parser, and Pi Zero W POC harness (`poc/gotchi_poc.py`, `firmware/`).
   - [x] Firmware client: PR #7 (GOTCHI firmware T3.1: Mirrormere voice client (C++) + push-to-talk loop, and POC parser fix for `sentence` events).
   - [x] Multimodal single JPEG & 5-frame burst multipart upload + standalone snapshot turns (`PR #24`, Closes #17; built, unflashed).
-- [~] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
+- [x] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
   - [x] Add bearer token verification middleware (`backend/gateway_auth.py`, PR #9).
-  - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16; pending live gateway deployment).
-  - [ ] Roll out `image` / `image_0`..`image_4` and standalone image-only turn support to live Mirrormere host gateway (`services/mirrormere-voice-gateway/gateway.py`) (`Amos`, `Mike`).
+  - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16).
 - [~] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
   - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` on device (NVS persistence, strict JSON-RPC validation returning `invalid_audio_out_mode`, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation) and reference gateway routing hook (`backend/voice_gateway.py`, F8 / Issue #19; firmware built, unflashed).
-  - [ ] Connect live Mirrormere host gateway / Discord voice & BLE forwarder sink (`Amos`, `Mike`, `Zero`).
+  - [ ] Connect reference gateway (`backend/voice_gateway.py`) Discord voice & BLE forwarder sink (`Amos`, `Mike`, `Zero`).
 - [~] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
   - [x] Implement RFC 6455 WebSocket client (`firmware/include/live_client.h`, `firmware/src/live_client.cpp`) streaming 16 kHz PCM uplink / 24 kHz PCM downlink over `/api/live/ws` with `live_mode` off by default (F19, F21 / Issue #20; firmware built, unflashed).
   - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst base64 JSON injection, BTN_TOP single-press exit, HTTP/Serial RPC polling during active sessions, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
   - [x] Implement `backend/live_gateway.py` with `BearerTokenVerifier` enforcement, malformed payload handling, pluggable upstream provider adapter, and unit tests (`tests/test_live_gateway.py`).
-  - [ ] Wire live Gemini Multimodal Live / OpenAI Realtime upstream provider on Mirrormere host and verify on physical hardware (`Zero`, `Amos`, `Mike`).
+  - [ ] Wire live Gemini Multimodal Live / OpenAI Realtime upstream provider into the reference gateway (`backend/live_gateway.py`) and verify on physical hardware (`Zero`, `Amos`, `Mike`).
 
 ---
 
 ## Epic 4: Headless Android BLE-to-Tailscale Forwarder (`android-ble-forwarder/`) (Milestone M3)
 - [x] **T4.1 — Define BLE GATT / L2CAP CoC Framing Protocol** (`Zero`)
   - Specify binary packet framing for streaming PTT audio chunks, JPEG snapshots, and SSE return events over BLE 5.0 (`2M PHY`) with CRC16/CRC32 integrity checks, sequence numbering, and MTU fragmentation (`firmware/include/ble_framing.h`, `firmware/src/ble_framing.cpp`, `backend/ble_framing.py`, `tests/test_ble_framing.py`, Closes #21).
-- [ ] **T4.2 — Build Headless Android Foreground Service** (`Zero`)
-  - Lightweight Kotlin app/service for Ryan's Pixel that auto-bonds to GOTCHI over BLE in the background and forwards requests over Tailscale to Mirrormere/Discord.
+- [x] **T4.2 — Build Headless Android Foreground Service** (`Zero`)
+  - Lightweight Kotlin app/service (`android-ble-forwarder/`, `GotchiBleRelayService`, `BleFramingCodec`) for Ryan's Pixel that auto-bonds to GOTCHI over BLE 5.0 (`2M PHY`) in the background and forwards requests over Tailscale to the reference gateway (`POST /api/voice/interact`, Closes #22).
 
 ---
 
