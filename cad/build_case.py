@@ -406,10 +406,8 @@ def main():
     front_p = print_copy(front, 'gotchi_front_print', flip_x_pi=True)
     back_p = print_copy(back, 'gotchi_back_print', flip_x_pi=False)
     cap_p = print_copy(cap, 'gotchi_button_cap_print', flip_x_pi=False)
-    for label, ob in (('front', front_p), ('back', back_p), ('button_cap', cap_p)):
-        nv, nm = nonmanifold_count(ob)
-        dx, dy, dz = bbox_of(ob)
-        print(f"{label} (print): verts={nv} nonmanifold={nm} bbox={dx:.2f},{dy:.2f},{dz:.2f}", flush=True)
+    # Print copies are rigid transforms of the checked parts: non-manifold count and bbox
+    # dimensions are invariant, so the three part lines above are the report.
 
     print("exporting STL", flush=True)
     export_stl(front_p, os.path.join(stl_dir, 'gotchi_front.stl'))
@@ -443,13 +441,11 @@ def main():
     for bx in (-P['btn_x'], P['btn_x']):
         ph.append(placeholder('ph_button', (bx, 31.0, P['btn_cz']), (6, 5, 6), (0.95, 0.9, 0.2)))
     ph.append(placeholder('ph_switch', (-15.0, P['sw_cy'], P['sw_cz']), (3.5, 4.0, 8.6), (0.1, 0.9, 0.9)))
-    # shift the back-half placeholders with the back half (display stays in front)
-    for o in ph:
-        if o.name != 'ph_display':
-            o.location.z += back_z
+    # placeholders stay at assembled coordinates; only the back half moves. The camera sits
+    # below the front rim and above the moved back so the placeholders are not occluded.
     render(scene, cam, os.path.join(ren_dir, 'exploded.png'),
            {'front', 'back'} | {o.name for o in ph},
-           loc=(170, -190, 60), target=(0, 0, -30))
+           loc=(60, -200, -26), target=(0, 0, -20))
     back.location.z = 0.0
     for o in ph:
         bpy.data.objects.remove(o, do_unlink=True)

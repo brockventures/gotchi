@@ -28,7 +28,7 @@ back face z=-27. XY origin at the centre of the case outline.
 | `stl/gotchi_button_cap.stl` | Button cap, flange down. 5.5 x 5.5 x 4.0. |
 | `gotchi_case.blend` | Assembled design geometry (front, back, cap offset to x=50). |
 | `renders/front_iso.png`, `back_iso.png` | Cycles CPU, 32 samples, 900x900, white background, sun lamp. |
-| `renders/exploded.png` | Back half moved -35 Z. Placeholder boxes (render only, never in STLs). |
+| `renders/exploded.png` | Back half moved -35 Z; placeholders at assembled coordinates (render only, never in STLs). The display placeholder sits inside the front shell and shows only as a sliver from this camera. |
 
 ## Print settings
 
@@ -83,15 +83,16 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 
 ## Solver notes (geometry choices that do not change any parameter)
 
-- **Cylinder tessellation.** Every cylinder (48 segments) is rotated half a segment about its axis.
-  Without this, a vertex sits on the tangent line where the r=2.5 bosses touch the wall at x=±17
-  (front and back) and the XIAO rib faces at x=±12 (back). The half-segment offset leaves a
-  ~0.005 mm facet gap instead of a tangent contact. Vertices stay on r=2.5, but the polygon's axis-aligned
+- **Cylinder tessellation (applied pre-emptively, not shown necessary).** Every cylinder (48 segments)
+  is rotated half a segment about its axis, so no vertex sits on the tangent line where the r=2.5
+  bosses meet the wall at x=±17 and the XIAO rib faces at x=±12. Whether an unrotated cylinder fails
+  was not tested. The defect that was observed is the coplanar boss top (next bullet). Vertices stay on r=2.5, but the polygon's axis-aligned
   extent is 4.99 mm (2.5 x cos 3.75 deg) instead of 5.00. The cap bbox reads 5.49 for the same reason.
 - **Boss top embedded 0.01 mm into the front wall** (z=-1.99, spec says -2.0). An exactly coplanar
   face against the wall underside gave one non-manifold edge per boss under EXACT union.
-- **Holes are one boolean each** (window, pilots, USB, back holes). A single boolean with several
-  disjoint cutter shells in one operand gave non-manifold output and a corrupted front half.
+- **Holes are one boolean each** (window, pilots, USB, back holes). With all front cutters in one
+  operand, the front came out at 1146 verts with 8 non-manifold edges and a 73 mm Y extent. Splitting
+  them cleared it. Each cutter alone was clean. The exact mechanism was not isolated.
 - **Stem overlaps flange by 0.01 mm** on the button cap (stem starts z=0.99). Avoids a coplanar union.
 - **Denoising off, Standard view transform.** This Blender build has no OpenImageDenoiser, and
   AgX would tint the white background grey.
@@ -115,7 +116,9 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 5. **Button cap stem** starts 0.01 mm inside the flange (see solver notes).
 6. **Amp placement** is not specified. The placeholder sits at z -18..-22, behind the battery.
 7. **Battery placeholder** z -10.2..-18 is an assumption from the plate and `bat_d`.
-8. **XIAO placeholder in the exploded render** is at z -3..-18, moved with the back half.
+8. **Exploded view.** Only the back half moves (-35 Z). Placeholders stay at assembled coordinates, so the
+   XIAO placeholder (z -3..-18) overlaps the front half in that view. Visual only. The display
+   placeholder is mostly hidden by the front shell from the chosen camera.
 
 ## Fit-test checklist
 
