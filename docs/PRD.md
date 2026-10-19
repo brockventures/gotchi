@@ -57,14 +57,15 @@ These are what the firmware does now. None is a decision.
 - Largest single reply event the firmware can read: 256 KB. The gateway sends about 11 KB per event, so reply length is not limited.
 - Partial e-paper refresh about 0.3 s, full refresh 6.4 s measured on the 7.5 in bench panel (the 1.54 in figures are unmeasured).
 
-## 5a. Default values chosen by Amos and Zero
+## 5a. Timings and defaults
 
-Ryan asked for the longest recording the hardware supports, a configurable snapshot behaviour and a USB-only pre-roll default with a toggle, and left the numbers to us (#gotchi 2026-10-19 09:09 and 09:22). These are the defaults. Each is a `set_config` value, so changing one needs no new firmware. They are not Ryan's or Mike's decisions.
+Confirmed by Ryan (#gotchi 2026-10-19 09:15): hybrid button behaviour, 120 s recording cap, 3 s snapshot attach window, and "the other timings you mentioned are good" (1.5 s trailing silence, 250 ms minimum press). Each is a `set_config` value.
 
-- Tap to start, auto-upload after about 1.5 s of trailing silence or a second tap; holding longer than 500 ms still sends on release.
-- Recording cap 90 to 120 s (about 2.9 to 3.8 MB of the 8 MB PSRAM); 250 ms minimum press.
-- `preroll_mode`: `usb_only` (default), `always`, `off`. Detecting USB power would use a VBUS sense input; whether the XIAO ESP32S3 Sense exposes one is unchecked.
-- Snapshot attach window about 10 s, with a configurable `default_image_prompt` for a standalone snapshot.
+- Hybrid: holding longer than 500 ms sends on release; a quick tap latches and auto-uploads after 1.5 s of trailing silence or a second tap.
+- Recording cap 120 s (about 3.8 MB of the 8 MB PSRAM); 250 ms minimum press.
+- Snapshot attach window 3 s, with a configurable `default_image_prompt` for a standalone snapshot.
+
+Not yet confirmed: the `preroll_mode` default (`usb_only`, `always` or `off`). See section 6.
 
 ## 6. Open items
 
@@ -74,7 +75,7 @@ Questions for people:
 
 Checks the robots owe:
 - Checked 2026-10-19 in `services/mirrormere-voice-gateway/gateway.py` (read, not run against the live gateway): the turn handler splits every multipart part, takes `audio`, and decodes all other parts as text fields. An `image` part would not fail the request, but nothing reads it, so attaching a snapshot needs a gateway change (Amos).
-- Whether the XIAO ESP32S3 Sense exposes a USB-power sense pin (Zero).
+- USB-power sense: Zero reads Seeed\'s schematic as showing no 5 V sense pin on the XIAO ESP32S3 Sense (unverified by Amos). All eleven GPIOs D0 to D10 are assigned in `pins.h`, so a software-only check can tell a computer on USB from battery but not a power-only wall adapter. Ryan to choose the `preroll_mode` default.
 
 ## 7. Out of scope for V1
 
