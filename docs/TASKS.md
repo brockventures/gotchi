@@ -43,6 +43,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [~] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
   - [x] Add bearer token verification middleware (`backend/gateway_auth.py`, PR #9).
   - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16; pending live gateway deployment).
+  - [ ] Roll out `image` / `image_0`..`image_4` and standalone image-only turn support to live Mirrormere host gateway (`services/mirrormere-voice-gateway/gateway.py`) (`Amos`, `Mike`).
 - [ ] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
   - Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` so Mike and Ryan can receive voice replies straight in AirPods/Pixel Buds when desired.
 
