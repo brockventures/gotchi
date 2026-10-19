@@ -29,7 +29,7 @@ When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** w
    - `BCLK` = `D7` (`GPIO44` — silent `UART0_RX` at boot to prevent speaker pop), `LRCLK` = `D6` (`GPIO43`), `DIN` = `D9` (`GPIO8`).
    - *Crucial:* Never assign I2S to `D5` (`GPIO6`), as `D5` is assigned to the ePaper `BUSY` line.
 3. **Tactile Buttons & Multiplexed V1 Battery / Wall-Brick Sense:**
-   - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake + `5V VBUS` Wall-Brick Sense) = `D2` (`GPIO3` / `RTC_GPIO3` / `ADC1_CH2`, active-low with `220 kΩ / 220 kΩ` divider from `5V` to `GND`).
+   - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake + `5V VBUS` Wall-Brick Sense) = `D2` (`GPIO3` / `RTC_GPIO3` / `ADC1_CH2`, active-low with single `220 kΩ` series resistor from `5V` sampled against internal `45 kΩ` `INPUT_PULLDOWN`, keeping `D2 >= 2.74 V` on battery).
    - `BTN_BOT` (Camera Snap / 5-Frame Burst + `VBAT` LiPo Fuel Gauge) = `D4` (`GPIO5` / `RTC_GPIO5` / `ADC1_CH4`, avoiding `GPIO0` boot-strapping, with `220 kΩ / 220 kΩ` divider from switched `BAT+` to `GND`).
 4. **Internal Sense Expansion Board Pins:**
    - Digital PDM Microphone: `CLK` = `GPIO42`, `DATA` = `GPIO41`.

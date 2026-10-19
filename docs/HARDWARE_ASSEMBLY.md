@@ -16,7 +16,7 @@ The **Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / Amazon `B0728BJTZC`)** in
 | :--- | :--- | :--- | :--- | :--- |
 | **`D0`** | `GPIO 1` | Yes (`RTC_GPIO1`) | **ePaper `RST`** (Reset) | Waveshare 8-pin PH2.0 Harness **`RST`** |
 | **`D1`** | `GPIO 2` | Yes (`RTC_GPIO2`) | **ePaper `CS`** (SPI Chip Select) | Waveshare 8-pin PH2.0 Harness **`CS`** |
-| **`D2`** | `GPIO 3` | **Yes (`RTC_GPIO3` / `ADC1_CH2`)** | **BTN_TOP (PTT & Wake) + `5V VBUS` Sense** | Momentary `6x6x5mm` switch to `GND` + `220 kΩ / 220 kΩ` divider from `5V` (`VBUS`) to `GND` |
+| **`D2`** | `GPIO 3` | **Yes (`RTC_GPIO3` / `ADC1_CH2`)** | **BTN_TOP (PTT & Wake) + `5V VBUS` Sense** | Momentary `6x6x5mm` switch to `GND` + single `220 kΩ` series resistor from `5V` (`VBUS`) |
 | **`D3`** | `GPIO 4` | Yes (`RTC_GPIO4`) | **ePaper `DC`** (Data/Command) | Waveshare 8-pin PH2.0 Harness **`DC`** |
 | **`D4`** | `GPIO 5` | **Yes (`RTC_GPIO5` / `ADC1_CH4`)** | **BTN_BOT (Camera Snap) + `VBAT` Fuel Gauge** | Momentary `6x6x5mm` switch to `GND` + `220 kΩ / 220 kΩ` divider from switched `BAT+` to `GND` |
 | **`D5`** | `GPIO 6` | Yes (`RTC_GPIO6`) | **ePaper `BUSY`** *(+ V2 `I2C_SCL`)* | Waveshare 8-pin PH2.0 Harness **`BUSY`** |
@@ -86,17 +86,16 @@ Wire the **`MAX98357A`** breakout to the XIAO with 30 AWG silicone wire:
    - Wire Pin 1 of the tactile switch directly to XIAO **`D4` (`GPIO 5` / `RTC_GPIO5`)**. *(Never wire to `GPIO 0`).*
    - Wire Pin 2 of the tactile switch to **`GND`**.
 
-### Step 6: Wiring the V1 Battery Fuel Gauge (`D4`) & Wall-Brick Power Sense (`D2`) Dividers (4x `220 kΩ` Resistors)
-Because the XIAO ESP32S3 does not route `VBUS` (`5V`) or `BAT+` internally to any GPIO, V1 uses **4x `220 kΩ` (`1/4W 1%`) resistors** (all four are the exact same `220 kΩ` value) sleeved in heat-shrink tubing to multiplex battery voltage and wall-brick detection onto `D4` and `D2`:
+### Step 6: Wiring the V1 Battery Fuel Gauge (`D4`) & Wall-Brick Power Sense (`D2`) (3x `220 kΩ` Resistors)
+Because the XIAO ESP32S3 does not route `VBUS` (`5V`) or `BAT+` internally to any GPIO, V1 uses **3x `220 kΩ` (`1/4W 1%`) resistors** (all three are the exact same `220 kΩ` value) sleeved in heat-shrink tubing to multiplex battery voltage and wall-brick detection onto `D4` and `D2`:
 
-1. **LiPo Battery Fuel Gauge Divider on `D4` (`GPIO 5` / `ADC1_CH4`):**
+1. **LiPo Battery Fuel Gauge Divider on `D4` (`GPIO 5` / `ADC1_CH4` — 2x `220 kΩ`):**
    - Solder one **`220 kΩ` resistor** between the switched **`BAT+` outer terminal** on the SPDT power switch and XIAO **`D4`**.
    - Solder a second **`220 kΩ` resistor** between XIAO **`D4`** and **`GND`** (you can solder it directly across the two legs of `BTN_BOT`).
-   - *How it works:* When `BTN_BOT` is not pressed, `D4` sits at `V_BAT / 2` (`1.65V–2.10V` for a `3.30V–4.20V` LiPo, drawing `<9 µA` when switched ON and `0 µA` when switched OFF). Firmware samples `analogReadMilliVolts(D4)` to compute `0–100%` battery state-of-charge, while pressing `BTN_BOT` pulls `D4` to `0.0V` (`< 400 mV` threshold).
-2. **Wall-Brick (`5V VBUS`) Sense Divider on `D2` (`GPIO 3` / `ADC1_CH2`):**
-   - Solder a third **`220 kΩ` resistor** between XIAO **`5V`** (`VBUS`) and XIAO **`D2`**.
-   - Solder the fourth **`220 kΩ` resistor** between XIAO **`D2`** and **`GND`** (directly across the two legs of `BTN_TOP`).
-   - *How it works:* During normal operation, `D2`'s internal pull-up keeps the pin above `2.5V` (`HIGH`) so `BTN_TOP` digital reads and `ext0` deep-sleep wake work normally. Once per second when idle, firmware briefly samples the high-Z `D2` divider (`~2500 mV` when a 5V USB-C wall brick or computer is plugged in vs. `< 400 mV` on battery), enabling `preroll_mode: "usb_host"` and the on-screen charging indicator (`+`) even on dumb wall chargers without USB data lines. *(Note: Firmware auto-detects at boot whether the external dividers are installed and falls back cleanly to internal `INPUT_PULLUP` if testing on a bare board before soldering the resistors).*
+   - *How it works:* Normal operation keeps `D4`'s internal `45 kΩ` pull-up enabled so `D4` idles at `>= 2.82 V` (`> 2.475 V` `V_IH_min`). Once per second when idle, firmware takes a `200 µs` high-Z ADC sample (`V_BAT / 2` = `1.65V–2.10V` for a `3.30V–4.20V` LiPo, drawing `<9 µA` when switched ON and `0 µA` when switched OFF) to compute `0–100%` battery state-of-charge.
+2. **Wall-Brick (`5V VBUS`) Sense on `D2` (`GPIO 3` / `ADC1_CH2` — 1x `220 kΩ`):**
+   - Solder the third **`220 kΩ` resistor** between XIAO **`5V`** (`VBUS`) and XIAO **`D2`** *(no external ground resistor is used on `D2`)*.
+   - *How it works:* During normal operation (`INPUT_PULLUP` `45 kΩ` to `3.3V`), even if the `5V` rail is pulled to `0V` by the `MAX98357A` load when running on battery, `D2` idles at `3.3V × 220 / (45 + 220) = 2.74 V` (or `3.30 V` if `5V` floats) — safely above the ESP32-S3's `2.475 V` (`0.75 × VDD`) `V_IH` minimum so `BTN_TOP` digital reads and `ext0` deep-sleep wake work reliably. Once per second when idle, firmware briefly enables `INPUT_PULLDOWN` (`45 kΩ` to `GND`) for `200 µs`: when a 5V USB-C wall brick or computer is plugged in, `D2` reads `5.0V × 45 / (220 + 45) ≈ 849 mV` (`>= 450 mV` threshold) vs. `0 mV` on battery, enabling `preroll_mode: "usb_host"` and the on-screen charging indicator (`+`).
 
 ---
 
