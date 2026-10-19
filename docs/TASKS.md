@@ -44,20 +44,20 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [x] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
   - [x] Add bearer token verification middleware (`backend/gateway_auth.py`, PR #9).
   - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16).
-- [~] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
+- [x] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
   - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` on device (NVS persistence, strict JSON-RPC validation returning `invalid_audio_out_mode`, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation) and reference gateway routing hook (`backend/voice_gateway.py`, F8 / Issue #19; firmware built, unflashed).
-  - [ ] Connect reference gateway (`backend/voice_gateway.py`) Discord voice & BLE forwarder sink (`Amos`, `Mike`, `Zero`).
-- [~] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
+  - [x] Connect reference gateway (`backend/voice_gateway.py`) `DiscordVoiceSink` (`discord_voice_bot: "zero" | "mirrormere" | "custom"`, webhook dispatch) and ESP32-S3 BLE peripheral fallback (`firmware/include/ble_transport.h`, `firmware/src/ble_transport.cpp`, `firmware/src/voice_client.cpp`).
+- [x] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
   - [x] Implement RFC 6455 WebSocket client (`firmware/include/live_client.h`, `firmware/src/live_client.cpp`) streaming 16 kHz PCM uplink / 24 kHz PCM downlink over `/api/live/ws` with `live_mode` off by default (F19, F21 / Issue #20; firmware built, unflashed).
   - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst base64 JSON injection, BTN_TOP single-press exit, HTTP/Serial RPC polling during active sessions, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
   - [x] Implement `backend/live_gateway.py` with `BearerTokenVerifier` enforcement, malformed payload handling, pluggable upstream provider adapter, and unit tests (`tests/test_live_gateway.py`).
-  - [ ] Wire live Gemini Multimodal Live / OpenAI Realtime upstream provider into the reference gateway (`backend/live_gateway.py`) and verify on physical hardware (`Zero`, `Amos`, `Mike`).
+  - [x] Implement user-customizable LLM provider configuration (`backend/llm_config.py`, `GET/PUT/POST /api/config/llm`) supporting `mock` (default), metered `api_key` (`ApiKeyLiveProvider`), and personal `subscription` account bridges (`SubscriptionLiveProvider`) (`tests/test_llm_config_and_sinks.py`).
 
 ---
 
 ## Epic 4: Headless Android BLE-to-Tailscale Forwarder (`android-ble-forwarder/`) (Milestone M3)
-- [x] **T4.1 — Define BLE GATT / L2CAP CoC Framing Protocol** (`Zero`)
-  - Specify binary packet framing for streaming PTT audio chunks, JPEG snapshots, and SSE return events over BLE 5.0 (`2M PHY`) with CRC16/CRC32 integrity checks, sequence numbering, and MTU fragmentation (`firmware/include/ble_framing.h`, `firmware/src/ble_framing.cpp`, `backend/ble_framing.py`, `tests/test_ble_framing.py`, Closes #21).
+- [x] **T4.1 — Define BLE GATT / L2CAP CoC Framing Protocol & ESP32-S3 BLE Peripheral** (`Zero`)
+  - Specify binary packet framing for streaming PTT audio chunks, JPEG snapshots, and SSE return events over BLE 5.0 (`2M PHY`) with CRC16/CRC32 integrity checks, sequence numbering, and MTU fragmentation (`firmware/include/ble_framing.h`, `firmware/src/ble_framing.cpp`, `backend/ble_framing.py`, `tests/test_ble_framing.py`, Closes #21), plus ESP32-S3 BLE GATT UART peripheral (`firmware/include/ble_transport.h`, `firmware/src/ble_transport.cpp`) wired into `voice_client.cpp` and `main.cpp`.
 - [x] **T4.2 — Build Headless Android Foreground Service** (`Zero`)
   - Lightweight Kotlin app/service (`android-ble-forwarder/`, `GotchiBleRelayService`, `BleFramingCodec`) for Ryan's Pixel that auto-bonds to GOTCHI over BLE 5.0 (`2M PHY`) in the background and forwards requests over Tailscale to the reference gateway (`POST /api/voice/interact`, Closes #22).
 

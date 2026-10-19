@@ -9,6 +9,7 @@
 #include <string.h>
 #include <strings.h>
 #include "voice_client.h"
+#include "ble_transport.h"
 
 namespace gotchi_voice {
 namespace {
@@ -309,6 +310,152 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb, bool mut
     }
 }
 
+bool interactOverBle(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
+                     GotchiUIState& ui, StateCb cb, const ImageAttachment* image,
+                     InteractResult* out_result, const String& audio_out_mode) {
+    const bool has_audio = (wav.data != nullptr && wav.length > 0);
+    const bool has_burst = (image != nullptr && image->burst_count > 0);
+    const bool has_single_image = (!has_burst && image != nullptr && image->data != nullptr && image->length > 0);
+
+    gotchi_ble::clearIncomingQueue();
+
+    if (has_audio) {
+        if (!gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::AUDIO_CHUNK, wav.data, wav.length, 0)) {
+            setFailure(ui, UiState::ERROR, "ble_tx", "BLE TX FAIL", cb);
+            return false;
+        }
+    }
+
+    if (has_burst) {
+        for (size_t i = 0; i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {
+            if (image->burst_data[i] && image->burst_lengths[i] > 0) {
+                if (!gotchi_ble::sendFramedPayload(
+                        gotchi_ble::FrameType::IMAGE_FRAME,
+                        image->burst_data[i],
+                        image->burst_lengths[i],
+                        (uint8_t)i)) {
+                    setFailure(ui, UiState::ERROR, "ble_tx", "BLE SNAP FAIL", cb);
+                    return false;
+                }
+            }
+        }
+    } else if (has_single_image) {
+        if (!gotchi_ble::sendFramedPayload(
+                gotchi_ble::FrameType::IMAGE_FRAME,
+                image->data,
+                image->length,
+                0)) {
+            setFailure(ui, UiState::ERROR, "ble_tx", "BLE SNAP FAIL", cb);
+            return false;
+        }
+    }
+
+    JsonDocument commitDoc;
+    commitDoc["node_id"] = node_id;
+    commitDoc["hub_url"] = url;
+    commitDoc["audio_out_mode"] = audio_out_mode.length() > 0 ? audio_out_mode : String("speaker");
+    if (image != nullptr && image->default_prompt.length() > 0) {
+        commitDoc["prompt"] = image->default_prompt;
+    }
+    String commitJson;
+    serializeJson(commitDoc, commitJson);
+    if (!gotchi_ble::sendFramedPayload(
+            gotchi_ble::FrameType::TURN_COMMIT,
+            (const uint8_t*)commitJson.c_str(),
+            commitJson.length(),
+            0)) {
+        setFailure(ui, UiState::ERROR, "ble_tx", "BLE COMMIT FAIL", cb);
+        return false;
+    }
+
+    constexpr size_t BLE_SSE_CAP = 16 * 1024;
+    uint8_t* rx_buf = (uint8_t*)ps_malloc(BLE_SSE_CAP);
+    if (!rx_buf) rx_buf = (uint8_t*)malloc(2048);
+    const size_t rx_cap = psramFound() ? BLE_SSE_CAP : 2048;
+    if (!rx_buf) {
+        setFailure(ui, UiState::ERROR, "oom", "NO BLE BUF", cb);
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["state"] = true;
+    filter["transcript"] = true;
+    filter["text"] = true;
+    filter["status"] = true;
+    filter["reply"] = true;
+    filter["sample_rate"] = true;
+    filter["error"] = true;
+    filter["message"] = true;
+    filter["event"] = true;
+    filter["detail"] = true;
+
+    const bool mute_local = (audio_out_mode == "discord_voice" || audio_out_mode == "ble_phone");
+    gotchi_audio::setPlaybackAbortCheck(checkAbortFlag);
+
+    uint32_t last_rx_ts = millis();
+    bool done = false;
+
+    while (millis() - last_rx_ts <= IDLE_TIMEOUT_MS) {
+        if (checkAbortFlag()) {
+            gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::CANCEL, nullptr, 0);
+            done = true;
+            break;
+        }
+        size_t rx_len = 0;
+        gotchi_ble::FrameType rx_type = gotchi_ble::FrameType::SSE_EVENT;
+        if (!gotchi_ble::pollIncomingFrame(rx_buf, rx_cap - 1, rx_len, rx_type)) {
+            delay(2);
+            continue;
+        }
+        last_rx_ts = millis();
+        rx_buf[rx_len] = '\0';
+
+        if (rx_type != gotchi_ble::FrameType::SSE_EVENT) {
+            continue;
+        }
+
+        char* text = (char*)rx_buf;
+        if (text[0] == '{') {
+            if (handleEvent("error", text, filter, ui, cb, mute_local)) {
+                done = true;
+                break;
+            }
+            continue;
+        }
+
+        char event_name[24] = "message";
+        char* saveptr = nullptr;
+        for (char* line = strtok_r(text, "\r\n", &saveptr); line != nullptr; line = strtok_r(nullptr, "\r\n", &saveptr)) {
+            if (strncmp(line, "event:", 6) == 0) {
+                const char* p = line + 6;
+                while (*p == ' ') p++;
+                strncpy(event_name, p, sizeof(event_name) - 1);
+                event_name[sizeof(event_name) - 1] = '\0';
+            } else if (strncmp(line, "data:", 5) == 0) {
+                const char* d = line + 5;
+                while (*d == ' ') d++;
+                if (handleEvent(event_name, d, filter, ui, cb, mute_local)) {
+                    done = true;
+                    break;
+                }
+            }
+        }
+        if (done) break;
+    }
+
+    gotchi_audio::setPlaybackAbortCheck(nullptr);
+    s_active_abort_poll = nullptr;
+    free(rx_buf);
+    gotchi_audio::muteSpeaker();
+
+    if (s_active_abort_kind != InteractResult::DONE) {
+        if (out_result) *out_result = s_active_abort_kind;
+        return true;
+    }
+    if (out_result) *out_result = done ? InteractResult::DONE : InteractResult::ERROR;
+    return done;
+}
+
 } // namespace
 
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
@@ -328,6 +475,9 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     if (!parseUrl(url, host, port, path) || (!has_audio && !has_burst && !has_single_image)) {
         setFailure(ui, UiState::ERROR, "bad_url", "BAD VOICE URL", cb);
         return false;
+    }
+    if ((WiFi.status() != WL_CONNECTED || audio_out_mode == "ble_phone") && gotchi_ble::isBlePeerConnected()) {
+        return interactOverBle(wav, url, node_id, ui, cb, image, out_result, audio_out_mode);
     }
     if (WiFi.status() != WL_CONNECTED) {
         setFailure(ui, UiState::OFFLINE, "wifi", "NO WIFI", cb);

@@ -3,12 +3,13 @@
 GOTCHI V1 — Reference Voice Gateway Server (`POST /api/voice/interact`)
 ======================================================================
 Satisfies:
-- F15: Hub wire contract handling per-unit `voice_url` targeting Zero gateway or Mirrormere.
+- F15: Hub wire contract handling per-unit `voice_url` targeting reference gateway.
 - F17: Cold-start hotspot turn completion test harness.
 - F14 & F20: Multimodal single JPEG snapshot (`image`) and 5-frame burst (`image_0`..`image_4`).
 - T3.2: Per-device `BearerTokenVerifier` auth integration.
-- SSE Streaming Event Protocol: supports both live `sentence` (`audio_b64`) and `audio_chunk`
-  (`data`) events, plus pluggable `turn_handler` for live STT/Vision/TTS integration.
+- T3.3: Discord Voice (`DiscordVoiceSink`) and `ble_phone` audio routing modes.
+- T3.4: User-customizable LLM configuration (`GET/PUT/POST /api/config/llm`) supporting
+  both metered API keys (`api_key`) and personal subscription accounts (`subscription`).
 """
 
 import asyncio
@@ -25,6 +26,7 @@ except ImportError:
     FastAPI = None
 
 from backend.gateway_auth import BearerTokenVerifier
+from backend.llm_config import LLMConfig
 
 logger = logging.getLogger("gotchi_gateway")
 
@@ -57,6 +59,54 @@ def _read_part_bytes(val: Any) -> Optional[bytes]:
     return None
 
 
+class DiscordVoiceSink:
+    """
+    Configurable Discord Voice & BLE audio sink adapter for T3.3 (`audio_out_mode == "discord_voice"`).
+    Routes 24 kHz PCM chunks to the configured bot (`zero` | `mirrormere` | `custom`) or webhook bridge.
+    """
+
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        webhook_poster: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ):
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.webhook_poster = webhook_poster
+        self.dispatched_chunks: List[Dict[str, Any]] = []
+
+    def dispatch(
+        self,
+        mode: str,
+        node_id: str,
+        pcm_bytes: bytes,
+        sample_rate: int,
+        reply_text: str,
+    ) -> Dict[str, Any]:
+        event = {
+            "mode": mode,
+            "bot": self.llm_config.discord_voice_bot,
+            "webhook_url": self.llm_config.discord_voice_webhook_url,
+            "node_id": node_id,
+            "pcm_bytes": len(pcm_bytes),
+            "sample_rate": sample_rate,
+            "reply_text": reply_text,
+        }
+        self.dispatched_chunks.append(event)
+        if (
+            mode == "discord_voice"
+            and self.llm_config.discord_voice_webhook_url
+            and self.webhook_poster is not None
+        ):
+            self.webhook_poster(
+                self.llm_config.discord_voice_webhook_url,
+                {
+                    **event,
+                    "audio_b64": base64.b64encode(pcm_bytes).decode("ascii"),
+                },
+            )
+        return event
+
+
 class VoiceGatewayService:
     """Core domain logic for parsing GOTCHI multipart turns and generating SSE events."""
 
@@ -71,6 +121,8 @@ class VoiceGatewayService:
         event_format: str = "sentence",
         turn_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
         audio_sink_router: Optional[Callable[[str, str, bytes, int, str], None]] = None,
+        llm_config: Optional[LLMConfig] = None,
+        discord_sink: Optional[DiscordVoiceSink] = None,
     ):
         self.verifier = verifier or BearerTokenVerifier.from_env_or_file()
         self.auth_required = auth_required or bool(self.verifier.device_tokens)
@@ -78,6 +130,8 @@ class VoiceGatewayService:
         self.mock_sample_rate = mock_sample_rate
         self.event_format = event_format
         self.turn_handler = turn_handler
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.discord_sink = discord_sink or DiscordVoiceSink(llm_config=self.llm_config)
         self.audio_sink_router = audio_sink_router
         self.routed_audio_events: List[Dict[str, Any]] = []
         self.interactions_count = 0
@@ -201,10 +255,14 @@ class VoiceGatewayService:
             is_final = (idx == len(pcm_chunks) - 1)
             b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
             if audio_out_mode in ("discord_voice", "ble_phone"):
+                sink_event = self.discord_sink.dispatch(
+                    audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, reply_text
+                )
                 if self.audio_sink_router is not None:
                     self.audio_sink_router(audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, reply_text)
                 self.routed_audio_events.append({
                     "mode": audio_out_mode,
+                    "bot": sink_event["bot"],
                     "node_id": node_id,
                     "chunk_index": idx,
                     "pcm_bytes": len(raw_pcm),
@@ -247,7 +305,7 @@ def create_app(
     service: Optional[VoiceGatewayService] = None,
     live_service: Optional[Any] = None,
 ) -> "FastAPI":
-    """Factory to create FastAPI instance with /api/voice/interact and /api/live/ws endpoints."""
+    """Factory to create FastAPI instance with /api/voice/interact, /api/live/ws, and /api/config/llm."""
     if FastAPI is None:
         raise RuntimeError("FastAPI is not installed")
 
@@ -258,6 +316,7 @@ def create_app(
     live_srv = live_service or LiveGatewayService(
         verifier=srv.verifier,
         auth_required=srv.auth_required,
+        llm_config=srv.llm_config,
     )
 
     @app.get("/health")
@@ -266,7 +325,42 @@ def create_app(
             "status": "ok",
             "service": "gotchi-voice-gateway",
             "live_mode_enabled": live_srv.is_enabled(),
+            "llm_config": srv.llm_config.to_public_dict(),
         }
+
+    @app.get("/api/config/llm")
+    def get_llm_config(request: Request):
+        headers = dict(request.headers)
+        client_ip = request.client.host if request.client else "0.0.0.0"
+        if srv.auth_required or srv.verifier.device_tokens:
+            ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
+            if not ok:
+                return JSONResponse(status_code=code, content=err)
+        return {"ok": True, "llm_config": srv.llm_config.to_public_dict()}
+
+    @app.put("/api/config/llm")
+    @app.post("/api/config/llm")
+    async def update_llm_config(request: Request):
+        headers = dict(request.headers)
+        client_ip = request.client.host if request.client else "0.0.0.0"
+        if srv.auth_required or srv.verifier.device_tokens:
+            ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
+            if not ok:
+                return JSONResponse(status_code=code, content=err)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("JSON body must be an object")
+            srv.llm_config.update_from_dict(body)
+        except ValueError as ve:
+            return JSONResponse(
+                status_code=400, content={"ok": False, "error": "bad_request", "message": str(ve)}
+            )
+        except Exception as exc:
+            return JSONResponse(
+                status_code=400, content={"ok": False, "error": "bad_request", "message": str(exc)}
+            )
+        return {"ok": True, "llm_config": srv.llm_config.to_public_dict()}
 
     @app.post("/api/voice/interact")
     async def voice_interact(
