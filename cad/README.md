@@ -16,14 +16,14 @@ Python error or non-manifold edge. Re-running leaves `cad/gotchi_case.blend1` (B
 delete it before committing.
 
 Units: 1 Blender unit = 1 mm. X = width, Y = height (+Y top), Z = depth. Front face z=0,
-back face z=-27. XY origin at the centre of the case outline.
+back face z=-29. XY origin at the centre of the case outline.
 
 ## Files
 
 | Path | What |
 |---|---|
 | `build_case.py` | Generator. All dimensions in the `P` dict at the top. |
-| `stl/gotchi_front.stl` | Front half, print orientation (front face down). 38 x 72 x 9. |
+| `stl/gotchi_front.stl` | Front half, print orientation (front face down). 38 x 72 x 11. |
 | `stl/gotchi_back.stl` | Back half, print orientation (back face down). 38 x 72 x 18. |
 | `stl/gotchi_button_cap.stl` | Button cap, flange down. 5.5 x 5.5 x 4.0. |
 | `gotchi_case.blend` | Assembled design geometry (front, back, cap offset to x=50). |
@@ -53,20 +53,20 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 | `wall` | 2.0 | `usb_h` | 4.5 |
 | `W_out` | 38.0 | `usb_cz` | -4.6 |
 | `H_out` | 72.0 | `cam_hole_d` | 9.0 |
-| `D_out` | 27.0 | `cam_cx` | 0.0 |
+| `D_out` | 29.0 | `cam_cx` | 0.0 |
 | `W_in` | 34.0 | `cam_cy` | -24.0 |
 | `H_in` | 68.0 | `boss_d` | 5.0 |
-| `split_z` | -9.0 | `boss_x` | 14.5 |
+| `split_z` | -11.0 | `boss_x` | 14.5 |
 | `edge_bevel` | 2.0 | `boss_y` | 31.0 |
 | `bevel_segments` | 6 | `pilot_d` | 1.7 |
 | `disp_w` | 33.0 | `clear_d` | 2.4 |
 | `disp_h` | 48.0 | `cbore_d` | 4.2 |
-| `disp_d` | 7.0 | `cbore_depth` | 1.5 |
+| `disp_d` | 9.0 | `cbore_depth` | 1.5 |
 | `disp_cy` | 4.0 | `btn_x` | 8.0 |
-| `win_w` | 28.4 | `btn_cz` | -16.0 |
+| `win_w` | 28.4 | `btn_cz` | -18.0 |
 | `win_h` | 28.4 | `btn_hole_d` | 3.8 |
 | `win_off_x` | 0.0 | `sw_cy` | -24.0 |
-| `win_off_y` | 0.0 | `sw_cz` | -16.0 |
+| `win_off_y` | 0.0 | `sw_cz` | -18.0 |
 | `plate_t` | 1.2 | `sw_slot_z` | 5.0 |
 | `plate_y_top` | 28.0 | `sw_slot_y` | 2.0 |
 | `plate_y_bot` | -14.0 | `spk_cx` | 9.0 |
@@ -80,6 +80,9 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 | `xiao_cy` | -24.1 | `grille_pitch` | 3.0 |
 | `xiao_z_front` | -3.0 | `amp_cx` | -6.0 |
 | `usb_w` | 10.0 | `amp_cy` | 5.0 |
+| `mic_d` | 2.0 | | |
+| `mic_cx` | 6.0 | | |
+| `mic_cy` | -24.0 | | |
 
 ## Solver notes (geometry choices that do not change any parameter)
 
@@ -101,21 +104,22 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 
 ## Collisions and assumptions (spec numbers kept as written)
 
-1. **Split-face rim is knife-edge.** The 2.0 mm bevel on the z=-9 edges leaves the flat part of
+1. **Split-face rim is knife-edge.** The 2.0 mm bevel on the z=-11 edges leaves the flat part of
    that face at exactly x ±17, y ±34, the same footprint as the cavity. The wall tapers from 2 mm
-   at z=-7 to zero at z=-9 on both halves. The halves meet on a line at the perimeter. The
+   at z=-9 to zero at z=-11 on both halves. The halves meet on a line at the perimeter. The
    mating surfaces are the screw bosses' end faces, not the perimeter. Not changed.
 2. **XIAO envelope collides with front-half features.** `xiao_z_front=-3.0` and `xiao_d=15.0`
-   put the XIAO at z -3..-18, but the front half occupies z -2..-9. The XIAO envelope (x ±10.5,
+   put the XIAO at z -3..-18, but the front half occupies z -2..-11. The XIAO envelope (x ±10.5,
    y -33..-15.2) overlaps the display module envelope (y -20..28) and the front bottom stop rib
-   (y -21.8..-20.3). The XIAO cannot sit at those coordinates. Either `xiao_z_front` means a
+   (y -21.8..-20.3). Rev 2 axis-aligned check: 21.0 x 4.8 x 8.0 mm overlap with the display bay
+   envelope (y -20..-15.2, z -3..-11) and 21.0 x 1.5 x 8.0 mm with the bottom stop rib. Not fixed. The XIAO cannot sit at those coordinates. Either `xiao_z_front` means a
    different reference face, or the XIAO sits behind the front stop. Needs a decision before printing.
 3. **Switch placeholder 4.0 mm in Y vs frame inner 3.9 mm.** 0.1 mm interference. The real switch
    body dimensions are unknown; the placeholder is 3.5 x 4.0 x 8.6.
 4. **Speaker frame outer edge at x=17.7** runs 0.7 mm into the side wall (x 17..19). Benign: it merges.
 5. **Button cap stem** starts 0.01 mm inside the flange (see solver notes).
-6. **Amp placement** is not specified. The placeholder sits at z -18..-22, behind the battery.
-7. **Battery placeholder** z -10.2..-18 is an assumption from the plate and `bat_d`.
+6. **Amp placement** is not specified. The placeholder sits at z -20..-24, behind the battery.
+7. **Battery placeholder** z -12.2..-20 is an assumption from the plate and `bat_d`.
 8. **Exploded view.** Only the back half moves (-35 Z). Placeholders stay at assembled coordinates, so the
    XIAO placeholder (z -3..-18) overlaps the front half in that view. Visual only. The display
    placeholder is mostly hidden by the front shell from the chosen camera.
@@ -124,7 +128,9 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 
 - [ ] **Display window offset.** The panel position on the module PCB is unconfirmed. Adjust
       `win_off_x` / `win_off_y`.
-- [ ] **Display module depth.** `disp_d` is assumed 7.0 mm.
+- [ ] **Display module depth.** `disp_d` is assumed 9.0 mm (rev 2; was 7.0).
+- [ ] **Display bay depth 9.0 mm**: confirm the PH2.0 rear header clears the XIAO side ribs and the back-half display plate.
+- [ ] **PDM mic port**: confirm the microphone's acoustic port lines up with (mic_cx, mic_cy) and that a 2.0 mm port is not blocked by the camera or by foam tape. Position assumed, not measured.
 - [ ] **USB-C slot height.** `usb_cz` is assumed -4.6.
 - [ ] **Camera lens position.** `cam_cx` / `cam_cy` are assumed (0, -24).
 - [ ] **XIAO** is held by the side ribs plus foam tape. Confirm the ribs clear the board (see collision 2).
