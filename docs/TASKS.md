@@ -57,8 +57,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 ---
 
 ## Epic 4: Headless Android BLE-to-Tailscale Forwarder (`android-ble-forwarder/`) (Milestone M3)
-- [ ] **T4.1 — Define BLE GATT / L2CAP CoC Framing Protocol** (`Zero`)
-  - Specify packet framing for streaming PTT audio chunks, JPEG snapshots, and SSE return events over BLE 5.0 (`2M PHY`).
+- [x] **T4.1 — Define BLE GATT / L2CAP CoC Framing Protocol** (`Zero`)
+  - Specify binary packet framing for streaming PTT audio chunks, JPEG snapshots, and SSE return events over BLE 5.0 (`2M PHY`) with CRC16/CRC32 integrity checks, sequence numbering, and MTU fragmentation (`firmware/include/ble_framing.h`, `firmware/src/ble_framing.cpp`, `backend/ble_framing.py`, `tests/test_ble_framing.py`, Closes #21).
 - [ ] **T4.2 — Build Headless Android Foreground Service** (`Zero`)
   - Lightweight Kotlin app/service for Ryan's Pixel that auto-bonds to GOTCHI over BLE in the background and forwards requests over Tailscale to Mirrormere/Discord.
 
