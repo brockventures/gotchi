@@ -93,11 +93,90 @@ static bool     s_enter_live_pending = false;
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
 
-// Note on XIAO ESP32S3 schematic: VBUS (5V) feeds the charger IC through a diode
-// and is not wired to any GPIO ADC pin. On ESP32-S3, `bool(Serial)` checks the
-// native USB Serial/JTAG controller's host connection state (SOF frames present).
+// ============================================================================
+// V1 Power & Battery Telemetry (4x 220k Multiplexed ADC Dividers on D4 & D2)
+//   - D4 (PIN_BTN_BOT_MOD / GPIO5 / ADC1_CH4): 220k to switched BAT+, 220k to GND
+//   - D2 (PIN_BTN_TOP_PTT / GPIO3 / ADC1_CH2): 220k to 5V (VBUS), 220k to GND
+// Normal operation keeps INPUT_PULLUP active on both pins (>2.74V CMOS HIGH) so
+// digitalRead() and ext0 deep-sleep wake work natively. Once per second when idle,
+// a 250us pulsed high-Z ADC read measures VBAT/2 on D4 and VBUS/2 on D2.
+// ============================================================================
+static constexpr uint32_t POWER_TELEMETRY_INTERVAL_MS = 1000;
+static uint32_t s_last_power_sample_ts = 0;
+static uint16_t s_battery_mv = 0;
+static int8_t   s_battery_pct = -1;
+static bool     s_wall_brick_power = false;
+
+// Piecewise-linear 1S LiPo state-of-charge curve (3300 mV = 0%, 4150 mV+ = 100%).
+static int8_t lipoMvToPercent(uint16_t mv) {
+    if (mv == 0) return -1;
+    if (mv <= 3300) return 0;
+    if (mv >= 4150) return 100;
+    if (mv < 3500)  return (int8_t)(((uint32_t)(mv - 3300) * 10) / 200);          // 3.30V..3.50V -> 0..10%
+    if (mv < 3680)  return (int8_t)(10 + ((uint32_t)(mv - 3500) * 20) / 180);     // 3.50V..3.68V -> 10..30%
+    if (mv < 3800)  return (int8_t)(30 + ((uint32_t)(mv - 3680) * 30) / 120);     // 3.68V..3.80V -> 30..60%
+    if (mv < 3950)  return (int8_t)(60 + ((uint32_t)(mv - 3800) * 25) / 150);     // 3.80V..3.95V -> 60..85%
+    return (int8_t)(85 + ((uint32_t)(mv - 3950) * 15) / 200);                     // 3.95V..4.15V -> 85..100%
+}
+
 static bool isUsbDataHostConnected() {
     return (bool)Serial;
+}
+
+static void samplePowerAndBatteryTelemetry(bool force = false) {
+    uint32_t now = millis();
+    if (!force && s_last_power_sample_ts != 0 && (now - s_last_power_sample_ts < POWER_TELEMETRY_INTERVAL_MS)) {
+        return;
+    }
+    // Only sample when neither tactile button is actively held LOW.
+    if (digitalRead(PIN_BTN_TOP_PTT) == LOW || digitalRead(PIN_BTN_BOT_MOD) == LOW) {
+        return;
+    }
+    s_last_power_sample_ts = now;
+
+    // 1. Sample VBAT/2 divider on D4 (PIN_BTN_BOT_MOD):
+    //    50us pull-down discharges pin cap if unwired; 200us high-Z settles at VBAT/2 (~1650..2100 mV) when wired.
+    pinMode(PIN_BTN_BOT_MOD, INPUT_PULLDOWN);
+    delayMicroseconds(50);
+    pinMode(PIN_BTN_BOT_MOD, INPUT);
+    delayMicroseconds(200);
+    uint32_t vbat_div_mv = analogReadMilliVolts(PIN_BTN_BOT_MOD);
+    pinMode(PIN_BTN_BOT_MOD, INPUT_PULLUP);
+
+    if (vbat_div_mv >= PIN_VBAT_DIV_MIN_MV && vbat_div_mv <= PIN_VBAT_DIV_MAX_MV) {
+        uint16_t raw_mv = (uint16_t)(vbat_div_mv * 2);
+        // 4:1 EMA smoothing to prevent percentage flicker
+        s_battery_mv = (s_battery_mv == 0) ? raw_mv : (uint16_t)((s_battery_mv * 3 + raw_mv) / 4);
+        s_battery_pct = lipoMvToPercent(s_battery_mv);
+    } else if (vbat_div_mv < PIN_VBAT_DIV_MIN_MV) {
+        s_battery_mv = 0;
+        s_battery_pct = -1;
+    }
+
+    // 2. Sample 5V VBUS/2 divider on D2 (PIN_BTN_TOP_PTT):
+    //    Reads ~2500 mV (>= 1800 mV) when 5V wall brick or USB host is present, < 400 mV on battery or unwired.
+    pinMode(PIN_BTN_TOP_PTT, INPUT_PULLDOWN);
+    delayMicroseconds(50);
+    pinMode(PIN_BTN_TOP_PTT, INPUT);
+    delayMicroseconds(200);
+    uint32_t vbus_div_mv = analogReadMilliVolts(PIN_BTN_TOP_PTT);
+    pinMode(PIN_BTN_TOP_PTT, INPUT_PULLUP);
+
+    s_wall_brick_power = (vbus_div_mv >= PIN_VBUS_WALL_MIN_MV);
+}
+
+static bool isWallBrickPowerConnected() {
+    return s_wall_brick_power;
+}
+
+static bool isExternalPowerConnected() {
+    return isUsbDataHostConnected() || isWallBrickPowerConnected();
+}
+
+static void attachPowerToUi(GotchiUIState& ui) {
+    ui.battery_pct = s_battery_pct;
+    ui.battery_mv  = s_battery_mv;
+    ui.wall_power  = isExternalPowerConnected();
 }
 
 static void applyPrerollPolicy() {
@@ -106,8 +185,8 @@ static void applyPrerollPolicy() {
     } else if (cfg.preroll_mode == "off") {
         gotchi_audio::setPrerollEnabled(false);
     } else {
-        // "usb_host" or "usb_only": active when enumerated on USB host power/data
-        gotchi_audio::setPrerollEnabled(isUsbDataHostConnected());
+        // "usb_host" or "usb_only": active on either USB data host OR 5V USB-C wall brick
+        gotchi_audio::setPrerollEnabled(isExternalPowerConnected());
     }
 }
 
@@ -247,7 +326,12 @@ String handleJsonRpc(const String& jsonLine) {
         res["live_barge_in"] = cfg.live_barge_in;
         res["live_silence_ms"] = cfg.live_silence_ms;
         res["default_image_prompt"] = cfg.default_image_prompt;
+        samplePowerAndBatteryTelemetry(true);
         res["usb_host_connected"] = isUsbDataHostConnected();
+        res["wall_power_connected"] = isWallBrickPowerConnected();
+        res["external_power_connected"] = isExternalPowerConnected();
+        res["battery_mv"] = s_battery_mv;
+        res["battery_pct"] = (int)s_battery_pct;
         res["ble_connected"] = gotchi_ble::isBlePeerConnected();
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
@@ -317,12 +401,17 @@ String handleJsonRpc(const String& jsonLine) {
         bool epd_ok = epdWaitBusy(500);
         int top_btn = digitalRead(PIN_BTN_TOP_PTT);
         int bot_btn = digitalRead(PIN_BTN_BOT_MOD);
+        samplePowerAndBatteryTelemetry(true);
         sensor_t* s = esp_camera_sensor_get();
         uint16_t cam_pid = s ? s->id.PID : 0;
         res["psram_ok"] = psram_ok;
         res["epd_busy_clear"] = epd_ok;
         res["btn_top_state"] = top_btn;
         res["btn_bot_state"] = bot_btn;
+        res["battery_mv"] = s_battery_mv;
+        res["battery_pct"] = (int)s_battery_pct;
+        res["wall_power_connected"] = isWallBrickPowerConnected();
+        res["usb_host_connected"] = isUsbDataHostConnected();
         res["camera_pid"] = cam_pid;
         gotchi_log::RingLogger.info("self_test", psram_ok && epd_ok && cam_pid != 0 ? "Self-test passed" : "Self-test detected hardware faults");
     } else if (cmd == "factory_reset") {
@@ -332,9 +421,12 @@ String handleJsonRpc(const String& jsonLine) {
         res["status"] = "cleared_nvs";
     } else if (cmd == "draw_state") {
         GotchiUIState ui;
+        attachPowerToUi(ui);
         ui.skin = req["skin"].is<const char*>() ? req["skin"].as<String>() : cfg.skin;
         ui.state = uiStateFromString(req["state"] | "idle");
         if (req["status_text"].is<const char*>()) ui.status_text = req["status_text"].as<String>();
+        if (req["battery_pct"].is<int>()) ui.battery_pct = (int8_t)req["battery_pct"].as<int>();
+        if (req["wall_power"].is<bool>()) ui.wall_power = req["wall_power"].as<bool>();
         bool force_full = req["force_full"] | false;
         bool ok = panel.draw(ui, force_full);
         res["ok"] = ok;
@@ -392,7 +484,9 @@ static void waitForButtonRelease(uint8_t pin, uint32_t max_wait_ms = 2000) {
 }
 
 static void showIdle() {
+    samplePowerAndBatteryTelemetry();
     GotchiUIState idle_ui;
+    attachPowerToUi(idle_ui);
     idle_ui.skin = cfg.skin;
     if (s_staged_jpeg_active && s_staged_jpeg_count > 0) {
         idle_ui.status_text = s_staged_jpeg_count > 1
@@ -403,7 +497,11 @@ static void showIdle() {
 }
 
 static void onVoiceState(const GotchiUIState& ui) {
-    panel.draw(ui);
+    GotchiUIState enriched = ui;
+    if (enriched.battery_pct < 0 && s_battery_pct >= 0) {
+        attachPowerToUi(enriched);
+    }
+    panel.draw(enriched);
 }
 
 static void pollRpcAndHttp() {
@@ -833,6 +931,7 @@ void setup() {
     }
 
     gotchi_audio::init();
+    samplePowerAndBatteryTelemetry(true);
     applyPrerollPolicy();
     gotchi_camera::init();
     gotchi_ble::initBleTransport(cfg.node_id.c_str());
@@ -842,6 +941,7 @@ void setup() {
 
     panel.begin();
     GotchiUIState boot_ui;
+    attachPowerToUi(boot_ui);
     boot_ui.skin = cfg.skin;
     if (wifi_configured && !wifi_up && !gotchi_ble::isBlePeerConnected()) {
         boot_ui.state = UiState::OFFLINE;
@@ -903,6 +1003,7 @@ void loop() {
         return;
     }
 
+    samplePowerAndBatteryTelemetry();
     applyPrerollPolicy();
     gotchi_audio::pumpPreroll();
     delay(2);

@@ -12,9 +12,15 @@
 #define PIN_EPD_SCK     7   // D8
 #define PIN_EPD_MOSI    9   // D10
 
-// 2. Tactile Buttons (Active-Low with Internal Pull-Up)
-#define PIN_BTN_TOP_PTT 3   // D2 (RTC_GPIO3) — Push-to-Talk & Deep-Sleep ext0 Wake
-#define PIN_BTN_BOT_MOD 5   // D4 (RTC_GPIO5) — Mode / Camera Snap / Cancel (avoids GPIO0 strap!)
+// 2. Tactile Buttons + Multiplexed V1 Battery Fuel Gauge (D4) & 5V Wall-Brick Sense (D2)
+//   - PIN_BTN_TOP_PTT (D2 / GPIO3 / RTC_GPIO3 / ADC1_CH2): Momentary switch to GND + 220k/220k divider from 5V (VBUS) to GND
+//   - PIN_BTN_BOT_MOD (D4 / GPIO5 / RTC_GPIO5 / ADC1_CH4): Momentary switch to GND + 220k/220k divider from switched BAT+ to GND
+#define PIN_BTN_TOP_PTT 3   // D2 (RTC_GPIO3 / ADC1_CH2) — Push-to-Talk, Deep-Sleep ext0 Wake & 5V VBUS Sense
+#define PIN_BTN_BOT_MOD 5   // D4 (RTC_GPIO5 / ADC1_CH4) — Camera Snap/Burst & VBAT LiPo Fuel Gauge (avoids GPIO0 strap!)
+#define PIN_ADC_PRESSED_MAX_MV   400   // Button shorted to GND (< 400 mV)
+#define PIN_VBAT_DIV_MIN_MV      1250  // Minimum valid VBAT/2 divider idle voltage (~2.50V LiPo cutoff)
+#define PIN_VBAT_DIV_MAX_MV      2350  // Maximum valid VBAT/2 divider idle voltage (~4.70V ceiling)
+#define PIN_VBUS_WALL_MIN_MV     1800  // High-Z D2 220k/220k divider reading when 5V VBUS is present (~2500 mV nominal)
 
 // 3. MAX98357A I2S Class-D Amplifier (Pop-Free Boot Assignment)
 #define PIN_I2S_LRCLK   43  // D6 (UART0_TX)

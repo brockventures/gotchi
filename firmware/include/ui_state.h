@@ -38,6 +38,9 @@ struct GotchiUIState {
     uint16_t thinking_seconds = 0;
     uint32_t audio_bytes_received = 0;
     uint32_t last_sample_rate = 24000;
+    int8_t   battery_pct = -1;       // 0..100% when V1 VBAT divider on D4 is active (-1 if unwired)
+    uint16_t battery_mv = 0;         // LiPo millivolts (3300..4200 mV)
+    bool     wall_power = false;     // true when 5V VBUS wall brick or USB host power is detected
 };
 
 // Unknown or null names map to IDLE (matches the Python VALID_STATES fallback).
