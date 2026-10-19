@@ -257,10 +257,13 @@ void renderFrame(Adafruit_GFX& d, const GotchiUIState& ui, const char* refresh_m
                         : "READY";
     drawWrapped(d, 6, 146, 10, primary, CAPTION_COLS, 2, GxEPD_BLACK, GxEPD_WHITE);
 
-    char info[32];
-    snprintf(info, sizeof(info), "SR:%uk B:%lu",
-             (unsigned)(ui.last_sample_rate / 1000),
-             (unsigned long)ui.audio_bytes_received);
-    printClipped(d, 6, 168, info, CAPTION_COLS, GxEPD_BLACK, GxEPD_WHITE);
+    // Python shows the SR/bytes diagnostic only when there is no reply or transcript.
+    if (!ui.reply.length() && !ui.transcript.length()) {
+        char info[32];
+        snprintf(info, sizeof(info), "SR:%uk B:%lu",
+                 (unsigned)(ui.last_sample_rate / 1000),
+                 (unsigned long)ui.audio_bytes_received);
+        printClipped(d, 6, 168, info, CAPTION_COLS, GxEPD_BLACK, GxEPD_WHITE);
+    }
     printClipped(d, 6, 182, ui.status_text.c_str(), CAPTION_COLS, GxEPD_BLACK, GxEPD_WHITE);
 }
