@@ -1,9 +1,9 @@
 #pragma once
 // ============================================================================
-// GOTCHI Mirrormere voice client (T3.1) — POST /api/voice/interact.
-//   - Multipart WAV upload over WiFiClient (HTTP/1.1, Connection: close).
+// GOTCHI Mirrormere / Zero Gateway Voice Client (T3.1) — POST /api/voice/interact.
+//   - Multipart WAV (+ optional JPEG snapshot & prompt) upload over WiFiClient.
 //   - Streaming SSE reply parser; `sentence` / `audio_chunk` PCM plays as it
-//     arrives through gotchi_audio::playBase64PcmChunk.
+//     arrives through gotchi_audio::playBase64PcmChunk with 42ms Barge-In / Cancel poll.
 // Wire contract: docs/MIRRORMERE_VOICE_CLIENT.md ("Live gateway").
 // ============================================================================
 
@@ -15,11 +15,28 @@ namespace gotchi_voice {
 
 using StateCb = void (*)(const GotchiUIState&);
 
-// Uploads the WAV, parses the SSE reply, plays audio as it arrives.
-// Returns true if the stream reached `done`. Updates `ui` as events arrive and
-// calls `cb(ui)` ONLY when ui.state changes or a transcript/reply text arrives
-// (and once on a non-200 HTTP status or on an `error` event).
+enum class InteractResult : uint8_t {
+    DONE           = 0,
+    ERROR          = 1,
+    ABORT_BARGE_IN = 2,
+    ABORT_CANCEL   = 3,
+};
+
+struct ImageAttachment {
+    const uint8_t* data = nullptr;
+    size_t length = 0;
+    String default_prompt = "";
+};
+
+// Polled during SSE wait and 42ms speaker slices. Return DONE to continue,
+// ABORT_BARGE_IN if BTN_TOP pressed, or ABORT_CANCEL if BTN_BOT pressed.
+using AbortPollFn = InteractResult (*)();
+
+// Uploads the WAV (+ optional JPEG attachment & prompt), parses the SSE reply,
+// and plays audio as it arrives. Returns true if the stream reached `done`.
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
-              GotchiUIState& ui, StateCb cb, const String& bearer_token = "");
+              GotchiUIState& ui, StateCb cb, const String& bearer_token = "",
+              const ImageAttachment* image = nullptr, AbortPollFn abort_poll = nullptr,
+              InteractResult* out_result = nullptr);
 
 } // namespace gotchi_voice

@@ -14,25 +14,28 @@ static constexpr i2s_port_t PORT_I2S_TX = I2S_NUM_1;
 
 static constexpr uint32_t REC_SAMPLE_RATE = 16000;
 static constexpr size_t   PREROLL_SAMPLES = REC_SAMPLE_RATE / 2; // 500 ms = 8,000 samples (16 KB)
-static constexpr size_t   MAX_REC_SAMPLES = REC_SAMPLE_RATE * 15; // 15s max = 240,000 samples (480 KB)
+static constexpr size_t   MAX_REC_SAMPLES = REC_SAMPLE_RATE * 120; // 120s max in 8MB PSRAM = 1,920,000 samples (3.84 MB)
 static constexpr size_t   WAV_HEADER_SIZE = 44;
 
-static int16_t* s_preroll_ring = nullptr;
-static size_t   s_preroll_head = 0;
-static bool     s_preroll_full = false;
+static int16_t* s_preroll_ring    = nullptr;
+static size_t   s_preroll_head    = 0;
+static bool     s_preroll_full    = false;
+static bool     s_preroll_enabled = true;
 
-static uint8_t* s_wav_buf      = nullptr;
-static size_t   s_rec_samples  = 0;
-static uint32_t s_cur_tx_rate  = 24000;
+static uint8_t*      s_wav_buf      = nullptr;
+static volatile size_t s_rec_samples = 0;
+static size_t        s_max_samples  = MAX_REC_SAMPLES;
+static uint32_t      s_cur_tx_rate  = 24000;
+static AbortCheckFn  s_abort_check  = nullptr;
 
 static void writeWavHeader(uint8_t* dst, uint32_t pcm_bytes, uint32_t sample_rate) {
-    uint32_t riff_size  = 36 + pcm_bytes;
-    uint32_t byte_rate  = sample_rate * 2;
+    uint32_t riff_size   = 36 + pcm_bytes;
+    uint32_t byte_rate   = sample_rate * 2;
     uint16_t block_align = 2;
-    uint16_t bits       = 16;
-    uint16_t fmt_pcm    = 1;
-    uint16_t channels   = 1;
-    uint32_t fmt_len    = 16;
+    uint16_t bits        = 16;
+    uint16_t fmt_pcm     = 1;
+    uint16_t channels    = 1;
+    uint32_t fmt_len     = 16;
 
     memcpy(dst + 0,  "RIFF", 4);
     memcpy(dst + 4,  &riff_size, 4);
@@ -55,9 +58,13 @@ bool init() {
             : malloc(PREROLL_SAMPLES * sizeof(int16_t)));
     }
     if (!s_wav_buf) {
-        s_wav_buf = (uint8_t*)(psramFound()
-            ? ps_malloc(WAV_HEADER_SIZE + MAX_REC_SAMPLES * sizeof(int16_t))
-            : malloc(WAV_HEADER_SIZE + 32000 * sizeof(int16_t)));
+        if (psramFound()) {
+            s_max_samples = MAX_REC_SAMPLES;
+            s_wav_buf = (uint8_t*)ps_malloc(WAV_HEADER_SIZE + s_max_samples * sizeof(int16_t));
+        } else {
+            s_max_samples = 32000;
+            s_wav_buf = (uint8_t*)malloc(WAV_HEADER_SIZE + s_max_samples * sizeof(int16_t));
+        }
     }
 
     // 1. Configure I2S0 for Onboard PDM Microphone RX (CLK=GPIO42, DATA=GPIO41)
@@ -112,8 +119,17 @@ bool init() {
     return (s_preroll_ring != nullptr && s_wav_buf != nullptr);
 }
 
+void setPrerollEnabled(bool enabled) {
+    if (s_preroll_enabled == enabled) return;
+    s_preroll_enabled = enabled;
+    if (!enabled) {
+        s_preroll_head = 0;
+        s_preroll_full = false;
+    }
+}
+
 void pumpPreroll() {
-    if (!s_preroll_ring) return;
+    if (!s_preroll_ring || !s_preroll_enabled) return;
     int16_t chunk[128];
     size_t bytes_read = 0;
     if (i2s_read(PORT_PDM_RX, chunk, sizeof(chunk), &bytes_read, 0) == ESP_OK && bytes_read > 0) {
@@ -131,23 +147,30 @@ bool beginPttRecording() {
     int16_t* dst = reinterpret_cast<int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
     s_rec_samples = 0;
 
-    // Copy 500ms circular pre-roll into start of WAV buffer so first syllable is never clipped
-    if (s_preroll_full) {
-        size_t tail_len = PREROLL_SAMPLES - s_preroll_head;
-        memcpy(dst, s_preroll_ring + s_preroll_head, tail_len * sizeof(int16_t));
-        memcpy(dst + tail_len, s_preroll_ring, s_preroll_head * sizeof(int16_t));
-        s_rec_samples = PREROLL_SAMPLES;
-    } else if (s_preroll_head > 0) {
-        memcpy(dst, s_preroll_ring, s_preroll_head * sizeof(int16_t));
-        s_rec_samples = s_preroll_head;
+    if (s_preroll_enabled) {
+        // Copy 500ms circular pre-roll into start of WAV buffer so first syllable is never clipped
+        if (s_preroll_full) {
+            size_t tail_len = PREROLL_SAMPLES - s_preroll_head;
+            memcpy(dst, s_preroll_ring + s_preroll_head, tail_len * sizeof(int16_t));
+            memcpy(dst + tail_len, s_preroll_ring, s_preroll_head * sizeof(int16_t));
+            s_rec_samples = PREROLL_SAMPLES;
+        } else if (s_preroll_head > 0) {
+            memcpy(dst, s_preroll_ring, s_preroll_head * sizeof(int16_t));
+            s_rec_samples = s_preroll_head;
+        }
+    } else {
+        // Flush stale DMA RX samples before starting fresh capture
+        int16_t dummy[128];
+        size_t bytes_read = 0;
+        while (i2s_read(PORT_PDM_RX, dummy, sizeof(dummy), &bytes_read, 0) == ESP_OK && bytes_read > 0) {}
     }
     return true;
 }
 
 size_t pollPttRecording() {
-    if (!s_wav_buf || s_rec_samples >= MAX_REC_SAMPLES) return s_rec_samples;
+    if (!s_wav_buf || s_rec_samples >= s_max_samples) return s_rec_samples;
     int16_t* dst = reinterpret_cast<int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
-    size_t room_bytes = (MAX_REC_SAMPLES - s_rec_samples) * sizeof(int16_t);
+    size_t room_bytes = (s_max_samples - s_rec_samples) * sizeof(int16_t);
     size_t to_read = room_bytes < 1024 ? room_bytes : 1024;
     size_t bytes_read = 0;
     if (i2s_read(PORT_PDM_RX, dst + s_rec_samples, to_read, &bytes_read, pdMS_TO_TICKS(10)) == ESP_OK) {
@@ -191,25 +214,60 @@ bool startAsyncPttTask() {
 void stopAsyncPttTask() {
     if (!s_ptt_task_running) return;
     s_ptt_task_running = false;
-    // Wait deterministically for the Core 0 task (<=12 ms max cycle: 10 ms i2s_read + 2 ms delay)
-    // to clear s_ptt_task_handle so finishPttRecording() never overlaps s_rec_samples.
     while (s_ptt_task_handle != nullptr) {
         delay(1);
     }
 }
 
+size_t getRecordedSamples() {
+    return s_rec_samples;
+}
+
+uint32_t getRecordedMs() {
+    return (uint32_t)((s_rec_samples * 1000ULL) / REC_SAMPLE_RATE);
+}
+
+float getRecentRms(size_t window_samples) {
+    size_t n = s_rec_samples;
+    if (!s_wav_buf || n == 0 || window_samples == 0) return 0.0f;
+    size_t count = n < window_samples ? n : window_samples;
+    size_t start = n - count;
+    const int16_t* pcm = reinterpret_cast<const int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
+    double sum_sq = 0.0;
+    for (size_t i = start; i < n; ++i) {
+        double v = pcm[i] / 32768.0;
+        sum_sq += v * v;
+    }
+    return sqrtf((float)(sum_sq / count));
+}
+
 WavView finishPttRecording() {
-    uint32_t pcm_bytes = s_rec_samples * sizeof(int16_t);
+    size_t n = s_rec_samples;
+    uint32_t pcm_bytes = n * sizeof(int16_t);
     writeWavHeader(s_wav_buf, pcm_bytes, REC_SAMPLE_RATE);
 
     const int16_t* pcm = reinterpret_cast<const int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
     double sum_sq = 0.0;
-    for (size_t i = 0; i < s_rec_samples; ++i) {
+    for (size_t i = 0; i < n; ++i) {
         double v = pcm[i] / 32768.0;
         sum_sq += v * v;
     }
-    float rms = s_rec_samples > 0 ? sqrtf((float)(sum_sq / s_rec_samples)) : 0.0f;
+    float rms = n > 0 ? sqrtf((float)(sum_sq / n)) : 0.0f;
     return WavView{s_wav_buf, WAV_HEADER_SIZE + pcm_bytes, rms};
+}
+
+WavView buildSilentWav(uint32_t duration_ms) {
+    if (!s_wav_buf) return WavView{nullptr, 0, 0.0f};
+    size_t samples = (REC_SAMPLE_RATE * duration_ms) / 1000;
+    if (samples > s_max_samples) samples = s_max_samples;
+    uint32_t pcm_bytes = samples * sizeof(int16_t);
+    memset(s_wav_buf + WAV_HEADER_SIZE, 0, pcm_bytes);
+    writeWavHeader(s_wav_buf, pcm_bytes, REC_SAMPLE_RATE);
+    return WavView{s_wav_buf, WAV_HEADER_SIZE + pcm_bytes, 0.0f};
+}
+
+void setPlaybackAbortCheck(AbortCheckFn fn) {
+    s_abort_check = fn;
 }
 
 bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_rate) {
@@ -219,19 +277,37 @@ bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_r
         i2s_set_clk(PORT_I2S_TX, s_cur_tx_rate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
     }
     i2s_start(PORT_I2S_TX);
-    size_t bytes_written = 0;
-    esp_err_t err = i2s_write(
-        PORT_I2S_TX,
-        samples,
-        sample_count * sizeof(int16_t),
-        &bytes_written,
-        pdMS_TO_TICKS(2000)
-    );
-    return (err == ESP_OK);
+
+    // Stream in 1024-sample (~42 ms @ 24 kHz) slices so Barge-In / Cancel buttons
+    // abort speaker output immediately without waiting for a full sentence to finish.
+    constexpr size_t SLICE_SAMPLES = 1024;
+    size_t offset = 0;
+    while (offset < sample_count) {
+        if (s_abort_check && s_abort_check()) {
+            muteSpeaker();
+            return false;
+        }
+        size_t chunk = (sample_count - offset) < SLICE_SAMPLES ? (sample_count - offset) : SLICE_SAMPLES;
+        size_t bytes_written = 0;
+        esp_err_t err = i2s_write(
+            PORT_I2S_TX,
+            samples + offset,
+            chunk * sizeof(int16_t),
+            &bytes_written,
+            pdMS_TO_TICKS(1000)
+        );
+        if (err != ESP_OK) return false;
+        offset += chunk;
+    }
+    return true;
 }
 
 bool playBase64PcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate) {
     if (!b64_data || b64_len == 0) return true;
+    if (s_abort_check && s_abort_check()) {
+        muteSpeaker();
+        return false;
+    }
     size_t max_out = (b64_len * 3) / 4 + 4;
     uint8_t* decoded = (uint8_t*)(psramFound() ? ps_malloc(max_out) : malloc(max_out));
     if (!decoded) return false;
@@ -253,7 +329,10 @@ void playChime(const char* kind) {
     float f1 = 880.0f, f2 = 1320.0f;
     if (strcmp(kind, "ptt_stop") == 0) { f1 = 1320.0f; f2 = 880.0f; }
     else if (strcmp(kind, "error") == 0) { f1 = 330.0f; f2 = 220.0f; }
+    else if (strcmp(kind, "snap") == 0) { f1 = 1760.0f; f2 = 2093.0f; }
 
+    AbortCheckFn saved = s_abort_check;
+    s_abort_check = nullptr;
     for (float freq : {f1, f2}) {
         for (size_t i = 0; i < n; ++i) {
             float env = 1.0f - ((float)i / (float)n);
@@ -261,6 +340,7 @@ void playChime(const char* kind) {
         }
         playPcmChunk(buf, n, sr);
     }
+    s_abort_check = saved;
     muteSpeaker();
 }
 

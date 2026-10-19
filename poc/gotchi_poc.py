@@ -78,6 +78,8 @@ def build_multipart_wav(
     node_id: str = "gotchi-poc-01",
     session_id: str = "sess-poc-01",
     boundary: str = "---GotchiBoundary7MA4YWxkTrZu0gW",
+    image_jpeg: Optional[bytes] = None,
+    prompt: Optional[str] = None,
 ) -> Tuple[bytes, str]:
     """Construct multipart/form-data payload for POST /api/voice/interact."""
     crlf = b"\r\n"
@@ -86,14 +88,29 @@ def build_multipart_wav(
         b'Content-Disposition: form-data; name="audio"; filename="ptt.wav"' + crlf,
         b"Content-Type: audio/wav" + crlf + crlf,
         wav_bytes + crlf,
+    ]
+    if image_jpeg:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="image"; filename="snap.jpg"' + crlf,
+            b"Content-Type: image/jpeg" + crlf + crlf,
+            image_jpeg + crlf,
+        ])
+    parts.extend([
         b"--" + boundary.encode() + crlf,
         b'Content-Disposition: form-data; name="node_id"' + crlf + crlf,
         node_id.encode() + crlf,
         b"--" + boundary.encode() + crlf,
         b'Content-Disposition: form-data; name="session_id"' + crlf + crlf,
         session_id.encode() + crlf,
-        b"--" + boundary.encode() + b"--" + crlf,
-    ]
+    ])
+    if image_jpeg and prompt:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="prompt"' + crlf + crlf,
+            prompt.encode() + crlf,
+        ])
+    parts.append(b"--" + boundary.encode() + b"--" + crlf)
     body = b"".join(parts)
     content_type = f"multipart/form-data; boundary={boundary}"
     return body, content_type

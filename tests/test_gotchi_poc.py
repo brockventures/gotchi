@@ -133,3 +133,20 @@ def test_render_zero_skin_all_9_states():
         im = render_sprite_200x200(ui, refresh_mode="partial")
         assert im.size == (200, 200)
         assert im.mode == "1"
+
+
+def test_multipart_payload_with_snapshot_and_prompt():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 4000)
+    fake_jpeg = b"\xff\xd8\xff\xe0JFIF\x00\xff\xd9"
+    body, _ = build_multipart_wav(
+        wav,
+        node_id="gotchi-v1-01",
+        session_id="s-snap",
+        image_jpeg=fake_jpeg,
+        prompt="Describe what you see in this snapshot briefly.",
+    )
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"Content-Type: image/jpeg" in body
+    assert fake_jpeg in body
+    assert b'name="prompt"' in body
+    assert b"Describe what you see in this snapshot briefly." in body
