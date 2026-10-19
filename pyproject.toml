@@ -12,6 +12,7 @@ dependencies = [
     "Pillow>=9.0",
     "fastapi>=0.100.0",
     "python-multipart>=0.0.6",
+    "websockets>=11.0",
 ]
 
 [project.optional-dependencies]
