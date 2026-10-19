@@ -505,10 +505,12 @@ SessionEndReason runSession(
             last_speech_ts = millis();
         }
 
-        // 3. Uplink 16 kHz 16-bit mono PCM chunks & VAD check
+        // 3. Uplink 16 kHz 16-bit mono PCM chunks & VAD check (half-duplex: suppress mic while speaker plays)
         float chunk_rms = 0.0f;
         size_t samples_read = gotchi_audio::readLivePcmChunk(pcm_chunk, PCM_UPLINK_SAMPLES, &chunk_rms);
-        if (samples_read > 0) {
+        const bool speaker_active = (!mute_speaker && ui.state == UiState::SPEAKING &&
+                                     (millis() - last_speech_ts < 250));
+        if (samples_read > 0 && !speaker_active) {
             if (!sendWsFrame(ws_client, 0x02, reinterpret_cast<const uint8_t*>(pcm_chunk),
                              samples_read * sizeof(int16_t))) {
                 gotchi_log::RingLogger.warn("live", "Go Live WebSocket uplink write failed");
