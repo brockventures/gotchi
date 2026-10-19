@@ -6,7 +6,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 
 ## Epic 1: Architecture, Spec & Procurement (Milestone M0)
 - [x] **T1.1 — Lock V1 Hardware BOM & Pinout Allocation** (`Zero`, `Amos`, `Ryan`, `Mike`)
-  - Locked 7-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$62.32` Seeed+Waveshare+Amazon / `$70.32` Seeed+Amazon / `$80.32` All-Amazon): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch.
+  - Locked 8-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$68.81` Seeed+Waveshare+Amazon / `$76.81` Seeed+Amazon / `$86.81` All-Amazon, plus bench wire/insulation consumables): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch + `1/4W 1%` resistor kit (4x `220 kΩ` for V1 battery fuel gauge & wall-brick sense).
 - [x] **T1.2 — Audit Mirrormere Hub Voice Contract** (`Amos`)
   - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml` and documented in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md).
 - [x] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
@@ -32,6 +32,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Firmware renderer: PR #5 (GOTCHI firmware T2.6: e-paper renderer and refresh policy (C++), plus AGENTS.md pin fixes)
 - [x] **T2.7 — QR Soft-AP Captive Portal Onboarding (`192.168.4.1`)** (`Zero`)
   - Render scannable Wi-Fi QR code on the 200x200 e-paper screen when unprovisioned; serve mobile captive portal to set Wi-Fi and hub URL without an on-screen keyboard.
+- [x] **T2.8 — V1 Multiplexed ADC Battery Fuel Gauge (`D4`) & Wall-Brick `5V VBUS` Sense (`D2`)** (`Zero`, `Ryan`)
+  - Promoted to V1 PRD: 4x `220 kΩ` resistors form two symmetric voltage dividers on `D4` (`GPIO5` / `ADC1_CH4`, shared with `BTN_BOT` for live `3.30V–4.20V` -> `0–100%` LiPo fuel gauge) and `D2` (`GPIO3` / `ADC1_CH2`, shared with `BTN_TOP` for dumb 5V USB-C wall-brick detection). Auto-detects divider presence at boot with graceful fallback to `INPUT_PULLUP`, enables `preroll_mode: "usb_host"` on wall power, renders battery `%` badge on the e-paper header, and exposes `battery_mv`, `battery_pct`, and `wall_power_connected` in `get_config` / `self_test`.
 
 ---
 
@@ -65,7 +67,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 
 ## Epic 5: Multi-Part 3D-Printed Enclosure & Future Wake Models (Milestone M4)
 - [x] **T5.1 — Multi-Part Openable 3D-Printed Pocket Case (`cad/`)** (`Amos`, `Zero`, `Ryan`)
-  - Model a multi-part openable enclosure in Blender / CAD sized to the locked 7-item mechanical envelope in [`docs/HARDWARE_ASSEMBLY.md`](HARDWARE_ASSEMBLY.md): Waveshare `48.0 x 33.0 mm` e-paper V2 module (`27.6 x 27.6 mm` bezel window + 4x `M2` bosses), stacked XIAO ESP32S3 Sense (`21.0 x 17.8 x 15.0 mm` w/ `USB-C` + camera/mic apertures), `803040` `40 x 30 x 8 mm` LiPo bay, `MAX98357A` + `1W 8Ω` cavity speaker grille, 2x `6x6x5mm` tactile button actuators, and recessed SPDT slide switch slot.
+  - Model a multi-part openable enclosure in Blender / CAD sized to the locked mechanical envelope in [`docs/HARDWARE_ASSEMBLY.md`](HARDWARE_ASSEMBLY.md): Waveshare `48.0 x 33.0 mm` e-paper V2 module (`27.6 x 27.6 mm` bezel window + 4x `M2` bosses), stacked XIAO ESP32S3 Sense (`21.0 x 17.8 x 15.0 mm` w/ `USB-C` + camera/mic apertures), `803040` `40 x 30 x 8 mm` LiPo bay, `MAX98357A` + `1W 8Ω` cavity speaker grille, 2x `6x6x5mm` tactile button actuators, and recessed SPDT slide switch slot.
 - [ ] **T5.2 — V1.1 Wake-Word & Tiny Audio-Intent Classifier Spike** (`Mike`, `Zero`, `Amos`)
   - Benchmark `microWakeWord` / `ESP-SR` and Mike's wake-word-free tiny audio-intent classifier on the ESP32-S3 vector unit (`ESP-NN`), measuring real-world mA draw against the 1000 mAh LiPo.
 
@@ -93,8 +95,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Upgrade from the stock fixed-focus `OV2640`/`OV3660` Sense camera to the 5MP VCM autofocus `OV5640` module (w/ heatsink; readily available on Amazon/Seeed). Firmware (`firmware/src/camera_hal.cpp`) already auto-detects `OV5640` at boot and triggers single-shot VCM autofocus (`0x3022 = 0x08`); V2 covers ordering the module, verifying rear-shell heatsink/thermal clearance in `cad/`, and benchmarking close-up macro text/document capture and 5-frame burst latency.
 - [ ] **V2.3 — Ultra-Low-Power Neural Wake Co-Processor Daughterboard (`<100 µA`)** (`Mike`, `Zero`, `Amos`)
   - Hardware escape hatch documented in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 4.4 (e.g. Syntiant `NDP120` over I2C + hardware wake interrupt) if software-only `ESP-SR` / `ESP-NN` wake-word monitoring (`T5.2`) draws too much continuous battery current for all-day untethered pocket carry.
-- [ ] **V2.4 — I2C LiPo Fuel Gauge (`MAX17048`) & On-Screen Battery Telemetry** (`Zero`, `Amos`, `Ryan`)
-  - Add an inline `MAX17048` I2C fuel gauge IC to report accurate state-of-charge (`%`) and low-battery warnings on the 200x200 e-paper status bar (V1 solders the `803040` LiPo directly to the XIAO charger pads without a fuel-gauge ADC).
+- [ ] **V2.4 — Dedicated I2C Fuel Gauge IC (`MAX17048`) on V2 Carrier PCB** (`Zero`, `Amos`, `Ryan`)
+  - Upgrade from V1's 2-resistor ADC fuel gauge divider (`D4`) to a dedicated `MAX17048` ModelGauge I2C fuel gauge IC integrated onto the V2 carrier PCB (`V2.5`) with hardware low-SOC alert interrupt.
 - [ ] **V2.5 — Custom Flex/Carrier PCB & Magnetic Pogo-Pin Desk Dock** (`Ryan`, `Amos`, `Zero`)
-  - Replace V1 point-to-point hand wiring (`MAX98357A`, tactile buttons, SPDT switch, Waveshare 8-pin harness) with a compact carrier PCB and magnetic pogo-pin desk charging cradle (auto-enabling `preroll_mode: "usb_host"` and continuous wake-word listening when docked).
+  - Replace V1 point-to-point hand wiring (`MAX98357A`, tactile buttons, SPDT switch, Waveshare 8-pin harness, 4x `220 kΩ` dividers) with a compact carrier PCB and magnetic pogo-pin desk charging cradle.
 
