@@ -72,15 +72,19 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 ---
 
 ## Epic 6: Mirrormere & Garage Voice QA Carry-Over (PRD Section 5c — From 2:23 PM PT Onward)
-- [ ] **T6.1 — Go Live Post-Playback I2S RX DMA Drain & `ESP-SR` AEC Bench Evaluation** (`Zero`, `Amos`, `Mike`) — [Issue #37](https://github.com/brockventures/gotchi/issues/37)
-  - Flush/drain the I2S RX DMA ring buffer and enforce a configurable post-playback mute tail (`live_echo_tail_ms`, default `250 ms`) after each synchronous speaker chunk in `firmware/src/live_client.cpp` so accumulated room reverb is never uploaded when `playPcmChunk` returns; benchmark whether `ESP-SR` Acoustic Echo Cancellation (`AEC`) is required on physical hardware.
-- [ ] **T6.2 — Default `800 ms` Trailing Silence (`ptt_silence_ms`) & Neural VAD vs. RMS Evaluation** (`Zero`, `Amos`, `Mike`) — [Issue #38](https://github.com/brockventures/gotchi/issues/38)
-  - Update the firmware default trailing silence starting point from `1500 ms` to Mirrormere's tested `800 ms` (`ptt_silence_ms` in `firmware/src/main.cpp`, keeping it configurable via `set_config` with a `10 s` cap) and benchmark on-device neural VAD (`ESP-SR` VADNet) against the plain `50 LSB` RMS threshold for false-trigger rejection.
+- [ ] **T6.1 — Go Live On-Device Acoustic Echo Cancellation (`AEC`) & Barge-In (Active Only in Go Live)** (`Zero`, `Amos`, `Mike`) — [Issue #37](https://github.com/brockventures/gotchi/issues/37)
+  - Implement on-device Acoustic Echo Cancellation (`ESP-SR` AEC / reference-signal adaptive echo canceller) and full-duplex speech barge-in (`>= 300 ms` voiced speech interrupts active speaker playback and flushes downlink audio) **scoped strictly to active Go Live sessions** (`firmware/src/live_client.cpp`), turning off immediately when Go Live exits so normal PTT mode incurs zero CPU/battery overhead.
+- [ ] **T6.2 — Bench Comparison of `800 ms`, `1.0 s`, and `1.5 s` Trailing Silence & Neural VAD vs. RMS** (`Zero`, `Amos`, `Mike`, `Ryan`) — [Issue #38](https://github.com/brockventures/gotchi/issues/38)
+  - Keep Ryan's confirmed `1.5 s` (`1500 ms`) default `ptt_silence_ms` unchanged in firmware; on the bench, compare `800 ms`, `1.0 s`, and `1.5 s` trailing silence alongside `ESP-SR` VADNet vs. plain `50 LSB` RMS threshold, changing the default only on Ryan's explicit approval.
 - [ ] **T6.3 — Firmware On-Device `node_id` Regex Validation (`^[A-Za-z0-9_-]{1,64}$`)** (`Zero`) — [Issue #39](https://github.com/brockventures/gotchi/issues/39)
   - Add on-device `node_id` validation (`^[A-Za-z0-9_-]{1,64}$`, matching `backend/voice_gateway.py` in PR #36) inside `firmware/src/main.cpp` (`set_config`) and captive portal provisioning, returning `invalid_node_id` on malformed input.
 - [ ] **T6.4 — Real Whisper STT & Per-Sentence Kokoro TTS Adapter in Reference Gateway** (`Zero`, `Amos`) — [Issue #40](https://github.com/brockventures/gotchi/issues/40)
   - Connect `backend/voice_gateway.py`'s per-sentence `tts_synthesizer` and STT hooks (added in PR #36 alongside the `1200 ms`/`5000 ms` spoken filler, `60`-word `reply_cap_words`, and `400 ms` ghost filter) to real Whisper STT and Kokoro TTS backends so standalone reference gateway deployments emit real speech audio rather than synthetic silence.
-- [ ] **T6.5 — Mirrormere Production Gateway (`services/mirrormere-voice-gateway/gateway.py`) Multimodal Image & Burst Support** (`Amos`, `Zero`, `Mike`) — [Issue #41](https://github.com/brockventures/gotchi/issues/41)
-  - Update the production Mirrormere voice gateway turn handler (`services/mirrormere-voice-gateway/gateway.py`, which currently reads `audio` and decodes all other multipart fields as text) to parse binary `image` and `image_0`..`image_4` JPEG attachments for single-snapshot (`F14`) and 5-frame burst (`F20`) turns.
-- [ ] **T6.6 — Garage E-Paper Animation Timing & Partial-Refresh Cadence Bench QA** (`Mike`, `Amos`, `Zero`, `Ryan`) — [Issue #42](https://github.com/brockventures/gotchi/issues/42)
-  - Apply garage UX testing notes on sprite state transition timing (`LISTENING` -> `THINKING` -> spoken filler -> `SPEAKING` -> `IDLE`), `0.3 s` partial-refresh frame pacing, and full-refresh ghosting recovery intervals on the physical Waveshare `1.54"` V2 panel once bench hardware arrives.
+- [ ] **T6.5 — Collect Animation Timing Notes from Mike & Run Bench E-Paper Refresh QA** (`Mike`, `Amos`, `Zero`, `Ryan`) — [Issue #42](https://github.com/brockventures/gotchi/issues/42)
+  - Collect animation timing and voice UX observations from Mike (`LISTENING` -> `THINKING` -> spoken filler -> `SPEAKING` -> `IDLE`) and validate `0.3 s` partial-refresh pacing and full-refresh ghosting recovery intervals on the physical Waveshare `1.54"` V2 panel once bench hardware arrives.
+
+---
+
+## V2 Hardware & Industrial Design Backlog
+- [ ] **V2.1 — Ambient Diffused LED "Glow" Indicator When Listening** (`Ryan`, `Zero`, `Amos`) — [Issue #44](https://github.com/brockventures/gotchi/issues/44)
+  - Add a diffused LED lightpipe / glow ring integrated into the lower enclosure seam that softly illuminates when Gotchi is actively listening (`LISTENING` / Go Live voice capture), inspired by current-generation Google speaker hardware.
