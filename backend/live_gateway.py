@@ -715,6 +715,8 @@ def register_live_routes(app: "FastAPI", service: Optional[LiveGatewayService] =
                             })
                             continue
                         await provider.send_image_frame(img_bytes, int(frame_idx))
+                    elif kind == "barge_in":
+                        await websocket.send_json({"type": "barge_in_ack"})
                     elif kind == "ping":
                         await websocket.send_json({"type": "pong"})
         except (WebSocketDisconnect, RuntimeError):

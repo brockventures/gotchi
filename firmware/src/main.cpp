@@ -262,7 +262,24 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["hub_url"].is<const char*>()) cfg.hub_url = req["hub_url"].as<String>();
         if (req["voice_url"].is<const char*>()) cfg.voice_url = req["voice_url"].as<String>();
         if (req["live_url"].is<const char*>()) cfg.live_url = req["live_url"].as<String>();
-        if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
+        if (req["node_id"].is<const char*>()) {
+            String nid = req["node_id"].as<String>();
+            bool valid_nid = (nid.length() >= 1 && nid.length() <= 64);
+            for (size_t i = 0; valid_nid && i < nid.length(); ++i) {
+                char c = nid.charAt(i);
+                bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '_';
+                if (!ok) valid_nid = false;
+            }
+            if (!valid_nid) {
+                res["ok"] = false;
+                res["error"] = "invalid_node_id";
+                String out;
+                serializeJson(res, out);
+                return out;
+            }
+            cfg.node_id = nid;
+        }
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["input_mode"].is<const char*>()) cfg.input_mode = req["input_mode"].as<String>();
         if (req["preroll_mode"].is<const char*>()) cfg.preroll_mode = req["preroll_mode"].as<String>();

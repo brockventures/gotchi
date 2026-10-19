@@ -163,7 +163,7 @@ static const char* findB64Value(const char* line, const char* key, size_t& out_l
     return p;
 }
 
-static void handleWsTextMessage(const char* text, size_t len, bool mute_speaker,
+static void handleWsTextMessage(WiFiClient& c, const char* text, size_t len, bool mute_speaker,
                                 uint32_t& last_activity_ts, GotchiUIState& ui,
                                 gotchi_voice::StateCb cb) {
     if (!text || len == 0) return;
@@ -197,6 +197,15 @@ static void handleWsTextMessage(const char* text, size_t len, bool mute_speaker,
         }
         if (!mute_speaker) {
             gotchi_audio::playBase64PcmChunk(b64, b64_len, sr);
+            if (gotchi_audio::consumeLiveBargeInFlag()) {
+                const char* barge_json = "{\"type\":\"barge_in\"}";
+                sendWsFrame(c, 0x01, reinterpret_cast<const uint8_t*>(barge_json), strlen(barge_json));
+                ui.state = UiState::LISTENING;
+                ui.status_text = "LIVE (BARGE-IN)";
+                if (cb) cb(ui);
+            } else {
+                gotchi_audio::flushRxDmaBuffer();
+            }
         }
         last_activity_ts = millis();
     } else if (strcmp(type, "text") == 0) {
@@ -278,7 +287,7 @@ static bool pollWsDownlink(WiFiClient& c, uint8_t* rx_buf, size_t rx_cap, bool m
             sendWsFrame(c, 0x0A, rx_buf, payload_len);
         } else if (opcode == 0x01) {
             // Text JSON frame
-            handleWsTextMessage(reinterpret_cast<const char*>(rx_buf), payload_len,
+            handleWsTextMessage(c, reinterpret_cast<const char*>(rx_buf), payload_len,
                                 mute_speaker, last_activity_ts, ui, cb);
         } else if (opcode == 0x02 && payload_len >= 2) {
             // Raw binary 24 kHz 16-bit PCM downlink frame
@@ -292,6 +301,15 @@ static bool pollWsDownlink(WiFiClient& c, uint8_t* rx_buf, size_t rx_cap, bool m
             if (!mute_speaker) {
                 gotchi_audio::playPcmChunk(reinterpret_cast<const int16_t*>(rx_buf),
                                            payload_len / sizeof(int16_t), 24000);
+                if (gotchi_audio::consumeLiveBargeInFlag()) {
+                    const char* barge_json = "{\"type\":\"barge_in\"}";
+                    sendWsFrame(c, 0x01, reinterpret_cast<const uint8_t*>(barge_json), strlen(barge_json));
+                    ui.state = UiState::LISTENING;
+                    ui.status_text = "LIVE (BARGE-IN)";
+                    if (cb) cb(ui);
+                } else {
+                    gotchi_audio::flushRxDmaBuffer();
+                }
             }
             last_activity_ts = millis();
         }
@@ -446,6 +464,9 @@ SessionEndReason runSession(
 
     const float vad_thresh = (float)config.vad_rms_lsb / 32768.0f;
     const bool mute_speaker = (config.audio_out_mode == "discord_voice" || config.audio_out_mode == "ble_phone");
+    // Enable on-device NLMS Acoustic Echo Cancellation + 300ms full-duplex barge-in ONLY while Go Live is active (T6.1)
+    gotchi_audio::setLiveAecEnabled(true, vad_thresh > 0.002f ? vad_thresh * 1.5f : 0.008f);
+
     uint32_t last_speech_ts = millis();
     int16_t pcm_chunk[PCM_UPLINK_SAMPLES];
 
@@ -505,12 +526,10 @@ SessionEndReason runSession(
             last_speech_ts = millis();
         }
 
-        // 3. Uplink 16 kHz 16-bit mono PCM chunks & VAD check (half-duplex: suppress mic while speaker plays)
+        // 3. Uplink 16 kHz 16-bit mono PCM chunks (AEC-cleaned) & VAD check
         float chunk_rms = 0.0f;
         size_t samples_read = gotchi_audio::readLivePcmChunk(pcm_chunk, PCM_UPLINK_SAMPLES, &chunk_rms);
-        const bool speaker_active = (!mute_speaker && ui.state == UiState::SPEAKING &&
-                                     (millis() - last_speech_ts < 250));
-        if (samples_read > 0 && !speaker_active) {
+        if (samples_read > 0) {
             if (!sendWsFrame(ws_client, 0x02, reinterpret_cast<const uint8_t*>(pcm_chunk),
                              samples_read * sizeof(int16_t))) {
                 gotchi_log::RingLogger.warn("live", "Go Live WebSocket uplink write failed");
@@ -548,6 +567,9 @@ SessionEndReason runSession(
 
         delay(2);
     }
+
+    // Turn off Go Live AEC immediately when session exits so normal PTT incurs zero overhead
+    gotchi_audio::setLiveAecEnabled(false);
 
     // Send polite RFC 6455 Close frame (0x08) before closing TCP socket
     if (ws_client.connected()) {

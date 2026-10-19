@@ -30,8 +30,23 @@ void setPrerollEnabled(bool enabled);
 // Continuously sample PDM mic into the 500ms circular pre-roll ring buffer while idle.
 void pumpPreroll();
 
+// Enable or disable on-device NLMS Acoustic Echo Cancellation (AEC) and 300ms full-duplex
+// speech barge-in detection. Scoped strictly to active Go Live sessions (off in normal PTT).
+void setLiveAecEnabled(bool enabled, float barge_in_rms_thresh = 0.008f);
+bool isLiveAecEnabled();
+
+// Returns true (and clears the flag) if user speech triggered a >=300ms AEC barge-in
+// during the most recent Go Live speaker playback chunk.
+bool consumeLiveBargeInFlag();
+
+// Drain any residual samples sitting in the I2S0 PDM RX DMA ring buffer after speaker playback.
+void flushRxDmaBuffer();
+
+// Apply 64-tap NLMS adaptive echo cancellation to a single 16 kHz mic sample against reference.
+int16_t processLiveAecSample(int16_t mic_sample, int16_t ref_sample);
+
 // Non-blocking read of 16 kHz 16-bit mono PCM samples from PDM mic into `dst` (up to `max_samples`).
-// Computes normalized RMS [0.0, 1.0] in `*out_rms` if non-null. Returns sample count read.
+// When Go Live AEC is enabled, subtracts speaker reference echo before computing `*out_rms`.
 size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms = nullptr);
 
 // Start a push-to-talk / tap-to-talk recording session: copies the 500ms pre-roll
