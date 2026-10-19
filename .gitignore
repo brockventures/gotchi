@@ -7,3 +7,4 @@ secrets.yaml
 config.local.json
 .DS_Store
 __pycache__/
+cad/*.blend1

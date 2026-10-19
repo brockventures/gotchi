@@ -14,7 +14,7 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
 - **`firmware/`** *(scaffolded in Milestone M1)*: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.
-- **`cad/`** *(scaffolded in Milestone M4)*: Multi-part openable 3D-printed pocket enclosure models (Blender / OpenSCAD / STEP / STL).
+- **`cad/`** *(V1 two-part case + button cap)*: parametric Blender script generating STL, `.blend` and renders; see [`cad/README.md`](cad/README.md). Run: `blender -b --python cad/build_case.py -- --out cad`.
 
 ---
 
