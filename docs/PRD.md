@@ -36,27 +36,29 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F7 | Optional bearer token on Wi-Fi RPC and on hub requests | `docs/TASKS.md` T3.2 | Device side built; gateway side OPEN (see section 6) |
 | F8 | Reply audio routing: speaker, Discord voice, BLE phone | `docs/TASKS.md` T3.3 | Not built |
 | F9 | Camera snapshot on the bottom button | `README.md` | Camera driver built; snapshot flow not built |
+| F11 | Recording cap raised to the longest the hardware reasonably supports | Ryan, #gotchi 2026-10-19 09:09 | Not built (15 s today) |
+| F12 | Pre-roll runs on USB power by default, with a setting to keep it on at all times | Ryan, #gotchi 2026-10-19 09:09 | Not built |
+| F13 | Pressing a button while a reply plays interrupts it; the bottom button can also cancel or mute playback | Ryan, #gotchi 2026-10-19 09:09 | Not built |
+| F14 | A snapshot attaches to the next voice prompt if that prompt starts within a debounce time; otherwise it is sent alone for the bot to comment on | Ryan, #gotchi 2026-10-19 09:09 | Not built |
+| F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Config exists (`voice_url`) |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed |
 
 ## 5. Limits of today's build
 
 These are what the firmware does now. None is a decision.
 
-- Maximum recording length: 15 s (`PTT_MAX_MS` in `main.cpp`, WAV buffer sized to match).
-- Recordings shorter than 16,000 bytes or quieter than 50 LSB RMS are discarded and not uploaded.
+- Maximum recording length: 15 s (F11 raises it) (`PTT_MAX_MS` in `main.cpp`, WAV buffer sized to match).
+- Recordings shorter than 16,000 bytes or quieter than 50 LSB RMS are discarded and not uploaded. Ryan accepts a 0.25 s floor if the button-hold behaviour stays (Ryan, #gotchi 2026-10-19 09:09).
 - Largest single reply event the firmware can read: 256 KB. The gateway sends about 11 KB per event, so reply length is not limited.
 - Partial e-paper refresh about 0.3 s, full refresh 6.4 s measured on the 7.5 in bench panel (the 1.54 in figures are unmeasured).
 
 ## 6. Open requirements (need Ryan or Mike)
 
-- **OPEN: maximum utterance length.** Today 15 s. Zero proposes 60 s (about 1.9 MB of PSRAM, about 32 KB per second of recording). Free PSRAM at runtime is unmeasured.
-- **OPEN: shortest accepted press.** Today a press under 0.5 s (16,000 bytes) or below 50 LSB RMS is discarded and the screen shows TOO SHORT for 1.5 s. Zero notes that one-word replies such as "yes" or "stop" may be 0.25 to 0.4 s and proposes a 200 ms floor. The 0.25 to 0.4 s figure is Zero's estimate, not measured.
-- **OPEN: pre-roll against battery life.** The 500 ms pre-roll keeps the microphone running. Zero estimates 20 to 35 mA, about 30 hours idle on the 1000 mAh battery; that is an unmeasured estimate. Options Zero raised: pre-roll only on USB power, or for a few minutes after a press, with cold wake on battery.
-- **OPEN: interrupting a reply.** Today both buttons are ignored while a reply plays. Should the top button cut the audio and start a new recording, and should the bottom button cancel playback?
-- **OPEN: bottom button and camera.** Does it stage a snapshot to attach to the next push-to-talk turn, or send a standalone snapshot? Attaching needs an optional `image` field on `/api/voice/interact`; whether the gateway accepts one has not been checked.
-- **OPEN: backend per unit.** Does each unit's `voice_url` point at the same hub, or may Ryan's and Mike's units use different backends that share the wire contract?
+- **OPEN: hands-free listening.** Ryan asked whether one press could open listening and keep recording until he stops talking. That needs end-of-speech detection on the device. What silence length ends a turn, and what is the longest a turn may run? Proposal: 1.0 s of silence, with the longest recording the memory allows.
+- **OPEN: standalone snapshot.** How long is the window in which a snapshot attaches to the next voice prompt? What should the bot do with a snapshot that arrives alone? Attaching needs an optional `image` field on `/api/voice/interact`; whether the gateway accepts one has not been checked.
+- **OPEN: pre-roll purpose.** Ryan asked whether pre-roll is only for wake word. With push-to-talk it also catches the first syllables spoken before the chime and screen draw finish; Zero's mic task (PR #9) now covers part of that. Is a USB-only default still wanted?
 - **OPEN: where the off-LAN gateway runs** (T3.2). Mike's call.
-- **OPEN: hotspot and BLE modes** are in scope for V1, but no acceptance test exists.
+- **OPEN: hotspot and BLE modes** are in scope for V1, but no pass criteria exist.
 - **OPEN: target battery life** and whether deep sleep is required for V1.
 - **OPEN: wake word** is deferred to V1.1 (T5.2); confirm that stays out of V1.
 
