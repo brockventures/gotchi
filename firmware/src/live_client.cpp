@@ -164,7 +164,7 @@ static const char* findB64Value(const char* line, const char* key, size_t& out_l
 }
 
 static void handleWsTextMessage(WiFiClient& c, const char* text, size_t len, bool mute_speaker,
-                                uint32_t& last_activity_ts, GotchiUIState& ui,
+                                bool live_barge_in, uint32_t& last_activity_ts, GotchiUIState& ui,
                                 gotchi_voice::StateCb cb) {
     if (!text || len == 0) return;
 
@@ -197,7 +197,7 @@ static void handleWsTextMessage(WiFiClient& c, const char* text, size_t len, boo
         }
         if (!mute_speaker) {
             gotchi_audio::playBase64PcmChunk(b64, b64_len, sr);
-            if (gotchi_audio::consumeLiveBargeInFlag()) {
+            if (live_barge_in && gotchi_audio::consumeLiveBargeInFlag()) {
                 const char* barge_json = "{\"type\":\"barge_in\"}";
                 sendWsFrame(c, 0x01, reinterpret_cast<const uint8_t*>(barge_json), strlen(barge_json));
                 ui.state = UiState::LISTENING;
@@ -228,7 +228,7 @@ static void handleWsTextMessage(WiFiClient& c, const char* text, size_t len, boo
 // Non-blocking poll of incoming server-to-client WebSocket frames.
 // Returns false if a Close frame (`0x08`) was received or socket broke.
 static bool pollWsDownlink(WiFiClient& c, uint8_t* rx_buf, size_t rx_cap, bool mute_speaker,
-                           uint32_t& last_activity_ts, GotchiUIState& ui,
+                           bool live_barge_in, uint32_t& last_activity_ts, GotchiUIState& ui,
                            gotchi_voice::StateCb cb) {
     while (c.available() >= 2) {
         uint8_t h2[2];
@@ -288,7 +288,7 @@ static bool pollWsDownlink(WiFiClient& c, uint8_t* rx_buf, size_t rx_cap, bool m
         } else if (opcode == 0x01) {
             // Text JSON frame
             handleWsTextMessage(c, reinterpret_cast<const char*>(rx_buf), payload_len,
-                                mute_speaker, last_activity_ts, ui, cb);
+                                mute_speaker, live_barge_in, last_activity_ts, ui, cb);
         } else if (opcode == 0x02 && payload_len >= 2) {
             // Raw binary 24 kHz 16-bit PCM downlink frame
             ui.audio_bytes_received += (uint32_t)payload_len;
@@ -301,7 +301,7 @@ static bool pollWsDownlink(WiFiClient& c, uint8_t* rx_buf, size_t rx_cap, bool m
             if (!mute_speaker) {
                 gotchi_audio::playPcmChunk(reinterpret_cast<const int16_t*>(rx_buf),
                                            payload_len / sizeof(int16_t), 24000);
-                if (gotchi_audio::consumeLiveBargeInFlag()) {
+                if (live_barge_in && gotchi_audio::consumeLiveBargeInFlag()) {
                     const char* barge_json = "{\"type\":\"barge_in\"}";
                     sendWsFrame(c, 0x01, reinterpret_cast<const uint8_t*>(barge_json), strlen(barge_json));
                     ui.state = UiState::LISTENING;
@@ -464,8 +464,12 @@ SessionEndReason runSession(
 
     const float vad_thresh = (float)config.vad_rms_lsb / 32768.0f;
     const bool mute_speaker = (config.audio_out_mode == "discord_voice" || config.audio_out_mode == "ble_phone");
-    // Enable on-device NLMS Acoustic Echo Cancellation + 300ms full-duplex barge-in ONLY while Go Live is active (T6.1)
-    gotchi_audio::setLiveAecEnabled(true, vad_thresh > 0.002f ? vad_thresh * 1.5f : 0.008f);
+    // Enable on-device NLMS Acoustic Echo Cancellation + 300ms full-duplex barge-in ONLY when Go Live AND live_barge_in are active (T6.1)
+    if (config.live_barge_in) {
+        gotchi_audio::setLiveAecEnabled(true, vad_thresh > 0.002f ? vad_thresh * 1.5f : 0.008f);
+    } else {
+        gotchi_audio::setLiveAecEnabled(false);
+    }
 
     uint32_t last_speech_ts = millis();
     int16_t pcm_chunk[PCM_UPLINK_SAMPLES];
@@ -547,7 +551,7 @@ SessionEndReason runSession(
         }
 
         // 4. Downlink 24 kHz PCM / JSON event polling
-        if (!pollWsDownlink(ws_client, rx_buf, rx_cap, mute_speaker, last_speech_ts, ui, cb)) {
+        if (!pollWsDownlink(ws_client, rx_buf, rx_cap, mute_speaker, config.live_barge_in, last_speech_ts, ui, cb)) {
             gotchi_log::RingLogger.info("live", "Go Live WebSocket closed by server");
             exit_reason = SessionEndReason::NETWORK_ERROR;
             break;

@@ -455,6 +455,7 @@ def test_cpp_ble_transport_and_voice_client_invariants():
 
     audio_h = (REPO_ROOT / "firmware" / "include" / "audio_hal.h").read_text(encoding="utf-8")
     audio_cpp = (REPO_ROOT / "firmware" / "src" / "audio_hal.cpp").read_text(encoding="utf-8")
+    live_h = (REPO_ROOT / "firmware" / "include" / "live_client.h").read_text(encoding="utf-8")
 
     assert "BLEDevice::init" in ble_cpp
     assert "BLEDevice::setMTU((uint16_t)512)" in ble_cpp
@@ -463,8 +464,12 @@ def test_cpp_ble_transport_and_voice_client_invariants():
     assert "setLiveAecEnabled(bool enabled" in audio_h
     assert "processLiveAecSample(" in audio_cpp
     assert "BARGE_IN_HOLD_MS      = 300;" in audio_cpp
+    assert "bool live_barge_in = false;" in live_h
+    assert "if (config.live_barge_in)" in live_cpp
     assert "gotchi_audio::setLiveAecEnabled(true" in live_cpp
     assert "gotchi_audio::setLiveAecEnabled(false);" in live_cpp
-    assert "gotchi_audio::consumeLiveBargeInFlag()" in live_cpp
+    assert "if (live_barge_in && gotchi_audio::consumeLiveBargeInFlag())" in live_cpp
+    assert 'res["live_barge_in"] = cfg.live_barge_in;' in main_cpp
     assert '"invalid_node_id"' in main_cpp
     assert '#include "ble_transport.h"' in main_cpp
+
