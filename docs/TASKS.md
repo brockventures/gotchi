@@ -45,13 +45,14 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - [x] Add bearer token verification middleware (`backend/gateway_auth.py`, PR #9).
   - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16; pending live gateway deployment).
   - [ ] Roll out `image` / `image_0`..`image_4` and standalone image-only turn support to live Mirrormere host gateway (`services/mirrormere-voice-gateway/gateway.py`) (`Amos`, `Mike`).
-- [x] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
-  - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` so Mike and Ryan can receive voice replies straight in AirPods/Pixel Buds when desired (F8 / Issue #19).
-  - [x] NVS persistence, JSON-RPC validation, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation.
-- [x] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
-  - [x] Implement `firmware/include/live_client.h` and `firmware/src/live_client.cpp` streaming 16 kHz uplink / 24 kHz downlink with `live_mode` off by default (F19, F21 / Issue #20).
-  - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst injection, BTN_TOP single-press exit, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
-  - [x] Implement `backend/live_gateway.py` with pluggable upstream provider adapter, session auth, and unit tests (`tests/test_live_gateway.py`).
+- [~] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
+  - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` on device (NVS persistence, strict JSON-RPC validation returning `invalid_audio_out_mode`, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation) and reference gateway routing hook (`backend/voice_gateway.py`, F8 / Issue #19; firmware built, unflashed).
+  - [ ] Connect live Mirrormere host gateway / Discord voice & BLE forwarder sink (`Amos`, `Mike`, `Zero`).
+- [~] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
+  - [x] Implement RFC 6455 WebSocket client (`firmware/include/live_client.h`, `firmware/src/live_client.cpp`) streaming 16 kHz PCM uplink / 24 kHz PCM downlink over `/api/live/ws` with `live_mode` off by default (F19, F21 / Issue #20; firmware built, unflashed).
+  - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst base64 JSON injection, BTN_TOP single-press exit, HTTP/Serial RPC polling during active sessions, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
+  - [x] Implement `backend/live_gateway.py` with `BearerTokenVerifier` enforcement, malformed payload handling, pluggable upstream provider adapter, and unit tests (`tests/test_live_gateway.py`).
+  - [ ] Wire live Gemini Multimodal Live / OpenAI Realtime upstream provider on Mirrormere host and verify on physical hardware (`Zero`, `Amos`, `Mike`).
 
 ---
 

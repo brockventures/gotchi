@@ -30,6 +30,10 @@ void setPrerollEnabled(bool enabled);
 // Continuously sample PDM mic into the 500ms circular pre-roll ring buffer while idle.
 void pumpPreroll();
 
+// Non-blocking read of 16 kHz 16-bit mono PCM samples from PDM mic into `dst` (up to `max_samples`).
+// Computes normalized RMS [0.0, 1.0] in `*out_rms` if non-null. Returns sample count read.
+size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms = nullptr);
+
 // Start a push-to-talk / tap-to-talk recording session: copies the 500ms pre-roll
 // (if enabled and populated) into the start of the PSRAM WAV payload buffer.
 bool beginPttRecording();

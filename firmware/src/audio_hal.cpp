@@ -142,6 +142,25 @@ void pumpPreroll() {
     }
 }
 
+size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms) {
+    if (out_rms) *out_rms = 0.0f;
+    if (!dst || max_samples == 0) return 0;
+    size_t bytes_read = 0;
+    if (i2s_read(PORT_PDM_RX, dst, max_samples * sizeof(int16_t), &bytes_read, 0) != ESP_OK || bytes_read < sizeof(int16_t)) {
+        return 0;
+    }
+    size_t n = bytes_read / sizeof(int16_t);
+    if (out_rms && n > 0) {
+        double sum_sq = 0.0;
+        for (size_t i = 0; i < n; ++i) {
+            double v = static_cast<double>(dst[i]) / 32768.0;
+            sum_sq += v * v;
+        }
+        *out_rms = static_cast<float>(sqrt(sum_sq / static_cast<double>(n)));
+    }
+    return n;
+}
+
 bool beginPttRecording() {
     if (!s_wav_buf || !s_preroll_ring) return false;
     int16_t* dst = reinterpret_cast<int16_t*>(s_wav_buf + WAV_HEADER_SIZE);

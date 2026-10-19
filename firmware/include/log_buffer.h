@@ -2,13 +2,16 @@
 // ============================================================================
 // GOTCHI Circular Log Ring Buffer (F6 / T2.2)
 //   - Fixed-capacity circular ring buffer in RAM/PSRAM.
-//   - Diagnostic events: boot, wifi, http, audio, camera, epd, error.
+//   - Diagnostic events: boot, wifi, http, audio, camera, epd, live, error.
 //   - Unconditional credential scrubbing: bearer tokens, Wi-Fi PSKs, passwords.
-//   - Thread-safe / interrupt-safe logging hooks for dual-transport JSON-RPC.
+//   - FreeRTOS spinlock-protected (`portMUX_TYPE`) for dual-core safety.
+//   - Silent on Serial by default so USB-C CDC JSON-RPC replies are never corrupted.
 // ============================================================================
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 
 namespace gotchi_log {
 
@@ -45,24 +48,25 @@ public:
     // Records a log entry with timestamp millis() and automatic credential scrubbing.
     void log(Level level, const char* tag, const char* msg, const char* psk = nullptr, const char* token = nullptr);
 
-    void info(const char* tag, const char* msg)  { log(Level::INFO, tag, msg); }
-    void warn(const char* tag, const char* msg)  { log(Level::WARN, tag, msg); }
-    void error(const char* tag, const char* msg) { log(Level::ERROR, tag, msg); }
-    void debug(const char* tag, const char* msg) { log(Level::DEBUG, tag, msg); }
+    void info(const char* tag, const char* msg, const char* psk = nullptr, const char* token = nullptr)  { log(Level::INFO, tag, msg, psk, token); }
+    void warn(const char* tag, const char* msg, const char* psk = nullptr, const char* token = nullptr)  { log(Level::WARN, tag, msg, psk, token); }
+    void error(const char* tag, const char* msg, const char* psk = nullptr, const char* token = nullptr) { log(Level::ERROR, tag, msg, psk, token); }
+    void debug(const char* tag, const char* msg, const char* psk = nullptr, const char* token = nullptr) { log(Level::DEBUG, tag, msg, psk, token); }
 
     // Clears all entries from the ring buffer.
     void clear();
 
     // Returns total count of log events recorded since boot.
-    uint32_t totalLogged() const { return total_logged_; }
+    uint32_t totalLogged() const;
 
     // Returns current number of valid entries available in ring (<= capacity).
-    size_t count() const { return count_; }
+    size_t count() const;
 
     // Returns capacity of the ring buffer.
     size_t capacity() const { return capacity_; }
 
-    // Serializes up to `limit` latest log entries into an ArduinoJson JsonArray or JsonDocument.
+    // Serializes up to `limit` latest matching log entries (oldest to newest) into an ArduinoJson JsonArray.
+    // Applies `tag_filter` and `min_level` across the entire ring BEFORE slicing to `limit`.
     void dumpJson(JsonArray& array, size_t limit = 50, const char* tag_filter = nullptr, Level min_level = Level::DEBUG) const;
 
 private:
@@ -72,6 +76,7 @@ private:
     size_t count_ = 0; // number of elements currently stored
     uint32_t total_logged_ = 0;
     bool in_psram_ = false;
+    mutable portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
 };
 
 // Global singleton instance
