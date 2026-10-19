@@ -40,15 +40,15 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F9 | Camera snapshot on the bottom button | `README.md` | Camera driver built; snapshot flow not built |
 | F11 | Recording cap raised to the longest the hardware reasonably supports | Ryan, #gotchi 2026-10-19 09:09 | Not built (15 s today) |
 | F12 | Pre-roll runs on USB power by default, with a setting to keep it on at all times | Ryan, #gotchi 2026-10-19 09:09 | Not built |
-| F13 | Top button is for speaking only. While a reply plays, pressing it cancels or mutes the reply and returns to idle. It does not start a new recording | Ryan, #gotchi 2026-10-19 09:45 | Not built (PR #11 builds the older behaviour) |
-| F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. The bottom button no longer cancels a recording. A short press during a recording takes a snapshot and attaches it to the turn in progress (Ryan, #gotchi 2026-10-19 09:47) | Ryan, #gotchi 2026-10-19 09:15 and 09:45 | Not built (PR #11 builds the older behaviour) |
+| F13 | Top button is for speaking only. While a reply plays, pressing it cancels or mutes the reply and returns to idle. It does not start a new recording | Ryan, #gotchi 2026-10-19 09:45 | Built, unflashed (PR #12, the new button layout) |
+| F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. The bottom button no longer cancels a recording. A short press during a recording takes a snapshot and attaches it to the turn in progress (Ryan, #gotchi 2026-10-19 09:47) | Ryan, #gotchi 2026-10-19 09:15 and 09:45 | Built, unflashed (PR #12, the new button layout) |
 | F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Config exists (`voice_url`) |
 | F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
 | F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
 | F18 | BLE relay test: the same turn with the phone away from home Wi-Fi | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
-| F19 | "Go Live" mode: a continuous two-way voice session through a live multimodal model, entered on purpose and ending on a timeout. Configurable so it can be turned off | Ryan, #gotchi 2026-10-19 09:21 and 09:35 | Not built; not designed |
-| F20 | Long press on the bottom button takes a burst of five photos over 3 seconds and sends them together, for something moving or being turned between frames | Ryan, #gotchi 2026-10-19 09:45 | Not built; the gateway reads no image today |
-| F21 | Saying "Go Live" as a voice command starts a Live session | Ryan, #gotchi 2026-10-19 09:45 | Not built; depends on F19 |
+| F19 | "Go Live" mode: a continuous two-way voice session through a live multimodal model, entered on purpose and ending on a timeout. Configurable so it can be turned off | Ryan, #gotchi 2026-10-19 09:21 and 09:35 | Placeholder only: the session shows a screen and times out, and connects to nothing |
+| F20 | Long press on the bottom button takes a burst of five photos over 3 seconds and sends them together, for something moving or being turned between frames | Ryan, #gotchi 2026-10-19 09:45 | Photos are captured into memory (PR #12, the new button layout); the gateway reads no image today, so nothing is sent |
+| F21 | Saying "Go Live" as a voice command starts a Live session | Ryan, #gotchi 2026-10-19 09:45 | Phrase match built, unflashed; the session it starts is a placeholder |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed |
 
 ## 5. Limits of today's build
@@ -79,6 +79,7 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 - End: press the top button during a session, or 15 seconds of silence; the silence length is a setting (`live_silence_ms`).
 - The double-tap shares the top button with tap-to-talk. A second tap within a short interval (proposed 400 ms, a setting) of the first release counts as a double-tap and discards the clip the first tap started. A later second tap still means "send now".
 - "Go Live" is matched on the transcript, and only when it is the whole utterance, so a sentence that merely contains the words does not start a session.
+- Proposed by Zero, not confirmed: a bottom-button press (single photo or five-photo burst) during a Live session sends those frames into the live session too.
 - Google's Gemini Live API is the known option. It bills per token, so it needs Mike's explicit approval before any key is used (house rule, #admin 2026-10-12).
 - Whether Claude offers an equivalent: a web search on 2026-10-19 found no official Anthropic realtime audio endpoint; the sources were low-quality third-party posts. Check Anthropic's own API docs before relying on this.
 
