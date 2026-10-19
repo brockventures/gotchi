@@ -28,6 +28,7 @@
 #include "camera_hal.h"
 #include "onboarding_portal.h"
 #include "voice_client.h"
+#include "log_buffer.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -268,12 +269,18 @@ String handleJsonRpc(const String& jsonLine) {
         cfg.wifi_psk  = req["psk"]  | cfg.wifi_psk;
         saveConfig();
     } else if (cmd == "self_test") {
-        res["psram_ok"] = (psramFound() && ESP.getFreePsram() > 2000000);
-        res["epd_busy_clear"] = epdWaitBusy(500);
-        res["btn_top_state"] = digitalRead(PIN_BTN_TOP_PTT);
-        res["btn_bot_state"] = digitalRead(PIN_BTN_BOT_MOD);
+        bool psram_ok = (psramFound() && ESP.getFreePsram() > 2000000);
+        bool epd_ok = epdWaitBusy(500);
+        int top_btn = digitalRead(PIN_BTN_TOP_PTT);
+        int bot_btn = digitalRead(PIN_BTN_BOT_MOD);
         sensor_t* s = esp_camera_sensor_get();
-        res["camera_pid"] = s ? s->id.PID : 0;
+        uint16_t cam_pid = s ? s->id.PID : 0;
+        res["psram_ok"] = psram_ok;
+        res["epd_busy_clear"] = epd_ok;
+        res["btn_top_state"] = top_btn;
+        res["btn_bot_state"] = bot_btn;
+        res["camera_pid"] = cam_pid;
+        gotchi_log::RingLogger.info("self_test", psram_ok && epd_ok && cam_pid != 0 ? "Self-test passed" : "Self-test detected hardware faults");
     } else if (cmd == "factory_reset") {
         prefs.begin("gotchi", false);
         prefs.clear();
@@ -285,8 +292,35 @@ String handleJsonRpc(const String& jsonLine) {
         ui.state = uiStateFromString(req["state"] | "idle");
         if (req["status_text"].is<const char*>()) ui.status_text = req["status_text"].as<String>();
         bool force_full = req["force_full"] | false;
-        res["ok"] = panel.draw(ui, force_full);
+        bool ok = panel.draw(ui, force_full);
+        res["ok"] = ok;
         res["mode"] = panel.lastMode();
+        if (!ok) {
+            gotchi_log::RingLogger.error("epd", "E-paper draw timed out (BUSY stuck)");
+        }
+    } else if (cmd == "get_logs") {
+        size_t limit = 50;
+        if (req["limit"].is<size_t>()) limit = req["limit"].as<size_t>();
+        else if (req["lines"].is<size_t>()) limit = req["lines"].as<size_t>();
+
+        const char* tag_filter = req["tag"].is<const char*>() ? req["tag"].as<const char*>() : nullptr;
+        const char* lvl_str = req["level"].is<const char*>() ? req["level"].as<const char*>() : nullptr;
+        gotchi_log::Level min_lvl = gotchi_log::Level::DEBUG;
+        if (lvl_str) {
+            if (strcasecmp(lvl_str, "ERROR") == 0) min_lvl = gotchi_log::Level::ERROR;
+            else if (strcasecmp(lvl_str, "WARN") == 0 || strcasecmp(lvl_str, "WARNING") == 0) min_lvl = gotchi_log::Level::WARN;
+            else if (strcasecmp(lvl_str, "INFO") == 0) min_lvl = gotchi_log::Level::INFO;
+        }
+
+        res["total_logged"] = gotchi_log::RingLogger.totalLogged();
+        res["count"] = gotchi_log::RingLogger.count();
+        res["capacity"] = gotchi_log::RingLogger.capacity();
+        JsonArray logsArr = res["logs"].to<JsonArray>();
+        gotchi_log::RingLogger.dumpJson(logsArr, limit, tag_filter, min_lvl);
+    } else if (cmd == "clear_logs") {
+        gotchi_log::RingLogger.clear();
+        res["status"] = "cleared";
+        gotchi_log::RingLogger.info("sys", "Logs cleared via RPC");
     } else if (cmd == "reboot") {
         ESP.restart();
     } else {
@@ -410,6 +444,7 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
     ui.state = UiState::TRANSCRIBING;
     ui.status_text = is_standalone_snap ? "SENDING SNAP..." : "TRANSCRIBING...";
     panel.draw(ui);
+    gotchi_log::RingLogger.info("http", is_standalone_snap ? "Uploading standalone snapshot" : "Uploading voice turn WAV", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
 
     gotchi_voice::ImageAttachment img;
     const gotchi_voice::ImageAttachment* img_ptr = nullptr;
@@ -438,6 +473,13 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
         wav, cfg.voice_url, cfg.node_id, ui, onVoiceState, cfg.bearer_token,
         img_ptr, pollVoiceAbort, &result
     );
+    if (ok) {
+        gotchi_log::RingLogger.info("http", "Interact stream completed (done)");
+    } else if (result == gotchi_voice::InteractResult::ABORT_CANCEL) {
+        gotchi_log::RingLogger.info("audio", "Interact cancelled by user (BTN_TOP)");
+    } else {
+        gotchi_log::RingLogger.warn("http", "Interact stream terminated with error or disconnect");
+    }
 
     if (result == gotchi_voice::InteractResult::ABORT_CANCEL) {
         waitForButtonRelease(PIN_BTN_TOP_PTT);
@@ -502,6 +544,7 @@ static void handleCameraButtonIdle() {
         s_staged_jpeg_active = true;
         s_staged_jpeg_ts = millis();
         gotchi_audio::playChime("snap");
+        gotchi_log::RingLogger.info("camera", "Captured single snapshot JPEG");
         showIdle();
         return;
     }
@@ -536,6 +579,9 @@ static void handleCameraButtonIdle() {
     s_staged_jpeg_count = captured;
     s_staged_jpeg_active = true;
     s_staged_jpeg_ts = millis();
+    char bmsg[64];
+    snprintf(bmsg, sizeof(bmsg), "Captured burst of %u frames", (unsigned)captured);
+    gotchi_log::RingLogger.info("camera", bmsg);
     showIdle();
 }
 
@@ -569,6 +615,7 @@ static void runPttTurn() {
     ui.state = UiState::LISTENING;
     ui.status_text = s_staged_jpeg_active ? "LISTENING (+SNAP)..." : "LISTENING...";
     panel.draw(ui);
+    gotchi_log::RingLogger.info("audio", "PTT recording started");
 
     const float vad_thresh = (float)cfg.vad_rms_lsb / 32768.0f;
     const float min_rms    = (float)cfg.ptt_min_rms_lsb / 32768.0f;
@@ -653,6 +700,7 @@ static void runPttTurn() {
 
     gotchi_audio::stopAsyncPttTask();
     gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
+    gotchi_log::RingLogger.info("audio", "PTT recording finished");
 
     if (start_live_session) {
         s_enter_live_pending = true;
@@ -675,14 +723,19 @@ static void runPttTurn() {
 
 void setup() {
     Serial.begin(115200);
+    gotchi_log::RingLogger.init(true);
+    gotchi_log::RingLogger.info("boot", "GOTCHI V1 FW " GOTCHI_FW_VERSION " booting");
     pinMode(PIN_BTN_TOP_PTT, INPUT_PULLUP);
     pinMode(PIN_BTN_BOT_MOD, INPUT_PULLUP);
     pinMode(PIN_EPD_BUSY, INPUT);
 
     if (psramFound()) {
+        gotchi_log::RingLogger.info("boot", "PSRAM detected and initialized");
         for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
             s_staged_jpeg_bufs[i] = (uint8_t*)ps_malloc(MAX_STAGED_JPEG_BYTES);
         }
+    } else {
+        gotchi_log::RingLogger.warn("boot", "No PSRAM detected; operating in internal SRAM");
     }
     loadConfig();
 
@@ -690,12 +743,22 @@ void setup() {
     bool wifi_up = false;
     if (wifi_configured) {
         WiFi.mode(WIFI_STA);
+        char connect_msg[64];
+        snprintf(connect_msg, sizeof(connect_msg), "Connecting to SSID: %.32s", cfg.wifi_ssid.c_str());
+        gotchi_log::RingLogger.info("wifi", connect_msg, cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
         WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_psk.c_str());
         uint32_t t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_TIMEOUT_MS) {
             delay(100);
         }
         wifi_up = (WiFi.status() == WL_CONNECTED);
+        if (wifi_up) {
+            gotchi_log::RingLogger.info("wifi", "WiFi connected successfully", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
+        } else {
+            gotchi_log::RingLogger.warn("wifi", "WiFi connection timed out", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
+        }
+    } else {
+        gotchi_log::RingLogger.info("wifi", "WiFi unconfigured; starting AP setup portal");
     }
 
     gotchi_audio::init();
