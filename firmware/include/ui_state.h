@@ -34,6 +34,7 @@ struct GotchiUIState {
     String reply;
     String status_text = "READY (HOLD PTT)";
     String error_code;
+    String skin = "gotchi"; // "gotchi" | "zero"
     uint16_t thinking_seconds = 0;
     uint32_t audio_bytes_received = 0;
     uint32_t last_sample_rate = 24000;

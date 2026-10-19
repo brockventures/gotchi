@@ -10,6 +10,7 @@
 #include <string.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include "epd_panel.h"
+#include "zero_skin_bitmap.h"
 
 namespace {
 
@@ -165,7 +166,8 @@ void renderFrame(Adafruit_GFX& d, const GotchiUIState& ui, const char* refresh_m
     d.fillRect(0, 0, 200, 21, GxEPD_BLACK);
     d.setFont(&FreeSansBold9pt7b);
     char header[40];
-    snprintf(header, sizeof(header), "GOTCHI // %s", UI_STATE_UPPER[static_cast<uint8_t>(ui.state)]);
+    const bool is_zero = (ui.skin == "zero");
+    snprintf(header, sizeof(header), "%s // %s", is_zero ? "ZERO" : "GOTCHI", UI_STATE_UPPER[static_cast<uint8_t>(ui.state)]);
     printFitted(d, 5, 15, header, HEADER_TEXT_MAX_PX, GxEPD_WHITE, GxEPD_BLACK);
 
     d.setFont(nullptr);
@@ -177,6 +179,96 @@ void renderFrame(Adafruit_GFX& d, const GotchiUIState& ui, const char* refresh_m
     // Outer border, width 2.
     rectOutline(d, 0, 0, 199, 199, 2, GxEPD_BLACK);
 
+    if (is_zero) {
+        d.fillRect(2, 21, ZERO_PORTRAIT_W, ZERO_PORTRAIT_H, GxEPD_BLACK);
+        if (ui.state == UiState::IDLE) {
+            d.drawBitmap(2, 21, ZERO_IDLE_PORTRAIT_196x134, ZERO_PORTRAIT_W, ZERO_PORTRAIT_H, GxEPD_WHITE);
+        } else {
+            d.drawBitmap(2, 21, ZERO_BASE_PORTRAIT_196x134, ZERO_PORTRAIT_W, ZERO_PORTRAIT_H, GxEPD_WHITE);
+            switch (ui.state) {
+                case UiState::LISTENING:
+                    // Option A: Signature squircle eyes + cocked brow + closed smirk + dual-side listening lines
+                    arcStroke(d, 41, 79, 67, 91, 190, 350, 4, GxEPD_WHITE);
+                    arcStroke(d, 86, 72, 119, 86, 190, 350, 4, GxEPD_WHITE);
+                    d.fillRoundRect(46, 88, 18, 22, 6, GxEPD_WHITE);
+                    d.fillRoundRect(92, 85, 22, 23, 7, GxEPD_WHITE);
+                    arcStroke(d, 58, 131, 102, 147, 15, 155, 3, GxEPD_BLACK);
+                    arcStroke(d, 5, 68, 21, 116, 125, 235, 2, GxEPD_WHITE);
+                    arcStroke(d, 12, 76, 26, 108, 125, 235, 2, GxEPD_WHITE);
+                    arcStroke(d, 179, 68, 195, 116, -55, 55, 2, GxEPD_WHITE);
+                    arcStroke(d, 173, 76, 187, 108, -55, 55, 2, GxEPD_WHITE);
+                    break;
+                case UiState::SPEAKING: {
+                    // Option A: Signature squircle eyes + parted smirk + bottom-left EQ near mouth
+                    arcStroke(d, 39, 80, 65, 92, 190, 350, 4, GxEPD_WHITE);
+                    arcStroke(d, 84, 75, 117, 89, 190, 350, 4, GxEPD_WHITE);
+                    d.fillRoundRect(44, 89, 18, 20, 6, GxEPD_WHITE);
+                    d.fillRoundRect(90, 86, 22, 21, 7, GxEPD_WHITE);
+                    thickLine(d, 56, 141, 98, 136, 2, GxEPD_BLACK);
+                    thickLine(d, 58, 142, 96, 143, 2, GxEPD_BLACK);
+                    static const int eq_b[] = {6, 14, 10, 16, 8};
+                    for (int i = 0; i < 5; i++) {
+                        int bh = eq_b[i];
+                        d.fillRect(7 + i * 5, 139 - bh / 2, 3, bh, GxEPD_WHITE);
+                    }
+                    break;
+                }
+                case UiState::TRANSCRIBING: {
+                    thickLine(d, 40, 83, 65, 84, 3, GxEPD_WHITE);
+                    thickLine(d, 84, 80, 113, 81, 3, GxEPD_WHITE);
+                    d.fillRoundRect(40, 92, 27, 12, 3, GxEPD_WHITE);
+                    d.fillRoundRect(84, 89, 31, 12, 3, GxEPD_WHITE);
+                    d.fillRect(45, 95, 7, 6, GxEPD_BLACK);
+                    d.fillRect(90, 92, 8, 6, GxEPD_BLACK);
+                    static const int tb[] = {5, 11, 7, 13, 9, 11, 5};
+                    for (int i = 0; i < 7; i++) {
+                        int bh = tb[i];
+                        d.fillRect(58 + i * 6, 142 - bh / 2, 4, bh, GxEPD_BLACK);
+                    }
+                    break;
+                }
+                case UiState::THINKING:
+                    thickLine(d, 40, 84, 65, 83, 3, GxEPD_WHITE);
+                    arcStroke(d, 83, 71, 116, 89, 190, 350, 4, GxEPD_WHITE);
+                    d.fillRoundRect(42, 86, 18, 21, 6, GxEPD_WHITE);
+                    d.fillRoundRect(88, 83, 22, 22, 7, GxEPD_WHITE);
+                    thickLine(d, 65, 143, 93, 141, 3, GxEPD_BLACK);
+                    ringBoxCircle(d, 18, 52, 26, 60, 2, GxEPD_WHITE);
+                    ringBoxCircle(d, 8, 34, 22, 48, 2, GxEPD_WHITE);
+                    break;
+                case UiState::SYNTHESIZING:
+                    thickLine(d, 40, 81, 65, 85, 3, GxEPD_WHITE);
+                    thickLine(d, 85, 83, 113, 78, 3, GxEPD_WHITE);
+                    thickLine(d, 42, 97, 64, 97, 3, GxEPD_WHITE);
+                    thickLine(d, 53, 86, 53, 108, 3, GxEPD_WHITE);
+                    thickLine(d, 87, 94, 111, 94, 3, GxEPD_WHITE);
+                    thickLine(d, 99, 82, 99, 106, 3, GxEPD_WHITE);
+                    arcStroke(d, 58, 131, 102, 147, 15, 155, 3, GxEPD_BLACK);
+                    break;
+                case UiState::BUSY:
+                    thickLine(d, 40, 82, 65, 82, 3, GxEPD_WHITE);
+                    thickLine(d, 84, 79, 113, 79, 3, GxEPD_WHITE);
+                    d.fillTriangle(44, 89, 62, 89, 53, 98, GxEPD_WHITE);
+                    d.fillTriangle(44, 107, 62, 107, 53, 98, GxEPD_WHITE);
+                    d.fillTriangle(90, 86, 108, 86, 99, 95, GxEPD_WHITE);
+                    d.fillTriangle(90, 104, 108, 104, 99, 95, GxEPD_WHITE);
+                    thickLine(d, 64, 142, 94, 142, 3, GxEPD_BLACK);
+                    break;
+                case UiState::OFFLINE:
+                    arcStroke(d, 41, 90, 65, 105, 15, 165, 3, GxEPD_WHITE);
+                    arcStroke(d, 86, 87, 112, 102, 15, 165, 3, GxEPD_WHITE);
+                    thickLine(d, 70, 143, 88, 143, 2, GxEPD_BLACK);
+                    break;
+                default:
+                    thickLine(d, 43, 89, 63, 108, 4, GxEPD_WHITE);
+                    thickLine(d, 43, 108, 63, 89, 4, GxEPD_WHITE);
+                    thickLine(d, 88, 86, 110, 106, 4, GxEPD_WHITE);
+                    thickLine(d, 88, 106, 110, 86, 4, GxEPD_WHITE);
+                    thickLine(d, 60, 145, 98, 145, 3, GxEPD_BLACK);
+                    break;
+            }
+        }
+    } else {
     // Character body: rounded box with two ears.
     d.fillRoundRect(42, 30, 117, 105, 18, GxEPD_WHITE);
     roundRectOutline(d, 42, 30, 158, 134, 18, 3, GxEPD_BLACK);
@@ -247,6 +339,8 @@ void renderFrame(Adafruit_GFX& d, const GotchiUIState& ui, const char* refresh_m
             thickLine(d, 136, 60, 118, 78, 3, GxEPD_BLACK);
             arcStroke(d, 82, 98, 118, 118, 195, 345, 3, GxEPD_BLACK);
             break;
+    }
+
     }
 
     // Caption tray (y = 140..199): primary text, status line, SR/B info.
