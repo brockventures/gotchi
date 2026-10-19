@@ -1,0 +1,30 @@
+event: state
+data: {"state": "listening"}
+
+event: state
+data: {"state": "transcribing"}
+
+event: transcript
+data: {"transcript": "what is the weight of the device", "speaker": ""}
+
+event: status
+data: {"status": "brain: thinking"}
+
+event: thinking
+data: {"elapsed_seconds": 2}
+
+event: reply
+data: {"reply": "50 grams total.", "tts_engine": "kokoro"}
+
+event: state
+data: {"state": "synthesizing"}
+
+event: audio_chunk
+data: {"chunk_index": 0, "format": "pcm", "sample_rate": 24000, "channels": 1, "is_final": false, "data": "AAECAwQFBgcICQoLDA0ODw=="}
+
+event: audio_chunk
+data: {"chunk_index": 1, "format": "pcm", "sample_rate": 24000, "channels": 1, "is_final": true, "data": "EBESExQVFhcYGRobHB0eHw=="}
+
+event: done
+data: {"duration_ms": 1840}
+
