@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-GOTCHI V1 Printable Enclosure — Revision 5.2 (PSA / Snap-Rabbet Seam, Compact 59.6mm Y & Open Tolerance-Safe Bays)
+GOTCHI V1 Printable Enclosure — Revision 5.3 (PSA / Snap-Rabbet Seam, Compact 59.6mm Y & Open Tolerance-Safe Bays)
 ==================================================================================================================
 Outer envelope: 36.4 x 59.6 x 20.8 mm (44.5 cm^3 — 43.9% smaller volume than Rev 1's
 38.0 x 72.0 x 29.0 mm / 79.3 cm^3 box, 8.2 mm thinner in Z, 13.2 mm shorter in Y,
 with slim 4.2 mm side bezels around the 28.0 x 28.0 mm active screen window).
 
-Key Architectural & Packaging Improvements (Rev 5.2):
+Key Architectural & Packaging Improvements (Rev 5.3):
 1. Screwless Perimeter Rabbet / PSA Closure (Option B):
    - Eliminates all 4 corner M2 screw bosses and counterbores, reclaiming corner volume and
      completely eliminating boss overlaps with the camera and speaker.
@@ -130,19 +130,18 @@ P = dict(
     amp_z0=-15.2,
     amp_z1=-18.2,
 
-    spk_w=15.0,
-    spk_h=10.0,
-    spk_d=3.5,
-    spk_cx=0.0,     # Centered horizontally in lower bay (x = -7.5 to +7.5 mm)
-    spk_cy=-16.0,   # y = -21.0 to -11.0 mm (fires forward +Z into lower acoustic waveguide)
-    spk_z0=-15.7,
+    # Bottom-Edge Direct-Firing Speaker (-Y bottom wall, behind PH2.0 plug z=-4.1..-8.7 and below battery y=-18.2):
+    #   - 15.0 mm width along X (x = -7.5 to +7.5 mm)
+    #   - 3.5 mm thickness along Y (y = -25.4 to -21.9 mm, flush against bottom inner wall y = -25.5 mm)
+    #   - 10.0 mm height along Z (z = -9.2 to -19.2 mm, inside back shell behind PH2.0 plug)
+    spk_w=15.0,     # along X
+    spk_h=3.5,      # along Y (thickness into cavity from bottom wall)
+    spk_d=10.0,     # along Z (spans z = -9.2 to -19.2 mm)
+    spk_cx=0.0,
+    spk_cy=-23.65,  # y = -25.4 to -21.9 mm
+    spk_z0=-9.2,
     spk_z1=-19.2,
-    # Front-Chin Acoustic Waveguide & Forward Speaker Grille (+Z front bezel below screen window)
-    fspk_cx=0.0,
-    fspk_cy=-19.5,  # Centered in lower front chin bezel (below screen window y=-11.0 and glass y=-16.0)
-    waveguide_w=13.6,
-    waveguide_y0=-25.5,
-    waveguide_y1=-16.3,
+    spk_grille_cz=-14.2,
 
     # 6. Controls:
     # Both BTN_TOP (PTT/Voice) and BTN_BOT (Camera/Burst) stacked on the Upper-Right Side Wall (+X wall)
@@ -277,21 +276,7 @@ def build_front_shell():
     # Forward-firing Camera Lens Aperture (+Z front face, at x=cam_cx, y=cam_cy)
     cam_cut = make_cyl_z(p['cam_lens_d'] / 2.0, -3.0, 1.0, cx=p['cam_cx'], cy=p['cam_cy'])
 
-    # Front-Chin Acoustic Waveguide plenum on underside of lower front bezel (routes sound around bottom PCB edge to +Z)
-    wg_plenum = make_box(
-        p['fspk_cx'] - p['waveguide_w'] / 2.0, p['fspk_cx'] + p['waveguide_w'] / 2.0,
-        p['waveguide_y0'], p['waveguide_y1'],
-        -2.45, -0.9
-    )
-    # 5-slot Front-Firing Speaker Grille in lower front bezel (+Z face at y = fspk_cy)
-    front_grille_cuts = [wg_plenum]
-    for ix in range(-2, 3):
-        gx = p['fspk_cx'] + ix * 2.6
-        front_grille_cuts.append(
-            make_box(gx - 0.6, gx + 0.6, p['fspk_cy'] - 2.8, p['fspk_cy'] + 2.8, -2.5, 0.5)
-        )
-
-    part = trimesh.boolean.difference([part, rabbet_cut, win_cut, fpc_cut, cam_cut] + front_grille_cuts, engine='manifold')
+    part = trimesh.boolean.difference([part, rabbet_cut, win_cut, fpc_cut, cam_cut], engine='manifold')
     return part
 
 
@@ -346,7 +331,14 @@ def build_back_shell():
         p['sw_cz'] - p['sw_slot_z'] / 2.0, p['sw_cz'] + p['sw_slot_z'] / 2.0
     ))
 
-    # 7. Back wall behind speaker is now 100% solid & sealed (reflects acoustic energy forward into Front-Chin Waveguide)
+    # 7. Bottom-Edge 5-Slot Speaker Grille (-Y bottom wall at x = -5.2..+5.2 mm, z = -17.2..-11.2 mm)
+    for ix in range(-2, 3):
+        gx = p['spk_cx'] + ix * 2.6
+        cutters.append(make_box(
+            gx - 0.6, gx + 0.6,
+            p['y_min'] - 0.5, p['y_min'] + p['wall'] + 0.5,
+            p['spk_grille_cz'] - 3.0, p['spk_grille_cz'] + 3.0
+        ))
 
     part = trimesh.boolean.union([part] + adds, engine='manifold')
     part = trimesh.boolean.difference([part] + cutters, engine='manifold')
