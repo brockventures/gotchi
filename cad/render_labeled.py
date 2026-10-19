@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 render_labeled.py: True Per-Pixel Z-Buffer 3D Studio Renderer, 360° Turntable GIF Generator,
-and Labeled Orthographic CAD Renderer for GOTCHI V1 (Rev 4).
+and Labeled Orthographic CAD Renderer for GOTCHI V1 (Rev 5.3).
 
 Why True Per-Pixel Z-Buffer instead of matplotlib Poly3DCollection:
   - Matplotlib's Poly3DCollection uses a whole-triangle Painter's Algorithm (sorting triangles
@@ -281,7 +281,7 @@ def generate_top_labeled(p, out_path):
     f_title, f_sub, f_lbl, f_sm = load_fonts()
 
     d.rectangle([0, 0, W, 92], fill=(20, 26, 36))
-    d.text((32, 16), "GOTCHI V1 (Rev 4) — Front / Top-Down Internal Packaging View (36.4 x 60.2 mm)", fill=(242, 246, 250), font=f_title)
+    d.text((32, 16), "GOTCHI V1 (Rev 5.3) — Front / Top-Down Internal Packaging View (36.4 x 59.6 mm)", fill=(242, 246, 250), font=f_title)
     d.text((32, 54), "Forward-Firing Screen & Camera (+Z)  |  Upward-Pointing PDM Mic (+Y)  |  Non-Cubic Multi-Tier Stack (20.8 mm thin)", fill=(150, 185, 225), font=f_sub)
 
     cx_px, cy_px = W // 2, 705
@@ -310,9 +310,10 @@ def generate_top_labeled(p, out_path):
     sx0, sx1 = p["spk_cx"] - p["spk_w"]/2, p["spk_cx"] + p["spk_w"]/2
     sy0, sy1 = p["spk_cy"] - p["spk_h"]/2, p["spk_cy"] + p["spk_h"]/2
     d.rectangle(rect_mm(sx0, sy0, sx1, sy1), fill=(252, 202, 202), outline=(185, 28, 28), width=3)
+    # Draw 5-slot Bottom-Edge Speaker Grille (-Y bottom wall at y = y_min to y_min + wall)
     for ix in range(-2, 3):
         gx = p["spk_cx"] + ix * 2.6
-        d.rectangle(rect_mm(gx - 0.5, p["spk_cy"] - 3.0, gx + 0.5, p["spk_cy"] + 3.0), fill=(153, 27, 27))
+        d.rectangle(rect_mm(gx - 0.55, p["y_min"], gx + 0.55, p["y_min"] + p["wall"]), fill=(220, 38, 38), outline=(153, 27, 27), width=1)
 
     bx0, by0, bx1, by1 = rect_mm(-p["bat_w"]/2, p["bat_y0"], p["bat_w"]/2, p["bat_y1"])
     draw_dashed_rect(d, bx0, by0, bx1, by1, (217, 119, 6), width=4, dash=14)
@@ -345,21 +346,14 @@ def generate_top_labeled(p, out_path):
     lr = int((p["cam_lens_d"] / 2.0) * scale)
     d.ellipse([lcx - lr, lcy - lr, lcx + lr, lcy + lr], fill=(30, 41, 59), outline=(56, 189, 248), width=3)
 
-    d.rectangle(rect_mm(p["ptt_cx"] - 3.0, p["y_max"] - p["wall"] - 2.0, p["ptt_cx"] + 3.0, p["y_max"] + 0.8), fill=(253, 224, 71), outline=(161, 98, 7), width=2)
+    d.rectangle(rect_mm(iw - 2.0, p["ptt_cy"] - 3.0, hw + 0.8, p["ptt_cy"] + 3.0), fill=(253, 224, 71), outline=(161, 98, 7), width=2)
     d.rectangle(rect_mm(iw - 2.0, p["snap_cy"] - 3.0, hw + 0.8, p["snap_cy"] + 3.0), fill=(253, 224, 71), outline=(161, 98, 7), width=2)
     d.rectangle(rect_mm(-hw - 0.5, p["usb_cy"] - p["usb_h"]/2, -iw + 0.5, p["usb_cy"] + p["usb_h"]/2), fill=(56, 189, 248), outline=(2, 132, 199), width=2)
     d.rectangle(rect_mm(-hw - 0.5, p["sw_cy"] - p["sw_slot_y"]/2, -iw + 1.5, p["sw_cy"] + p["sw_slot_y"]/2), fill=(45, 212, 191), outline=(15, 118, 110), width=2)
 
-    for bx, by, r_b in [
-        (-p["boss_x_bot"], p["boss_y_bot"], 2.1),
-        (p["boss_x_bot"], p["boss_y_bot"], 2.1),
-        (-15.0, 30.8, 1.8),
-        (p["boss_x_top"], p["boss_y_top"], 2.1),
-    ]:
-        px, py = pt(bx, by)
-        pr = int(r_b * scale)
-        d.ellipse([px - pr, py - pr, px + pr, py + pr], fill=(203, 213, 225), outline=(51, 65, 85), width=2)
-        d.ellipse([px - 5, py - 5, px + 5, py + 5], fill=(71, 85, 105))
+    # Draw screwless perimeter PSA / Rabbet Lip bond zone around inner wall
+    rx0, ry0, rx1, ry1 = rect_mm(-iw - 0.5, p["y_min"] + p["wall"] - 0.5, iw + 0.5, p["y_max"] - p["wall"] + 0.5)
+    draw_dashed_rect(d, rx0, ry0, rx1, ry1, (16, 185, 129), width=2, dash=8)
 
     callouts = [
         ("UPWARD PDM Mic Port (+Y top wall, dia 2.2mm)", pt(p["mic_cx"], p["y_max"] - 0.5), "L", 145),
@@ -371,15 +365,15 @@ def generate_top_labeled(p, out_path):
         ("MAX98357A I2S Amp (z=-15.2..-18.2mm rear bay)", pt(p["amp_cx"] - 5.0, p["amp_cy"]), "L", 715),
         ("SPDT Slide Switch (-X left wall, y=-20.5mm)", pt(-hw, p["sw_cy"]), "L", 825),
         ("Display 8-Pin PH2.0 Header (in chin below battery)", pt(-6.0, -22.2), "L", 925),
-        ("Bottom M2 Screw Bosses (index through PCB holes)", pt(-p["boss_x_bot"], p["boss_y_bot"]), "L", 1025),
+        ("Screwless Perimeter Rabbet / PSA Bond Seam (0 bosses)", pt(-iw, -24.0), "L", 1025),
 
-        ("BTN_TOP: Push-to-Talk (+Y top-right shoulder)", pt(p["ptt_cx"], p["y_max"]), "R", 155),
-        ("Forward-Firing Camera (+Z lens aperture, dia 7.6mm)", pt(p["cam_cx"] + 2.0, p["cam_cy"]), "R", 265),
-        ("90-deg Curved Camera FPC Ribbon (exits Sense +X)", pt(5.2, 26.9), "R", 375),
-        ("BTN_BOT: Mode / Snap (+X right wall, y=+12.0mm)", pt(hw, p["snap_cy"]), "R", 495),
-        ("Waveshare 1.54\" V2 PCB (33x48mm, standoffs removed)", pt(16.5, -2.0), "R", 615),
-        ("Speaker 15x10x3.5mm + 5-Slot Rear Grille", pt(p["spk_cx"] + 4.0, p["spk_cy"]), "R", 785),
-        ("Bottom-Right M2 Boss (x=+14.0, y=-23.0mm)", pt(p["boss_x_bot"], p["boss_y_bot"]), "R", 945),
+        ("Forward-Firing Camera (+Z lens aperture, dia 7.6mm)", pt(p["cam_cx"] + 2.0, p["cam_cy"]), "R", 155),
+        ("90-deg Curved Camera FPC Ribbon (exits Sense +X)", pt(5.2, 26.9), "R", 265),
+        ("BTN_TOP: Voice / Live (+X upper-right side, y=+20.5mm)", pt(hw, p["ptt_cy"]), "R", 385),
+        ("BTN_BOT: Camera / Burst (+X upper-right side, y=+10.5mm)", pt(hw, p["snap_cy"]), "R", 505),
+        ("Waveshare 1.54\" V2 PCB (33x48mm, standoffs removed)", pt(16.5, -2.0), "R", 625),
+        ("Bottom-Edge Speaker (15x10x3.5mm) + -Y 5-Slot Grille", pt(p["spk_cx"] + 5.2, p["y_min"] + 0.7), "R", 785),
+        ("Open Tolerance-Safe Rear Bay (PSA / Foam Tape Mount)", pt(10.0, -16.0), "R", 945),
     ]
 
     for text, (ax, ay), side, ty in callouts:
@@ -399,15 +393,15 @@ def generate_top_labeled(p, out_path):
 
 
 def generate_side_labeled(p, out_path):
-    """Generate high-resolution annotated Side Cross-Section CAD Diagram (Y-Z plane, 60.2 x 20.8 mm)."""
+    """Generate high-resolution annotated Side Cross-Section CAD Diagram (Y-Z plane, 59.6 x 20.8 mm)."""
     W, H = 1920, 1200
     im = Image.new("RGB", (W, H), (248, 250, 252))
     d = ImageDraw.Draw(im)
     f_title, f_sub, f_lbl, f_sm = load_fonts()
 
     d.rectangle([0, 0, W, 92], fill=(20, 26, 36))
-    d.text((32, 16), "GOTCHI V1 (Rev 4) — Side Cross-Section View (60.2 mm Height x 20.8 mm Depth)", fill=(242, 246, 250), font=f_title)
-    d.text((32, 54), "Stepped Z-Stack: Battery Nestles Behind Flat Upper 40mm of Display PCB; Tall PH2.0 Plug Sits Below Battery", fill=(150, 185, 225), font=f_sub)
+    d.text((32, 16), "GOTCHI V1 (Rev 5.3) — Side Cross-Section View (59.6 mm Height x 20.8 mm Depth)", fill=(242, 246, 250), font=f_title)
+    d.text((32, 54), "Stepped Z-Stack: Dual Upper-Right Side Buttons (y=+20.5 & +10.5mm at z=-15.2mm) Behind Battery Plane", fill=(150, 185, 225), font=f_sub)
 
     cy_px = 910
     cz_px = 390
@@ -430,6 +424,8 @@ def generate_side_labeled(p, out_path):
     draw_dashed_rect(d, sx0, sy0, sx1, sy1, (220, 38, 38), width=2, dash=10)
 
     d.rectangle(rect_yz(p["win_cy"] - p["win_h"]/2, -p["front_wall"], p["win_cy"] + p["win_h"]/2, 0.0), fill=(248, 250, 252), outline=(56, 189, 248), width=2)
+    # Bottom-Edge Speaker Grille slot in -Y bottom wall (y = y_min..y_min+wall, z = -17.2..-11.2 mm, directly in front of speaker!)
+    d.rectangle(rect_yz(p["y_min"], p["spk_grille_cz"] - 3.0, p["y_min"] + p["wall"], p["spk_grille_cz"] + 3.0), fill=(239, 68, 68), outline=(153, 27, 27), width=2)
     d.rectangle(rect_yz(p["disp_fpc_y0"] - 0.2, -2.6, p["disp_fpc_y1"] + 0.2, -0.8), fill=(254, 243, 199), outline=(217, 119, 6), width=2)
 
     d.rectangle(rect_yz(p["disp_glass_y0"], p["disp_glass_z1"], p["disp_glass_y1"], p["disp_glass_z0"]), fill=(147, 197, 253), outline=(29, 78, 216), width=2)
@@ -442,6 +438,8 @@ def generate_side_labeled(p, out_path):
 
     d.rectangle(rect_yz(p["amp_cy"] - p["amp_h"]/2, p["amp_z1"], p["amp_cy"] + p["amp_h"]/2, p["amp_z0"]), fill=(216, 180, 254), outline=(107, 33, 168), width=3)
     d.rectangle(rect_yz(p["spk_cy"] - p["spk_h"]/2, p["spk_z1"], p["spk_cy"] + p["spk_h"]/2, p["spk_z0"]), fill=(252, 165, 165), outline=(185, 28, 28), width=3)
+    d.rectangle(rect_yz(p["ptt_cy"] - 3.0, p["ptt_cz"] - 3.0, p["ptt_cy"] + 3.0, p["ptt_cz"] + 0.8), fill=(253, 224, 71), outline=(161, 98, 7), width=2)
+    d.rectangle(rect_yz(p["snap_cy"] - 3.0, p["snap_cz"] - 3.0, p["snap_cy"] + 3.0, p["snap_cz"] + 0.8), fill=(253, 224, 71), outline=(161, 98, 7), width=2)
 
     d.rectangle(rect_yz(p["xiao_y0"], p["xiao_z1"], p["xiao_y0"] + 4.0, p["xiao_z0"]), fill=(187, 247, 208), outline=(21, 128, 61), width=2)
     d.rectangle(rect_yz(p["xiao_y0"] + 4.0, p["xiao_z1"], p["xiao_y1"], p["xiao_z0"]), fill=(134, 239, 172), outline=(22, 101, 52), width=2)
@@ -463,7 +461,7 @@ def generate_side_labeled(p, out_path):
         ("Front / Back Shell Split Plane (z = -8.8 mm)", pt(-27.2, -8.8), "L", 450),
         ("803040 LiPo Battery (z = -6.2..-14.2 mm, 8mm thick)", pt(-5.0, -10.2), "L", 550),
         ("MAX98357A Class-D Amp (z = -15.2..-18.2 mm)", pt(-2.0, -16.7), "L", 660),
-        ("15x10x3.5mm Speaker + Rear Acoustic Slots", pt(-19.0, -17.5), "L", 770),
+        ("Bottom-Edge Speaker + -Y 5-Slot Grille (behind PH2.0!)", pt(p["y_min"] + 0.7, p["spk_grille_cz"]), "L", 770),
         ("Rear Twin-Rail Undercut Groove (Clip / Kickstand Slot)", pt(9.0, -20.0), "L", 880),
 
         ("Forward-Firing Camera (+Z aperture in Top Crown)", pt(27.5, -1.5), "R", 160),
@@ -471,7 +469,7 @@ def generate_side_labeled(p, out_path):
         ("Display Rear ZIF Connector (z = -4.1..-5.9 mm)", pt(20.2, -5.0), "R", 370),
         ("XIAO ESP32S3 + Sense Stack (horizontal in Crown)", pt(26.5, -8.5), "R", 485),
         ("UPWARD PDM Microphone + Top Acoustic Port (+Y)", pt(31.8, -11.2), "R", 605),
-        ("Top-Shoulder Push-to-Talk Button (+Y at z = -13.2 mm)", pt(32.2, -13.2), "R", 725),
+        ("Dual Upper-Right Side Buttons (+X at y=+20.5 & +10.5, z=-15.2mm)", pt(p["ptt_cy"], p["ptt_cz"]), "R", 725),
         ("XIAO Support Shelf (y = +21.9..+22.7 mm)", pt(22.3, -15.5), "R", 845),
     ]
 
@@ -519,8 +517,8 @@ def generate_turntable_gif(assembled_scene, open_scene, out_gif_path, n_frames=3
         canvas.paste(im_right, (460, 76))
         d = ImageDraw.Draw(canvas)
         d.line([(460, 76), (460, 576)], fill=(45, 55, 72), width=2)
-        d.text((22, 12), "GOTCHI V1 (Rev 4) — 36.4 x 60.2 x 20.8 mm (Per-Pixel Z-Buffer 360° Turntable)", fill=(242, 246, 250), font=f_sub)
-        d.text((22, 42), "Left: Assembled Case (+Z Screen & Cam, +Y Upward Mic)   |   Right: Internal Non-Cubic 3D Stack", fill=(148, 182, 224), font=f_sm)
+        d.text((22, 12), "GOTCHI V1 (Rev 5.3) — 36.4 x 59.6 x 20.8 mm (Per-Pixel Z-Buffer 360° Turntable)", fill=(242, 246, 250), font=f_sub)
+        d.text((22, 42), "Left: Assembled Case (Dual Upper-Right Side Buttons)   |   Right: Internal Non-Cubic 3D Stack", fill=(148, 182, 224), font=f_sm)
 
         # Quantize with adaptive palette for clean GIF playback
         frames.append(canvas.quantize(colors=256, method=Image.Quantize.MEDIANCUT))
@@ -552,8 +550,8 @@ def main():
     comps = bc.build_internal_3d_components()
 
     cap_ptt = cap.copy()
-    cap_ptt.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2.0, [1, 0, 0]))
-    cap_ptt.apply_translation([p["ptt_cx"], p["y_max"] - 2.2, p["ptt_cz"]])
+    cap_ptt.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0]))
+    cap_ptt.apply_translation([p["W_out"] / 2.0 - 2.2, p["ptt_cy"], p["ptt_cz"]])
 
     cap_snap = cap.copy()
     cap_snap.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0]))
@@ -568,6 +566,9 @@ def main():
         "camera_forward_flex": (0.96, 0.44, 0.16),
         "speaker_1510": (0.90, 0.26, 0.26),
         "amp_max98357a": (0.66, 0.34, 0.90),
+        "btn_top_tactile": (0.95, 0.78, 0.15),
+        "btn_bot_tactile": (0.95, 0.78, 0.15),
+        "spdt_slide_switch": (0.18, 0.83, 0.75),
     }
 
     assembled_scene = [
@@ -595,49 +596,49 @@ def main():
         (translate_mesh(comps["battery_803040"], dz=-2.0), comp_styles["battery_803040"]),
         (translate_mesh(comps["amp_max98357a"], dz=-9.0), comp_styles["amp_max98357a"]),
         (translate_mesh(comps["speaker_1510"], dz=-9.0), comp_styles["speaker_1510"]),
-        (translate_mesh(cap_ptt, dy=8.0, dz=-16.0), (0.95, 0.78, 0.15)),
+        (translate_mesh(cap_ptt, dx=8.0, dz=-16.0), (0.95, 0.78, 0.15)),
         (translate_mesh(cap_snap, dx=8.0, dz=-16.0), (0.95, 0.78, 0.15)),
         (translate_mesh(back, dz=-18.0), shell_back_rgb),
     ]
 
-    # 1. front_iso.png
-    im = rasterize_scene_zbuffer(assembled_scene, elev_deg=24, azim_deg=-35, width=900, height=820, ssaa=2)
+    # 1. front_iso.png (azim_deg=35 shows +Z front face and +X right-side buttons)
+    im = rasterize_scene_zbuffer(assembled_scene, elev_deg=24, azim_deg=35, width=900, height=820, ssaa=2)
     save_titled_render(
         im, os.path.join(ren_dir, "front_iso.png"),
-        "GOTCHI V1 (Rev 4) — Front Isometric",
-        "36.4 x 60.2 x 20.8 mm | Forward Screen & Camera (+Z) | Upward PDM Mic (+Y) | Left USB-C (-X)"
+        "GOTCHI V1 (Rev 5.3) — Front-Right Isometric",
+        "36.4 x 59.6 x 20.8 mm | Dual Upper-Right Side Buttons (+X) | Upward PDM Mic (+Y)"
     )
 
     # 2. back_iso.png
     im = rasterize_scene_zbuffer(assembled_scene, elev_deg=24, azim_deg=145, width=900, height=820, ssaa=2)
     save_titled_render(
         im, os.path.join(ren_dir, "back_iso.png"),
-        "GOTCHI V1 (Rev 4) — Back Isometric",
-        "Flush Twin-Rail Slide-In Groove (Clip / Kickstand) | 4x M2 Corners | 5-Slot Speaker Grille"
+        "GOTCHI V1 (Rev 5.3) — Back Isometric",
+        "Flush Twin-Rail Slide-In Groove (Clip / Kickstand) | Screwless PSA Seam | 100% Sealed Back Wall"
     )
 
     # 3. front_straight.png
     im = rasterize_scene_zbuffer(assembled_scene, elev_deg=0, azim_deg=0, width=900, height=820, ssaa=2)
     save_titled_render(
         im, os.path.join(ren_dir, "front_straight.png"),
-        "GOTCHI V1 (Rev 4) — Front Orthographic",
-        "Slim 4.2 mm Side Bezels | 28x28 mm E-Paper Window | Upper-Right Forward Camera Aperture"
+        "GOTCHI V1 (Rev 5.3) — Front Orthographic",
+        "Slim 4.2 mm Side Bezels | 28x28 mm E-Paper Window | Bottom-Edge 5-Slot Speaker Grille (-Y)"
     )
 
     # 4. back_layout.png
-    im = rasterize_scene_zbuffer(open_scene, elev_deg=26, azim_deg=-35, width=900, height=820, ssaa=2)
+    im = rasterize_scene_zbuffer(open_scene, elev_deg=26, azim_deg=35, width=900, height=820, ssaa=2)
     save_titled_render(
         im, os.path.join(ren_dir, "back_layout.png"),
-        "GOTCHI V1 (Rev 4) — Internal 3D Multi-Tier Packaging",
-        "Blue: Display+PH2.0 | Orange: Forward Cam+90° FPC | Green: Horizontal XIAO+Upward Mic | Gold: 803040 LiPo"
+        "GOTCHI V1 (Rev 5.3) — Internal 3D Multi-Tier Packaging",
+        "Yellow: Dual Upper-Right Side Buttons (+X) | Blue: Display | Green: XIAO+Mic | Gold: 803040 LiPo"
     )
 
     # 5. exploded.png
-    im = rasterize_scene_zbuffer(exploded_scene, elev_deg=22, azim_deg=-38, width=900, height=820, ssaa=2)
+    im = rasterize_scene_zbuffer(exploded_scene, elev_deg=22, azim_deg=38, width=900, height=820, ssaa=2)
     save_titled_render(
         im, os.path.join(ren_dir, "exploded.png"),
-        "GOTCHI V1 (Rev 4) — Exploded Multi-Tier Stack",
-        "Front Bezel -> Display + Forward Camera -> XIAO + 803040 Battery -> Amp + Speaker -> Back Shell"
+        "GOTCHI V1 (Rev 5.3) — Exploded Multi-Tier Stack",
+        "Front Bezel -> Display + Forward Camera -> XIAO + 803040 Battery -> Amp + Speaker + Side Buttons -> Back Shell"
     )
 
     # 6. top_labeled.png & 7. side_labeled.png

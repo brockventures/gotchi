@@ -16,9 +16,9 @@ The **Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / Amazon `B0728BJTZC`)** in
 | :--- | :--- | :--- | :--- | :--- |
 | **`D0`** | `GPIO 1` | Yes (`RTC_GPIO1`) | **ePaper `RST`** (Reset) | Waveshare 8-pin PH2.0 Harness **`RST`** |
 | **`D1`** | `GPIO 2` | Yes (`RTC_GPIO2`) | **ePaper `CS`** (SPI Chip Select) | Waveshare 8-pin PH2.0 Harness **`CS`** |
-| **`D2`** | `GPIO 3` | **Yes (`RTC_GPIO3`)** | **BTN_TOP (Push-to-Talk & Wake)** | Momentary `6x6x5mm` switch to `GND` (`INPUT_PULLUP`) |
+| **`D2`** | `GPIO 3` | **Yes (`RTC_GPIO3` / `ADC1_CH2`)** | **BTN_TOP (PTT & Wake) + `5V VBUS` Sense** | Momentary `6x6x5mm` switch to `GND` + `220 kΩ / 220 kΩ` divider from `5V` (`VBUS`) to `GND` |
 | **`D3`** | `GPIO 4` | Yes (`RTC_GPIO4`) | **ePaper `DC`** (Data/Command) | Waveshare 8-pin PH2.0 Harness **`DC`** |
-| **`D4`** | `GPIO 5` | **Yes (`RTC_GPIO5`)** | **BTN_BOT (Secondary / Mode / Snap)** | Momentary `6x6x5mm` switch to `GND` (`INPUT_PULLUP`); reclaimable for V2 wake hardware |
+| **`D4`** | `GPIO 5` | **Yes (`RTC_GPIO5` / `ADC1_CH4`)** | **BTN_BOT (Camera Snap) + `VBAT` Fuel Gauge** | Momentary `6x6x5mm` switch to `GND` + `220 kΩ / 220 kΩ` divider from switched `BAT+` to `GND` |
 | **`D5`** | `GPIO 6` | Yes (`RTC_GPIO6`) | **ePaper `BUSY`** *(+ V2 `I2C_SCL`)* | Waveshare 8-pin PH2.0 Harness **`BUSY`** |
 | **`D6`** | `GPIO 43` | No | **I2S `LRCLK`** (Audio Word Select) | Wire to `MAX98357A` **`LRC`** pin *(UART0 TX at reset)* |
 | **`D7`** | `GPIO 44` | No | **I2S `BCLK`** (Audio Bit Clock) | Wire to `MAX98357A` **`BCLK`** pin *(UART0 RX — silent at reset)* |
@@ -26,8 +26,8 @@ The **Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / Amazon `B0728BJTZC`)** in
 | **`D9`** | `GPIO 8` | No | **I2S `DIN`** (Audio Data Out) | Wire to `MAX98357A` **`DIN`** pin *(MISO unused by ePaper)* |
 | **`D10`** | `GPIO 9` | No | **ePaper `MOSI`** (SPI Data Out) | Waveshare 8-pin PH2.0 Harness **`DIN`** |
 | **`3V3`** | — | — | **3.3V Regulated Rail** | Waveshare 8-pin PH2.0 Harness **`VCC`** (+ optional `MAX98357A VIN`) |
-| **`5V`** | — | — | **5V / VBUS Rail** | Optional `MAX98357A VIN` |
-| **`GND`** | — | — | **Common Ground** | Waveshare **`GND`**, `MAX98357A` **`GND`**, `BTN_TOP`, `BTN_BOT` |
+| **`5V`** | — | — | **5V / VBUS Rail** | `MAX98357A VIN` + `220 kΩ` wall-brick sense resistor to `D2` |
+| **`GND`** | — | — | **Common Ground** | Waveshare **`GND`**, `MAX98357A` **`GND`**, `BTN_TOP`, `BTN_BOT`, and divider ground legs |
 | **`GPIO 0`** | `GPIO 0` | Yes (`RTC_GPIO0`) | **Reserved (`BOOT` Strapping Pad)** | Leave unattached in V1 so holding `BTN_BOT` at power-on never traps the MCU in ROM download mode |
 | *Internal* | `GPIO 41` | — | **PDM Mic `CLK`** | Internal via Sense B2B Header |
 | *Internal* | `GPIO 42` | — | **PDM Mic `DATA`** | Internal via Sense B2B Header |
@@ -54,7 +54,7 @@ The **Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / Amazon `B0728BJTZC`)** in
 2. Flip the main **XIAO ESP32-S3** board over to locate the two rectangular solder pads labeled **`BAT+`** and **`BAT-`** on the bottom surface, and tin both pads.
 3. Solder the **black (`-`) battery lead** directly to the XIAO **`BAT-`** pad.
 4. Solder the **red (`+`) battery lead** to the **center pin (common)** of the **Mini SPDT 3-Pin Slide Switch (`B0FNK8B1YV`)**.
-5. Solder a short 28–30 AWG red wire from **one outer pin** of the slide switch to the XIAO **`BAT+`** pad. (Sliding the switch toward that outer pin turns the unit ON and enables USB-C LiPo charging; sliding it away completely disconnects the battery).
+5. Solder a short 30 AWG red wire from **one outer pin** of the slide switch to the XIAO **`BAT+`** pad. (Sliding the switch toward that outer pin turns the unit ON and enables USB-C LiPo charging; sliding it away completely disconnects the battery).
 6. Apply a strip of **Kapton tape** over the bottom of the XIAO board to insulate the solder pads.
 
 ### Step 3: Wiring the Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / `B0728BJTZC`)
@@ -82,9 +82,21 @@ Wire the **`MAX98357A`** breakout to the XIAO with 30 AWG silicone wire:
 1. **Top Button (`BTN_TOP` — Push-to-Talk & Deep-Sleep Wake):**
    - Wire Pin 1 of the tactile switch to XIAO **`D2` (`GPIO 3` / `RTC_GPIO3`)**.
    - Wire Pin 2 of the tactile switch to **`GND`**.
-2. **Bottom Button (`BTN_BOT` — Mode / Camera Snap / Cancel):**
+2. **Bottom Button (`BTN_BOT` — Camera Snap / 5-Frame Burst):**
    - Wire Pin 1 of the tactile switch directly to XIAO **`D4` (`GPIO 5` / `RTC_GPIO5`)**. *(Never wire to `GPIO 0`).*
    - Wire Pin 2 of the tactile switch to **`GND`**.
+
+### Step 6: Wiring the V1 Battery Fuel Gauge (`D4`) & Wall-Brick Power Sense (`D2`) Dividers (4x `220 kΩ` Resistors)
+Because the XIAO ESP32S3 does not route `VBUS` (`5V`) or `BAT+` internally to any GPIO, V1 uses **4x `220 kΩ` (`1/4W 1%`) resistors** (all four are the exact same `220 kΩ` value) sleeved in heat-shrink tubing to multiplex battery voltage and wall-brick detection onto `D4` and `D2`:
+
+1. **LiPo Battery Fuel Gauge Divider on `D4` (`GPIO 5` / `ADC1_CH4`):**
+   - Solder one **`220 kΩ` resistor** between the switched **`BAT+` outer terminal** on the SPDT power switch and XIAO **`D4`**.
+   - Solder a second **`220 kΩ` resistor** between XIAO **`D4`** and **`GND`** (you can solder it directly across the two legs of `BTN_BOT`).
+   - *How it works:* When `BTN_BOT` is not pressed, `D4` sits at `V_BAT / 2` (`1.65V–2.10V` for a `3.30V–4.20V` LiPo, drawing `<9 µA` when switched ON and `0 µA` when switched OFF). Firmware samples `analogReadMilliVolts(D4)` to compute `0–100%` battery state-of-charge, while pressing `BTN_BOT` pulls `D4` to `0.0V` (`< 400 mV` threshold).
+2. **Wall-Brick (`5V VBUS`) Sense Divider on `D2` (`GPIO 3` / `ADC1_CH2`):**
+   - Solder a third **`220 kΩ` resistor** between XIAO **`5V`** (`VBUS`) and XIAO **`D2`**.
+   - Solder the fourth **`220 kΩ` resistor** between XIAO **`D2`** and **`GND`** (directly across the two legs of `BTN_TOP`).
+   - *How it works:* During normal operation, `D2`'s internal pull-up keeps the pin above `2.5V` (`HIGH`) so `BTN_TOP` digital reads and `ext0` deep-sleep wake work normally. Once per second when idle, firmware briefly samples the high-Z `D2` divider (`~2500 mV` when a 5V USB-C wall brick or computer is plugged in vs. `< 400 mV` on battery), enabling `preroll_mode: "usb_host"` and the on-screen charging indicator (`+`) even on dumb wall chargers without USB data lines. *(Note: Firmware auto-detects at boot whether the external dividers are installed and falls back cleanly to internal `INPUT_PULLUP` if testing on a bare board before soldering the resistors).*
 
 ---
 

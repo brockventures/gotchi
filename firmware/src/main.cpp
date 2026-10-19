@@ -1,12 +1,16 @@
 // ============================================================================
 // GOTCHI V1 Edge Firmware — Seeed Studio XIAO ESP32S3 Sense (8MB Flash / 8MB PSRAM)
-// Implements Epic 2 (T2.1-T2.7) & Epic 3 (T3.1):
-//   - Dual-transport JSON-RPC (`USB-C Serial 115200` + `POST /api/rpc`)
-//   - 16 kHz 16-bit mono PDM Mic capture into 8MB PSRAM circular pre-roll + WAV wrapper
-//   - `POST /api/voice/interact` multipart WAV client + streaming SSE parser
-//   - 24 kHz base64 PCM `audio_chunk` decode to MAX98357A I2S TX (`BCLK=GPIO44`)
-//   - Waveshare 1.54" V2 (`SSD1681`) 200x200 e-paper sprite & partial/full refresh manager
-//   - QR Soft-AP Captive Portal onboarding (`192.168.4.1`)
+// Implements Epic 2 (T2.1-T2.7), Epic 3 (T3.1-T3.2) & PRD F13/F14/F19/F20/F21:
+//   - Dual-transport JSON-RPC (`USB-C Serial 115200` + `POST /api/rpc` w/ Bearer auth)
+//   - Strict separation: Top button (`BTN_TOP`) = speaking only; Bottom (`BTN_BOT`) = camera only
+//   - Hybrid / Tap-to-Talk / Hold-to-Talk input with 120s PSRAM WAV cap & VAD silence stop
+//   - Configurable 500ms circular pre-roll (`usb_host`/`usb_only` | `always` | `off`)
+//   - Reply Cancel/Mute on `BTN_TOP` within 42ms (barge-in dropped per F13)
+//   - Camera snapshot on `BTN_BOT`: short press on release stages 1 photo (or attaches to
+//     in-progress recording per F14); long press (>=700ms) captures 5-photo burst over 3s (F20)
+//   - Go Live mode (`live_mode`, default false): entered via `BTN_TOP` double-tap within
+//     `double_tap_ms` (400ms) or whole-utterance `"go live"` transcript (F19/F21); ends on
+//     `BTN_TOP` press or `live_silence_ms` (15s) silence
 // ============================================================================
 
 #include <Arduino.h>
@@ -24,22 +28,41 @@
 #include "camera_hal.h"
 #include "onboarding_portal.h"
 #include "voice_client.h"
+#include "log_buffer.h"
+#include "live_client.h"
+#include "ble_framing.h"
+#include "ble_transport.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
 
 struct GotchiConfig {
     String hub_url = "http://mirrormere.local:8080";
-    // Mirrormere voice gateway. Host is a placeholder: the bench LAN address is
-    // set per device with set_config (AGENTS.md §4: no RFC1918 IPs in tracked files).
+    // Voice gateway URL (Mirrormere or Zero gateway; set per device via set_config).
     String voice_url = "http://mirrormere.local:9098/api/voice/interact";
+    String live_url = "";             // Optional dedicated Go Live WS URL (falls back to voice_url when empty)
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"
+    String input_mode = "hybrid";     // "hybrid" | "tap" | "hold"
+    String preroll_mode = "usb_host"; // "usb_host" (or "usb_only") | "always" | "off"
     String audio_out_mode = "speaker";// "speaker" | "discord_voice" | "ble_phone"
     String skin = "zero";             // "zero" | "gotchi"
     String bearer_token = "";         // Per-device Bearer token for off-LAN / tunnel auth (T3.2)
     String wifi_ssid = "";
     String wifi_psk = "";
+    uint32_t ptt_max_ms = 120000;     // 120s max recording cap in 8MB PSRAM (3.84 MB)
+    uint32_t ptt_min_ms = 250;        // 250ms minimum floor
+    uint32_t ptt_min_rms_lsb = 50;    // 50 LSB minimum RMS energy
+    uint32_t tap_latch_ms = 500;      // Press released < 500ms latches into hands-free Tap-to-Talk
+    uint32_t double_tap_ms = 400;     // Second BTN_TOP tap within 400ms of first release -> Go Live (F19)
+    uint32_t vad_silence_ms = 1500;   // 1.5s trailing silence ends Tap-to-Talk turn
+    uint32_t vad_rms_lsb = 150;       // 150 LSB speech detection threshold for VAD silence timer
+    uint32_t snap_window_ms = 3000;   // 3.0s debounce window to attach snapshot to next voice prompt
+    uint32_t cam_long_press_ms = 700; // Holding BTN_BOT >= 700ms triggers 5-photo burst over 3s (F20)
+    bool     live_mode = false;       // F19: Go Live mode off by default (configurable via set_config)
+    bool     live_barge_in = false;   // T6.1: Go Live full-duplex AEC + speech barge-in off by default until bench delay calibration
+    uint32_t live_silence_ms = 15000; // F19: 15s silence ends Go Live session
+    String default_image_prompt = "Describe what you see in this snapshot briefly.";
 } cfg;
 
 static bool constantTimeEquals(const String& a, const String& b) {
@@ -51,48 +74,217 @@ static bool constantTimeEquals(const String& a, const String& b) {
     return diff == 0;
 }
 
-// PSRAM Audio Buffers (16 kHz 16-bit mono recording + 500ms circular pre-roll)
-static constexpr size_t SAMPLE_RATE_REC = 16000;
-static constexpr size_t PREROLL_BYTES   = SAMPLE_RATE_REC * sizeof(int16_t) / 2; // 16 KB (500ms)
-static constexpr size_t MAX_WAV_BYTES   = 44 + SAMPLE_RATE_REC * sizeof(int16_t) * 15; // 15s cap
-static uint8_t* psram_wav_buf = nullptr;
-
-// Wi-Fi join at boot and push-to-talk timing.
+static constexpr uint32_t SAMPLE_RATE_REC = 16000;
 static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
-static constexpr uint32_t PTT_DEBOUNCE_MS = 30;
-static constexpr uint32_t PTT_MAX_MS      = 15000;
-static constexpr float    PTT_MIN_RMS     = 50.0f / 32768.0f;  // finishPttRecording() returns RMS normalized to [0,1]
-static constexpr size_t   PTT_MIN_BYTES   = 16000;
+static constexpr uint32_t BTN_DEBOUNCE_MS = 30;
+static constexpr uint32_t VAD_INITIAL_TIMEOUT_MS = 5000; // Max wait for speech to start in tap mode
+static constexpr size_t   MAX_STAGED_JPEG_BYTES = 128 * 1024;
+static constexpr size_t   BURST_FRAME_COUNT = 5;
+static constexpr uint32_t BURST_TOTAL_DURATION_MS = 3000; // 5 frames over 3.0s (0, 750, 1500, 2250, 3000ms)
+
+// Staged camera snapshot / 5-frame burst state (BTN_BOT, allocated in PSRAM)
+static uint8_t* s_staged_jpeg_bufs[BURST_FRAME_COUNT] = {nullptr};
+static size_t   s_staged_jpeg_lens[BURST_FRAME_COUNT] = {0};
+static size_t   s_staged_jpeg_count = 0;
+static bool     s_staged_jpeg_active = false;
+static uint32_t s_staged_jpeg_ts = 0;
+static bool     s_enter_live_pending = false;
 
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
 
+// ============================================================================
+// V1 Power & Battery Telemetry (4x 220k Multiplexed ADC Dividers on D4 & D2)
+//   - D4 (PIN_BTN_BOT_MOD / GPIO5 / ADC1_CH4): 220k to switched BAT+, 220k to GND
+//   - D2 (PIN_BTN_TOP_PTT / GPIO3 / ADC1_CH2): 220k to 5V (VBUS), 220k to GND
+// Normal operation keeps INPUT_PULLUP active on both pins (>2.74V CMOS HIGH) so
+// digitalRead() and ext0 deep-sleep wake work natively. Once per second when idle,
+// a 250us pulsed high-Z ADC read measures VBAT/2 on D4 and VBUS/2 on D2.
+// ============================================================================
+static constexpr uint32_t POWER_TELEMETRY_INTERVAL_MS = 1000;
+static uint32_t s_last_power_sample_ts = 0;
+static uint16_t s_battery_mv = 0;
+static int8_t   s_battery_pct = -1;
+static bool     s_wall_brick_power = false;
+
+// Piecewise-linear 1S LiPo state-of-charge curve (3300 mV = 0%, 4150 mV+ = 100%).
+static int8_t lipoMvToPercent(uint16_t mv) {
+    if (mv == 0) return -1;
+    if (mv <= 3300) return 0;
+    if (mv >= 4150) return 100;
+    if (mv < 3500)  return (int8_t)(((uint32_t)(mv - 3300) * 10) / 200);          // 3.30V..3.50V -> 0..10%
+    if (mv < 3680)  return (int8_t)(10 + ((uint32_t)(mv - 3500) * 20) / 180);     // 3.50V..3.68V -> 10..30%
+    if (mv < 3800)  return (int8_t)(30 + ((uint32_t)(mv - 3680) * 30) / 120);     // 3.68V..3.80V -> 30..60%
+    if (mv < 3950)  return (int8_t)(60 + ((uint32_t)(mv - 3800) * 25) / 150);     // 3.80V..3.95V -> 60..85%
+    return (int8_t)(85 + ((uint32_t)(mv - 3950) * 15) / 200);                     // 3.95V..4.15V -> 85..100%
+}
+
+static bool isUsbDataHostConnected() {
+    return (bool)Serial;
+}
+
+static void samplePowerAndBatteryTelemetry(bool force = false) {
+    uint32_t now = millis();
+    if (!force && s_last_power_sample_ts != 0 && (now - s_last_power_sample_ts < POWER_TELEMETRY_INTERVAL_MS)) {
+        return;
+    }
+    // Only sample when neither tactile button is actively held LOW.
+    if (digitalRead(PIN_BTN_TOP_PTT) == LOW || digitalRead(PIN_BTN_BOT_MOD) == LOW) {
+        return;
+    }
+    s_last_power_sample_ts = now;
+
+    // 1. Sample VBAT/2 divider on D4 (PIN_BTN_BOT_MOD):
+    //    50us pull-down discharges pin cap if unwired; 200us high-Z settles at VBAT/2 (~1650..2100 mV) when wired.
+    pinMode(PIN_BTN_BOT_MOD, INPUT_PULLDOWN);
+    delayMicroseconds(50);
+    pinMode(PIN_BTN_BOT_MOD, INPUT);
+    delayMicroseconds(200);
+    uint32_t vbat_div_mv = analogReadMilliVolts(PIN_BTN_BOT_MOD);
+    pinMode(PIN_BTN_BOT_MOD, INPUT_PULLUP);
+
+    if (vbat_div_mv >= PIN_VBAT_DIV_MIN_MV && vbat_div_mv <= PIN_VBAT_DIV_MAX_MV) {
+        uint16_t raw_mv = (uint16_t)(vbat_div_mv * 2);
+        // 4:1 EMA smoothing to prevent percentage flicker
+        s_battery_mv = (s_battery_mv == 0) ? raw_mv : (uint16_t)((s_battery_mv * 3 + raw_mv) / 4);
+        s_battery_pct = lipoMvToPercent(s_battery_mv);
+    } else if (vbat_div_mv < PIN_VBAT_DIV_MIN_MV) {
+        s_battery_mv = 0;
+        s_battery_pct = -1;
+    }
+
+    // 2. Sample 5V VBUS/2 divider on D2 (PIN_BTN_TOP_PTT):
+    //    Reads ~2500 mV (>= 1800 mV) when 5V wall brick or USB host is present, < 400 mV on battery or unwired.
+    pinMode(PIN_BTN_TOP_PTT, INPUT_PULLDOWN);
+    delayMicroseconds(50);
+    pinMode(PIN_BTN_TOP_PTT, INPUT);
+    delayMicroseconds(200);
+    uint32_t vbus_div_mv = analogReadMilliVolts(PIN_BTN_TOP_PTT);
+    pinMode(PIN_BTN_TOP_PTT, INPUT_PULLUP);
+
+    s_wall_brick_power = (vbus_div_mv >= PIN_VBUS_WALL_MIN_MV);
+}
+
+static bool isWallBrickPowerConnected() {
+    return s_wall_brick_power;
+}
+
+static bool isExternalPowerConnected() {
+    return isUsbDataHostConnected() || isWallBrickPowerConnected();
+}
+
+static void attachPowerToUi(GotchiUIState& ui) {
+    ui.battery_pct = s_battery_pct;
+    ui.battery_mv  = s_battery_mv;
+    ui.wall_power  = isExternalPowerConnected();
+}
+
+static void applyPrerollPolicy() {
+    if (cfg.preroll_mode == "always") {
+        gotchi_audio::setPrerollEnabled(true);
+    } else if (cfg.preroll_mode == "off") {
+        gotchi_audio::setPrerollEnabled(false);
+    } else {
+        // "usb_host" or "usb_only": active on either USB data host OR 5V USB-C wall brick
+        gotchi_audio::setPrerollEnabled(isExternalPowerConnected());
+    }
+}
+
+// Normalizes a transcript (lowercase, strips punctuation/whitespace) and returns
+// true iff the entire utterance is "go live" (PRD F21).
+static bool isWholeUtteranceGoLive(const String& transcript) {
+    String cleaned;
+    cleaned.reserve(transcript.length());
+    bool last_space = true;
+    for (size_t i = 0; i < transcript.length(); ++i) {
+        char c = transcript.charAt(i);
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            cleaned += c;
+            last_space = false;
+        } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            if (!last_space) {
+                cleaned += ' ';
+                last_space = true;
+            }
+        }
+    }
+    cleaned.trim();
+    return cleaned == "go live";
+}
+
+static void clearStagedSnapshots() {
+    s_staged_jpeg_active = false;
+    s_staged_jpeg_count = 0;
+    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+        s_staged_jpeg_lens[i] = 0;
+    }
+}
+
 void loadConfig() {
     prefs.begin("gotchi", true);
-    cfg.hub_url        = prefs.getString("hub_url", cfg.hub_url);
-    cfg.voice_url      = prefs.getString("voice_url", cfg.voice_url);
-    cfg.node_id        = prefs.getString("node_id", cfg.node_id);
-    cfg.wake_mode      = prefs.getString("wake_mode", cfg.wake_mode);
-    cfg.audio_out_mode = prefs.getString("audio_out_mode", cfg.audio_out_mode);
-    cfg.skin           = prefs.getString("skin", cfg.skin);
-    cfg.bearer_token   = prefs.getString("bearer_token", "");
-    cfg.wifi_ssid      = prefs.getString("wifi_ssid", "");
-    cfg.wifi_psk       = prefs.getString("wifi_psk", "");
+    cfg.hub_url              = prefs.getString("hub_url", cfg.hub_url);
+    cfg.voice_url            = prefs.getString("voice_url", cfg.voice_url);
+    cfg.live_url             = prefs.getString("live_url", cfg.live_url);
+    cfg.node_id              = prefs.getString("node_id", cfg.node_id);
+    cfg.wake_mode            = prefs.getString("wake_mode", cfg.wake_mode);
+    cfg.input_mode           = prefs.getString("input_mode", cfg.input_mode);
+    cfg.preroll_mode         = prefs.getString("preroll_mode", cfg.preroll_mode);
+    cfg.audio_out_mode       = prefs.getString("audio_out_mode", cfg.audio_out_mode);
+    if (cfg.audio_out_mode != "speaker" && cfg.audio_out_mode != "discord_voice" && cfg.audio_out_mode != "ble_phone") {
+        cfg.audio_out_mode = "speaker";
+    }
+    cfg.skin                 = prefs.getString("skin", cfg.skin);
+    cfg.bearer_token         = prefs.getString("bearer_token", "");
+    cfg.wifi_ssid            = prefs.getString("wifi_ssid", "");
+    cfg.wifi_psk             = prefs.getString("wifi_psk", "");
+    cfg.ptt_max_ms           = prefs.getUInt("ptt_max_ms", cfg.ptt_max_ms);
+    cfg.ptt_min_ms           = prefs.getUInt("ptt_min_ms", cfg.ptt_min_ms);
+    cfg.ptt_min_rms_lsb      = prefs.getUInt("ptt_min_rms", cfg.ptt_min_rms_lsb);
+    cfg.tap_latch_ms         = prefs.getUInt("tap_latch_ms", cfg.tap_latch_ms);
+    cfg.double_tap_ms        = prefs.getUInt("dbl_tap_ms", cfg.double_tap_ms);
+    cfg.vad_silence_ms       = prefs.getUInt("vad_sil_ms", cfg.vad_silence_ms);
+    cfg.vad_rms_lsb          = prefs.getUInt("vad_rms_lsb", cfg.vad_rms_lsb);
+    cfg.snap_window_ms       = prefs.getUInt("snap_win_ms", cfg.snap_window_ms);
+    cfg.cam_long_press_ms    = prefs.getUInt("cam_long_ms", cfg.cam_long_press_ms);
+    cfg.live_mode            = prefs.getBool("live_mode", cfg.live_mode);
+    cfg.live_barge_in        = prefs.getBool("live_barge_in", cfg.live_barge_in);
+    cfg.live_silence_ms      = prefs.getUInt("live_sil_ms", cfg.live_silence_ms);
+    cfg.default_image_prompt = prefs.getString("img_prompt", cfg.default_image_prompt);
     prefs.end();
+    if (cfg.ptt_max_ms > 120000) cfg.ptt_max_ms = 120000;
+    if (cfg.ptt_max_ms < 1000)   cfg.ptt_max_ms = 1000;
 }
 
 void saveConfig() {
     prefs.begin("gotchi", false);
     prefs.putString("hub_url", cfg.hub_url);
     prefs.putString("voice_url", cfg.voice_url);
+    prefs.putString("live_url", cfg.live_url);
     prefs.putString("node_id", cfg.node_id);
     prefs.putString("wake_mode", cfg.wake_mode);
+    prefs.putString("input_mode", cfg.input_mode);
+    prefs.putString("preroll_mode", cfg.preroll_mode);
     prefs.putString("audio_out_mode", cfg.audio_out_mode);
     prefs.putString("skin", cfg.skin);
     prefs.putString("bearer_token", cfg.bearer_token);
     prefs.putString("wifi_ssid", cfg.wifi_ssid);
     prefs.putString("wifi_psk", cfg.wifi_psk);
+    prefs.putUInt("ptt_max_ms", cfg.ptt_max_ms);
+    prefs.putUInt("ptt_min_ms", cfg.ptt_min_ms);
+    prefs.putUInt("ptt_min_rms", cfg.ptt_min_rms_lsb);
+    prefs.putUInt("tap_latch_ms", cfg.tap_latch_ms);
+    prefs.putUInt("dbl_tap_ms", cfg.double_tap_ms);
+    prefs.putUInt("vad_sil_ms", cfg.vad_silence_ms);
+    prefs.putUInt("vad_rms_lsb", cfg.vad_rms_lsb);
+    prefs.putUInt("snap_win_ms", cfg.snap_window_ms);
+    prefs.putUInt("cam_long_ms", cfg.cam_long_press_ms);
+    prefs.putBool("live_mode", cfg.live_mode);
+    prefs.putBool("live_barge_in", cfg.live_barge_in);
+    prefs.putUInt("live_sil_ms", cfg.live_silence_ms);
+    prefs.putString("img_prompt", cfg.default_image_prompt);
     prefs.end();
+    applyPrerollPolicy();
 }
 
 String handleJsonRpc(const String& jsonLine) {
@@ -112,34 +304,116 @@ String handleJsonRpc(const String& jsonLine) {
     if (cmd == "get_config") {
         res["hub_url"] = cfg.hub_url;
         res["voice_url"] = cfg.voice_url;
+        res["live_url"] = cfg.live_url;
         res["node_id"] = cfg.node_id;
         res["wake_mode"] = cfg.wake_mode;
+        res["input_mode"] = cfg.input_mode;
+        res["preroll_mode"] = cfg.preroll_mode;
         res["audio_out_mode"] = cfg.audio_out_mode;
         res["skin"] = cfg.skin;
         res["bearer_token_set"] = (cfg.bearer_token.length() > 0);
         res["wifi_ssid"] = cfg.wifi_ssid;
+        res["ptt_max_ms"] = cfg.ptt_max_ms;
+        res["ptt_min_ms"] = cfg.ptt_min_ms;
+        res["ptt_min_rms_lsb"] = cfg.ptt_min_rms_lsb;
+        res["tap_latch_ms"] = cfg.tap_latch_ms;
+        res["double_tap_ms"] = cfg.double_tap_ms;
+        res["vad_silence_ms"] = cfg.vad_silence_ms;
+        res["vad_rms_lsb"] = cfg.vad_rms_lsb;
+        res["snap_window_ms"] = cfg.snap_window_ms;
+        res["cam_long_press_ms"] = cfg.cam_long_press_ms;
+        res["live_mode"] = cfg.live_mode;
+        res["live_barge_in"] = cfg.live_barge_in;
+        res["live_silence_ms"] = cfg.live_silence_ms;
+        res["default_image_prompt"] = cfg.default_image_prompt;
+        samplePowerAndBatteryTelemetry(true);
+        res["usb_host_connected"] = isUsbDataHostConnected();
+        res["wall_power_connected"] = isWallBrickPowerConnected();
+        res["external_power_connected"] = isExternalPowerConnected();
+        res["battery_mv"] = s_battery_mv;
+        res["battery_pct"] = (int)s_battery_pct;
+        res["ble_connected"] = gotchi_ble::isBlePeerConnected();
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
     } else if (cmd == "set_config") {
+        if (req["audio_out_mode"].is<const char*>()) {
+            String m = req["audio_out_mode"].as<String>();
+            if (m != "speaker" && m != "discord_voice" && m != "ble_phone") {
+                res["ok"] = false;
+                res["error"] = "invalid_audio_out_mode";
+                String out;
+                serializeJson(res, out);
+                return out;
+            }
+            cfg.audio_out_mode = m;
+        }
         if (req["hub_url"].is<const char*>()) cfg.hub_url = req["hub_url"].as<String>();
         if (req["voice_url"].is<const char*>()) cfg.voice_url = req["voice_url"].as<String>();
-        if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
+        if (req["live_url"].is<const char*>()) cfg.live_url = req["live_url"].as<String>();
+        if (req["node_id"].is<const char*>()) {
+            String nid = req["node_id"].as<String>();
+            bool valid_nid = (nid.length() >= 1 && nid.length() <= 64);
+            for (size_t i = 0; valid_nid && i < nid.length(); ++i) {
+                char c = nid.charAt(i);
+                bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '-' || c == '_';
+                if (!ok) valid_nid = false;
+            }
+            if (!valid_nid) {
+                res["ok"] = false;
+                res["error"] = "invalid_node_id";
+                String out;
+                serializeJson(res, out);
+                return out;
+            }
+            cfg.node_id = nid;
+        }
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
-        if (req["audio_out_mode"].is<const char*>()) cfg.audio_out_mode = req["audio_out_mode"].as<String>();
+        if (req["input_mode"].is<const char*>()) cfg.input_mode = req["input_mode"].as<String>();
+        if (req["preroll_mode"].is<const char*>()) cfg.preroll_mode = req["preroll_mode"].as<String>();
         if (req["skin"].is<const char*>()) cfg.skin = req["skin"].as<String>();
         if (req["bearer_token"].is<const char*>()) cfg.bearer_token = req["bearer_token"].as<String>();
+        if (req["ptt_max_ms"].is<uint32_t>()) {
+            uint32_t v = req["ptt_max_ms"].as<uint32_t>();
+            cfg.ptt_max_ms = v > 120000 ? 120000 : (v < 1000 ? 1000 : v);
+        }
+        if (req["ptt_min_ms"].is<uint32_t>()) cfg.ptt_min_ms = req["ptt_min_ms"].as<uint32_t>();
+        if (req["ptt_min_rms_lsb"].is<uint32_t>()) cfg.ptt_min_rms_lsb = req["ptt_min_rms_lsb"].as<uint32_t>();
+        if (req["tap_latch_ms"].is<uint32_t>()) cfg.tap_latch_ms = req["tap_latch_ms"].as<uint32_t>();
+        if (req["double_tap_ms"].is<uint32_t>()) cfg.double_tap_ms = req["double_tap_ms"].as<uint32_t>();
+        if (req["vad_silence_ms"].is<uint32_t>()) cfg.vad_silence_ms = req["vad_silence_ms"].as<uint32_t>();
+        if (req["vad_rms_lsb"].is<uint32_t>()) cfg.vad_rms_lsb = req["vad_rms_lsb"].as<uint32_t>();
+        if (req["snap_window_ms"].is<uint32_t>()) cfg.snap_window_ms = req["snap_window_ms"].as<uint32_t>();
+        if (req["cam_long_press_ms"].is<uint32_t>()) cfg.cam_long_press_ms = req["cam_long_press_ms"].as<uint32_t>();
+        if (req["live_mode"].is<bool>()) cfg.live_mode = req["live_mode"].as<bool>();
+        if (req["live_barge_in"].is<bool>()) cfg.live_barge_in = req["live_barge_in"].as<bool>();
+        if (req["live_silence_ms"].is<uint32_t>()) cfg.live_silence_ms = req["live_silence_ms"].as<uint32_t>();
+        if (req["default_image_prompt"].is<const char*>()) {
+            cfg.default_image_prompt = req["default_image_prompt"].as<String>();
+        }
         saveConfig();
     } else if (cmd == "set_wifi") {
         cfg.wifi_ssid = req["ssid"] | cfg.wifi_ssid;
         cfg.wifi_psk  = req["psk"]  | cfg.wifi_psk;
         saveConfig();
     } else if (cmd == "self_test") {
-        res["psram_ok"] = (psramFound() && ESP.getFreePsram() > 4000000);
-        res["epd_busy_clear"] = epdWaitBusy(500);
-        res["btn_top_state"] = digitalRead(PIN_BTN_TOP_PTT);
-        res["btn_bot_state"] = digitalRead(PIN_BTN_BOT_MOD);
+        bool psram_ok = (psramFound() && ESP.getFreePsram() > 2000000);
+        bool epd_ok = epdWaitBusy(500);
+        int top_btn = digitalRead(PIN_BTN_TOP_PTT);
+        int bot_btn = digitalRead(PIN_BTN_BOT_MOD);
+        samplePowerAndBatteryTelemetry(true);
         sensor_t* s = esp_camera_sensor_get();
-        res["camera_pid"] = s ? s->id.PID : 0;
+        uint16_t cam_pid = s ? s->id.PID : 0;
+        res["psram_ok"] = psram_ok;
+        res["epd_busy_clear"] = epd_ok;
+        res["btn_top_state"] = top_btn;
+        res["btn_bot_state"] = bot_btn;
+        res["battery_mv"] = s_battery_mv;
+        res["battery_pct"] = (int)s_battery_pct;
+        res["wall_power_connected"] = isWallBrickPowerConnected();
+        res["usb_host_connected"] = isUsbDataHostConnected();
+        res["camera_pid"] = cam_pid;
+        gotchi_log::RingLogger.info("self_test", psram_ok && epd_ok && cam_pid != 0 ? "Self-test passed" : "Self-test detected hardware faults");
     } else if (cmd == "factory_reset") {
         prefs.begin("gotchi", false);
         prefs.clear();
@@ -147,12 +421,42 @@ String handleJsonRpc(const String& jsonLine) {
         res["status"] = "cleared_nvs";
     } else if (cmd == "draw_state") {
         GotchiUIState ui;
+        attachPowerToUi(ui);
         ui.skin = req["skin"].is<const char*>() ? req["skin"].as<String>() : cfg.skin;
         ui.state = uiStateFromString(req["state"] | "idle");
         if (req["status_text"].is<const char*>()) ui.status_text = req["status_text"].as<String>();
+        if (req["battery_pct"].is<int>()) ui.battery_pct = (int8_t)req["battery_pct"].as<int>();
+        if (req["wall_power"].is<bool>()) ui.wall_power = req["wall_power"].as<bool>();
         bool force_full = req["force_full"] | false;
-        res["ok"] = panel.draw(ui, force_full);
+        bool ok = panel.draw(ui, force_full);
+        res["ok"] = ok;
         res["mode"] = panel.lastMode();
+        if (!ok) {
+            gotchi_log::RingLogger.error("epd", "E-paper draw timed out (BUSY stuck)");
+        }
+    } else if (cmd == "get_logs") {
+        size_t limit = 50;
+        if (req["limit"].is<size_t>()) limit = req["limit"].as<size_t>();
+        else if (req["lines"].is<size_t>()) limit = req["lines"].as<size_t>();
+
+        const char* tag_filter = req["tag"].is<const char*>() ? req["tag"].as<const char*>() : nullptr;
+        const char* lvl_str = req["level"].is<const char*>() ? req["level"].as<const char*>() : nullptr;
+        gotchi_log::Level min_lvl = gotchi_log::Level::DEBUG;
+        if (lvl_str) {
+            if (strcasecmp(lvl_str, "ERROR") == 0) min_lvl = gotchi_log::Level::ERROR;
+            else if (strcasecmp(lvl_str, "WARN") == 0 || strcasecmp(lvl_str, "WARNING") == 0) min_lvl = gotchi_log::Level::WARN;
+            else if (strcasecmp(lvl_str, "INFO") == 0) min_lvl = gotchi_log::Level::INFO;
+        }
+
+        res["total_logged"] = gotchi_log::RingLogger.totalLogged();
+        res["count"] = gotchi_log::RingLogger.count();
+        res["capacity"] = gotchi_log::RingLogger.capacity();
+        JsonArray logsArr = res["logs"].to<JsonArray>();
+        gotchi_log::RingLogger.dumpJson(logsArr, limit, tag_filter, min_lvl);
+    } else if (cmd == "clear_logs") {
+        gotchi_log::RingLogger.clear();
+        res["status"] = "cleared";
+        gotchi_log::RingLogger.info("sys", "Logs cleared via RPC");
     } else if (cmd == "reboot") {
         ESP.restart();
     } else {
@@ -165,41 +469,481 @@ String handleJsonRpc(const String& jsonLine) {
     return out;
 }
 
+static bool btnStable(uint8_t pin, bool pressed) {
+    const int want = pressed ? LOW : HIGH;
+    if (digitalRead(pin) != want) return false;
+    delay(BTN_DEBOUNCE_MS);
+    return digitalRead(pin) == want;
+}
+
+static void waitForButtonRelease(uint8_t pin, uint32_t max_wait_ms = 2000) {
+    uint32_t t0 = millis();
+    while (digitalRead(pin) == LOW && (millis() - t0 < max_wait_ms)) {
+        delay(5);
+    }
+}
+
+static void showIdle() {
+    samplePowerAndBatteryTelemetry();
+    GotchiUIState idle_ui;
+    attachPowerToUi(idle_ui);
+    idle_ui.skin = cfg.skin;
+    if (s_staged_jpeg_active && s_staged_jpeg_count > 0) {
+        idle_ui.status_text = s_staged_jpeg_count > 1
+            ? (String("BURST (") + String(s_staged_jpeg_count) + ") STAGED")
+            : "SNAP STAGED";
+    }
+    panel.draw(idle_ui);
+}
+
+static void onVoiceState(const GotchiUIState& ui) {
+    GotchiUIState enriched = ui;
+    if (enriched.battery_pct < 0 && s_battery_pct >= 0) {
+        attachPowerToUi(enriched);
+    }
+    panel.draw(enriched);
+}
+
+static void pollRpcAndHttp() {
+    httpServer.handleClient();
+    if (Serial.available()) {
+        String line = Serial.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0) {
+            Serial.println(handleJsonRpc(line));
+        }
+    }
+}
+
+// Polled every ~42ms during TTS playback and SSE wait (PRD F13).
+// BTN_TOP cancels/mutes the reply and returns to IDLE (barge-in is dropped).
+// BTN_BOT is camera-only and never aborts voice playback.
+static gotchi_voice::InteractResult pollVoiceAbort() {
+    pollRpcAndHttp();
+    if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
+        return gotchi_voice::InteractResult::ABORT_CANCEL;
+    }
+    return gotchi_voice::InteractResult::DONE;
+}
+
+// Captures one JPEG frame into slot `slot_idx` of PSRAM staging buffers.
+static bool captureIntoSlot(size_t slot_idx) {
+    if (slot_idx >= BURST_FRAME_COUNT || !s_staged_jpeg_bufs[slot_idx]) return false;
+    camera_fb_t* fb = gotchi_camera::captureJpeg();
+    if (!fb || !fb->buf || fb->len == 0 || fb->len > MAX_STAGED_JPEG_BYTES) {
+        if (fb) esp_camera_fb_return(fb);
+        return false;
+    }
+    memcpy(s_staged_jpeg_bufs[slot_idx], fb->buf, fb->len);
+    s_staged_jpeg_lens[slot_idx] = fb->len;
+    esp_camera_fb_return(fb);
+    return true;
+}
+
+static size_t captureBurstFrames() {
+    const uint32_t interval_ms = BURST_TOTAL_DURATION_MS / (BURST_FRAME_COUNT - 1);
+    uint32_t burst_start = millis();
+    size_t captured = 0;
+    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+        uint32_t target_ts = burst_start + (uint32_t)(i * interval_ms);
+        while ((int32_t)(target_ts - millis()) > 0) {
+            pollRpcAndHttp();
+            delay(5);
+        }
+        if (captureIntoSlot(captured)) {
+            gotchi_audio::playChime("snap");
+            captured++;
+        }
+    }
+    return captured;
+}
+
+// Runs a Go Live continuous session (PRD F19 / F21 / Section 5b).
+// Stays open until `BTN_TOP` is pressed or `cfg.live_silence_ms` of silence elapses.
+static void runLiveSession() {
+    GotchiUIState ui;
+    ui.skin = cfg.skin;
+
+    if (!cfg.live_mode) {
+        gotchi_log::RingLogger.info("live", "Go Live ignored: live_mode is off");
+        showIdle();
+        return;
+    }
+
+    gotchi_live::LiveSessionConfig lcfg;
+    lcfg.voice_url = (cfg.live_url.length() > 0) ? cfg.live_url : cfg.voice_url;
+    lcfg.node_id = cfg.node_id;
+    lcfg.bearer_token = cfg.bearer_token;
+    lcfg.audio_out_mode = cfg.audio_out_mode;
+    lcfg.live_silence_ms = cfg.live_silence_ms;
+    lcfg.vad_rms_lsb = cfg.vad_rms_lsb;
+    lcfg.cam_long_press_ms = cfg.cam_long_press_ms;
+    lcfg.enabled = cfg.live_mode;
+    lcfg.live_barge_in = cfg.live_barge_in;
+
+    gotchi_live::runSession(
+        lcfg,
+        ui,
+        onVoiceState,
+        [](size_t slot, gotchi_live::CapturedFrameView* out_frame) -> bool {
+            if (!captureIntoSlot(slot)) return false;
+            if (out_frame) {
+                out_frame->data = s_staged_jpeg_bufs[slot];
+                out_frame->length = s_staged_jpeg_lens[slot];
+            }
+            return true;
+        },
+        [](gotchi_live::CapturedFrameView* out_frames, size_t max_frames) -> size_t {
+            size_t count = captureBurstFrames();
+            if (count > max_frames) count = max_frames;
+            if (out_frames) {
+                for (size_t i = 0; i < count; ++i) {
+                    out_frames[i].data = s_staged_jpeg_bufs[i];
+                    out_frames[i].length = s_staged_jpeg_lens[i];
+                }
+            }
+            return count;
+        },
+        pollRpcAndHttp
+    );
+
+    showIdle();
+}
+
+static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_staged_snap, bool is_standalone_snap) {
+    GotchiUIState ui;
+    ui.skin = cfg.skin;
+
+    if (WiFi.status() != WL_CONNECTED) {
+        ui.state = UiState::OFFLINE;
+        ui.status_text = "NO WIFI";
+        panel.draw(ui);
+        delay(2000);
+        showIdle();
+        return;
+    }
+
+    ui.state = UiState::TRANSCRIBING;
+    ui.status_text = is_standalone_snap ? "SENDING SNAP..." : "TRANSCRIBING...";
+    panel.draw(ui);
+    gotchi_log::RingLogger.info("http", is_standalone_snap ? "Uploading standalone snapshot" : "Uploading voice turn WAV", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
+
+    gotchi_voice::ImageAttachment img;
+    const gotchi_voice::ImageAttachment* img_ptr = nullptr;
+    if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_count > 0) {
+        if (s_staged_jpeg_count > 1) {
+            img.burst_count = s_staged_jpeg_count < gotchi_voice::ImageAttachment::MAX_BURST_FRAMES
+                            ? s_staged_jpeg_count
+                            : gotchi_voice::ImageAttachment::MAX_BURST_FRAMES;
+            for (size_t i = 0; i < img.burst_count; ++i) {
+                img.burst_data[i] = s_staged_jpeg_bufs[i];
+                img.burst_lengths[i] = s_staged_jpeg_lens[i];
+            }
+        } else if (s_staged_jpeg_bufs[0] && s_staged_jpeg_lens[0] > 0) {
+            img.data = s_staged_jpeg_bufs[0];
+            img.length = s_staged_jpeg_lens[0];
+        }
+        if (is_standalone_snap) {
+            img.default_prompt = cfg.default_image_prompt;
+        }
+        img_ptr = &img;
+        clearStagedSnapshots();
+    }
+
+    gotchi_voice::InteractResult result = gotchi_voice::InteractResult::DONE;
+    bool ok = gotchi_voice::interact(
+        wav, cfg.voice_url, cfg.node_id, ui, onVoiceState, cfg.bearer_token,
+        img_ptr, pollVoiceAbort, &result, cfg.audio_out_mode
+    );
+    if (ok) {
+        gotchi_log::RingLogger.info("http", "Interact stream completed (done)");
+    } else if (result == gotchi_voice::InteractResult::ABORT_CANCEL) {
+        gotchi_log::RingLogger.info("audio", "Interact cancelled by user (BTN_TOP)");
+    } else {
+        gotchi_log::RingLogger.warn("http", "Interact stream terminated with error or disconnect");
+    }
+
+    if (result == gotchi_voice::InteractResult::ABORT_CANCEL) {
+        waitForButtonRelease(PIN_BTN_TOP_PTT);
+        showIdle();
+        return;
+    }
+
+    // PRD F21: Saying "Go Live" as the whole utterance launches a Live session (when live_mode is enabled)
+    if (cfg.live_mode && isWholeUtteranceGoLive(ui.transcript)) {
+        s_enter_live_pending = true;
+        return;
+    }
+
+    if (!ok) {
+        delay(2000);
+    }
+    showIdle();
+}
+
+// Handles bottom camera button (`BTN_BOT`) in IDLE (PRD F14 & F20):
+//   - Short press (< `cam_long_press_ms`, default 700ms): captures 1 snapshot on release and
+//     stages it for `snap_window_ms` (3s) to attach to the next voice prompt or send standalone.
+//   - Long press (>= `cam_long_press_ms`): captures a burst of 5 photos over 3 seconds.
+static void handleCameraButtonIdle() {
+    GotchiUIState ui;
+    ui.skin = cfg.skin;
+    uint32_t t0 = millis();
+    bool is_long_press = false;
+
+    while (digitalRead(PIN_BTN_BOT_MOD) == LOW) {
+        if (millis() - t0 >= cfg.cam_long_press_ms) {
+            is_long_press = true;
+            break;
+        }
+        delay(5);
+    }
+
+    if (!s_staged_jpeg_bufs[0]) {
+        waitForButtonRelease(PIN_BTN_BOT_MOD);
+        ui.state = UiState::ERROR;
+        ui.status_text = "NO SNAP BUF";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    clearStagedSnapshots();
+
+    if (!is_long_press) {
+        // Short press: capture single snapshot on release (F14)
+        if (!captureIntoSlot(0)) {
+            gotchi_audio::playChime("error");
+            ui.state = UiState::ERROR;
+            ui.status_text = "CAM ERROR";
+            panel.draw(ui);
+            delay(1500);
+            showIdle();
+            return;
+        }
+        s_staged_jpeg_count = 1;
+        s_staged_jpeg_active = true;
+        s_staged_jpeg_ts = millis();
+        gotchi_audio::playChime("snap");
+        gotchi_log::RingLogger.info("camera", "Captured single snapshot JPEG");
+        showIdle();
+        return;
+    }
+
+    // Long press: capture burst of 5 photos over 3 seconds (F20: 0ms, 750ms, 1500ms, 2250ms, 3000ms)
+    size_t captured = captureBurstFrames();
+    waitForButtonRelease(PIN_BTN_BOT_MOD);
+
+    if (captured == 0) {
+        gotchi_audio::playChime("error");
+        ui.state = UiState::ERROR;
+        ui.status_text = "BURST ERROR";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    s_staged_jpeg_count = captured;
+    s_staged_jpeg_active = true;
+    s_staged_jpeg_ts = millis();
+    char bmsg[64];
+    snprintf(bmsg, sizeof(bmsg), "Captured burst of %u frames", (unsigned)captured);
+    gotchi_log::RingLogger.info("camera", bmsg);
+    showIdle();
+}
+
+// One voice turn on `BTN_TOP` (speaking-only button, PRD F13/F14/F19):
+//   - "hold" mode: hold BTN_TOP to record, release to send.
+//   - "tap" mode: tap BTN_TOP to open mic, auto-stops after `cfg.vad_silence_ms` (1.5s)
+//     of trailing silence once speech is heard (or tap BTN_TOP again to send immediately).
+//   - "hybrid" mode (default): releasing BTN_TOP within `cfg.tap_latch_ms` (500ms) latches
+//     into hands-free Tap-to-Talk; holding longer than `cfg.tap_latch_ms` stops on release.
+//   - Double-tap `BTN_TOP` within `cfg.double_tap_ms` (400ms) of first release: when `cfg.live_mode`
+//     is enabled, discards the partial clip and starts a Go Live session (F19); when `cfg.live_mode`
+//     is off, does nothing special.
+//   - Pressing `BTN_BOT` during recording captures a photo on release and attaches it to the
+//     voice turn in progress (F14; bottom button no longer cancels recording).
+static void runPttTurn() {
+    GotchiUIState ui;
+    ui.skin = cfg.skin;
+    if (!gotchi_audio::beginPttRecording()) {
+        ui.state = UiState::ERROR;
+        ui.error_code = "mic";
+        ui.status_text = "MIC ERROR";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    // Start Core 0 DMA drain task BEFORE playing chime & drawing LISTENING so zero speech is dropped
+    bool async_running = gotchi_audio::startAsyncPttTask();
+    gotchi_audio::playChime("ptt_start");
+    ui.state = UiState::LISTENING;
+    ui.status_text = s_staged_jpeg_active ? "LISTENING (+SNAP)..." : "LISTENING...";
+    panel.draw(ui);
+    gotchi_log::RingLogger.info("audio", "PTT recording started");
+
+    const float vad_thresh = (float)cfg.vad_rms_lsb / 32768.0f;
+    const float min_rms    = (float)cfg.ptt_min_rms_lsb / 32768.0f;
+    const size_t min_bytes = 44 + (SAMPLE_RATE_REC * sizeof(int16_t) * cfg.ptt_min_ms) / 1000;
+
+    uint32_t t0 = millis();
+    uint32_t first_release_ts = 0;
+    uint32_t last_speech_ts = t0;
+    bool speech_heard = false;
+    bool released_once = (digitalRead(PIN_BTN_TOP_PTT) == HIGH);
+    if (released_once) first_release_ts = t0;
+    bool latched_tap_mode = (cfg.input_mode == "tap");
+    bool start_live_session = false;
+
+    while (millis() - t0 < cfg.ptt_max_ms) {
+        uint32_t elapsed = millis() - t0;
+        if (!async_running) gotchi_audio::pollPttRecording();
+        httpServer.handleClient();
+
+        // PRD F14: Pressing BTN_BOT during a recording captures a snapshot on release
+        // and attaches it to the voice turn in progress (does not cancel the turn).
+        if (digitalRead(PIN_BTN_BOT_MOD) == LOW && btnStable(PIN_BTN_BOT_MOD, true)) {
+            waitForButtonRelease(PIN_BTN_BOT_MOD);
+            if (captureIntoSlot(0)) {
+                s_staged_jpeg_count = 1;
+                s_staged_jpeg_active = true;
+                s_staged_jpeg_ts = millis();
+                gotchi_audio::playChime("snap");
+            }
+        }
+
+        if (!released_once) {
+            if (btnStable(PIN_BTN_TOP_PTT, false)) {
+                released_once = true;
+                first_release_ts = millis();
+                if (cfg.input_mode == "hold") {
+                    break;
+                } else if (cfg.input_mode == "hybrid") {
+                    if (elapsed <= cfg.tap_latch_ms) {
+                        latched_tap_mode = true; // Quick tap -> latch into hands-free VAD listening
+                    } else {
+                        break; // Held past tap_latch_ms -> classic PTT release-to-send
+                    }
+                }
+            }
+        } else if (latched_tap_mode) {
+            // Second tap of BTN_TOP after first release:
+            //   - Within `double_tap_ms` (400ms): if `live_mode` is enabled, discard clip & start Go Live (F19);
+            //     if `live_mode` is off, do nothing special (keep listening).
+            //   - After `double_tap_ms`: finish recording and send immediately.
+            if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
+                uint32_t since_release = millis() - first_release_ts;
+                waitForButtonRelease(PIN_BTN_TOP_PTT);
+                if (since_release <= cfg.double_tap_ms) {
+                    if (cfg.live_mode) {
+                        start_live_session = true;
+                        break;
+                    }
+                    // When live_mode is off, a double-tap within 400ms does nothing special
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Track rolling 100ms RMS energy for Tap-to-Talk end-of-speech silence detection
+        float recent_rms = gotchi_audio::getRecentRms(1600);
+        if (recent_rms >= vad_thresh) {
+            speech_heard = true;
+            last_speech_ts = millis();
+        } else if (latched_tap_mode && released_once) {
+            if (speech_heard && (millis() - last_speech_ts >= cfg.vad_silence_ms)) {
+                break; // User finished speaking and paused for vad_silence_ms (1.5s)
+            }
+            if (!speech_heard && (elapsed >= VAD_INITIAL_TIMEOUT_MS)) {
+                break; // No speech detected within initial window
+            }
+        }
+
+        delay(5);
+    }
+
+    gotchi_audio::stopAsyncPttTask();
+    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
+    gotchi_log::RingLogger.info("audio", "PTT recording finished");
+
+    if (start_live_session) {
+        s_enter_live_pending = true;
+        return;
+    }
+
+    gotchi_audio::playChime("ptt_stop");
+
+    if (wav.rms < min_rms || wav.length < min_bytes) {
+        ui.state = UiState::IDLE;
+        ui.status_text = "TOO SHORT";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    dispatchVoiceOrSnap(wav, s_staged_jpeg_active, false);
+}
+
 void setup() {
     Serial.begin(115200);
+    gotchi_log::RingLogger.init(true);
+    gotchi_log::RingLogger.info("boot", "GOTCHI V1 FW " GOTCHI_FW_VERSION " booting");
     pinMode(PIN_BTN_TOP_PTT, INPUT_PULLUP);
     pinMode(PIN_BTN_BOT_MOD, INPUT_PULLUP);
     pinMode(PIN_EPD_BUSY, INPUT);
 
     if (psramFound()) {
-        psram_wav_buf = (uint8_t*)ps_malloc(MAX_WAV_BYTES);
+        gotchi_log::RingLogger.info("boot", "PSRAM detected and initialized");
+        for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+            s_staged_jpeg_bufs[i] = (uint8_t*)ps_malloc(MAX_STAGED_JPEG_BYTES);
+        }
+    } else {
+        gotchi_log::RingLogger.warn("boot", "No PSRAM detected; operating in internal SRAM");
     }
     loadConfig();
 
-    // Join the configured network before the UI comes up. Unprovisioned units
-    // skip this and fall through to the Soft-AP portal below.
     bool wifi_configured = cfg.wifi_ssid.length() > 0;
     bool wifi_up = false;
     if (wifi_configured) {
         WiFi.mode(WIFI_STA);
+        char connect_msg[64];
+        snprintf(connect_msg, sizeof(connect_msg), "Connecting to SSID: %.32s", cfg.wifi_ssid.c_str());
+        gotchi_log::RingLogger.info("wifi", connect_msg, cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
         WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_psk.c_str());
         uint32_t t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_TIMEOUT_MS) {
             delay(100);
         }
         wifi_up = (WiFi.status() == WL_CONNECTED);
+        if (wifi_up) {
+            gotchi_log::RingLogger.info("wifi", "WiFi connected successfully", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
+        } else {
+            gotchi_log::RingLogger.warn("wifi", "WiFi connection timed out", cfg.wifi_psk.c_str(), cfg.bearer_token.c_str());
+        }
+    } else {
+        gotchi_log::RingLogger.info("wifi", "WiFi unconfigured; starting AP setup portal");
     }
 
     gotchi_audio::init();
+    samplePowerAndBatteryTelemetry(true);
+    applyPrerollPolicy();
     gotchi_camera::init();
+    gotchi_ble::initBleTransport(cfg.node_id.c_str());
     if (!wifi_configured) {
         gotchi_portal::startSoftApPortal(httpServer);
     }
 
     panel.begin();
     GotchiUIState boot_ui;
+    attachPowerToUi(boot_ui);
     boot_ui.skin = cfg.skin;
-    if (wifi_configured && !wifi_up) {
+    if (wifi_configured && !wifi_up && !gotchi_ble::isBlePeerConnected()) {
         boot_ui.state = UiState::OFFLINE;
         boot_ui.status_text = "NO WIFI";
     }
@@ -222,87 +966,6 @@ void setup() {
     httpServer.begin();
 }
 
-// Push-to-talk. BTN_TOP is active low; a level counts only after it has held
-// for PTT_DEBOUNCE_MS. Returns true if the button is at `pressed` level.
-static bool pttStable(bool pressed) {
-    const int want = pressed ? LOW : HIGH;
-    if (digitalRead(PIN_BTN_TOP_PTT) != want) return false;
-    delay(PTT_DEBOUNCE_MS);
-    return digitalRead(PIN_BTN_TOP_PTT) == want;
-}
-
-static void showIdle() {
-    GotchiUIState idle_ui;
-    idle_ui.skin = cfg.skin;
-    panel.draw(idle_ui);
-}
-
-// Sprite callback for gotchi_voice::interact: redraw on every state change.
-static void onVoiceState(const GotchiUIState& ui) {
-    panel.draw(ui);
-}
-
-// One PTT turn: hold to record, release to send. Returns to idle when done.
-static void runPttTurn() {
-    GotchiUIState ui;
-    ui.skin = cfg.skin;
-    if (!gotchi_audio::beginPttRecording()) {
-        ui.state = UiState::ERROR;
-        ui.error_code = "mic";
-        ui.status_text = "MIC ERROR";
-        panel.draw(ui);
-        delay(1500);
-        showIdle();
-        return;
-    }
-    // Start Core 0 DMA drain task BEFORE playing chime & drawing LISTENING so zero speech is dropped
-    bool async_running = gotchi_audio::startAsyncPttTask();
-    gotchi_audio::playChime("ptt_start");
-    ui.state = UiState::LISTENING;
-    ui.status_text = "REC 16kHz PDM MIC...";
-    panel.draw(ui);
-
-    uint32_t t0 = millis();
-    while (millis() - t0 < PTT_MAX_MS) {
-        if (pttStable(false)) break;
-        if (!async_running) gotchi_audio::pollPttRecording();
-        httpServer.handleClient();
-        delay(2);
-    }
-    gotchi_audio::stopAsyncPttTask();
-    gotchi_audio::playChime("ptt_stop");
-    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
-
-    if (wav.rms < PTT_MIN_RMS || wav.length < PTT_MIN_BYTES) {
-        ui.state = UiState::IDLE;
-        ui.status_text = "TOO SHORT";
-        panel.draw(ui);
-        delay(1500);
-        showIdle();
-        return;
-    }
-
-    if (WiFi.status() != WL_CONNECTED) {
-        ui.state = UiState::OFFLINE;
-        ui.status_text = "NO WIFI";
-        panel.draw(ui);
-        delay(2000);
-        showIdle();
-        return;
-    }
-
-    ui.state = UiState::TRANSCRIBING;
-    ui.status_text = "TRANSCRIBING...";
-    panel.draw(ui);
-
-    bool ok = gotchi_voice::interact(wav, cfg.voice_url, cfg.node_id, ui, onVoiceState, cfg.bearer_token);
-    if (!ok) {
-        // Hold the error / busy / offline sprite briefly so it is visible.
-        delay(2000);
-    }
-    showIdle();
-}
-
 void loop() {
     httpServer.handleClient();
     if (Serial.available()) {
@@ -313,10 +976,35 @@ void loop() {
         }
     }
 
-    if (pttStable(true)) {
+    // Launch Go Live session if triggered by double-tap or whole-utterance "Go Live" command (F19/F21)
+    if (s_enter_live_pending) {
+        s_enter_live_pending = false;
+        runLiveSession();
+        return;
+    }
+
+    // Top button (speaking only, F13): start Hybrid / Tap-to-Talk / Hold-to-Talk / Double-Tap Live
+    if (btnStable(PIN_BTN_TOP_PTT, true)) {
         runPttTurn();
         return;
     }
+
+    // Bottom button (camera only, F14/F20): short press = 1 photo on release; long press = 5-photo burst over 3s
+    if (btnStable(PIN_BTN_BOT_MOD, true)) {
+        handleCameraButtonIdle();
+        return;
+    }
+
+    // If staged camera snapshot(s) weren't paired with a voice prompt within `snap_window_ms` (3s),
+    // dispatch standalone with `default_image_prompt` and no `audio` part.
+    if (s_staged_jpeg_active && (millis() - s_staged_jpeg_ts >= cfg.snap_window_ms)) {
+        gotchi_audio::WavView no_audio_wav{nullptr, 0};
+        dispatchVoiceOrSnap(no_audio_wav, true, true);
+        return;
+    }
+
+    samplePowerAndBatteryTelemetry();
+    applyPrerollPolicy();
     gotchi_audio::pumpPreroll();
     delay(2);
 }

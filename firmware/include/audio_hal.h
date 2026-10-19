@@ -1,10 +1,9 @@
 #pragma once
 // ============================================================================
-// GOTCHI V1 — Audio HAL (T2.3 PDM Mic Capture & T2.4 MAX98357A I2S TX Player)
-//   - T2.3: I2S0 PDM RX on CLK=GPIO42, DATA=GPIO41 (16 kHz, 16-bit mono)
-//           with 500ms circular pre-roll ring buffer in 8MB PSRAM & WAV builder
-//   - T2.4: I2S1 Standard TX on BCLK=GPIO44 (silent at boot), LRCLK=GPIO43,
-//           DIN=GPIO8 for streamed 24 kHz TTS audio chunks & Tamagotchi chimes
+// GOTCHI Audio HAL — PDM Mic Capture (I2S0 RX) + MAX98357A Speaker (I2S1 TX)
+// Hardware Pins (see include/pins.h):
+//   - PDM Mic: CLK = GPIO 42, DATA = GPIO 41 (16 kHz, 16-bit mono)
+//   - Speaker: BCLK = D7 (GPIO 44, silent at boot), LRCLK = D6 (GPIO 43), DIN = D9 (GPIO 8)
 // ============================================================================
 
 #include <Arduino.h>
@@ -19,29 +18,75 @@ struct WavView {
     float rms;
 };
 
-// Initialize PDM Microphone (I2S_NUM_0) and MAX98357A Speaker Amplifier (I2S_NUM_1)
+using AbortCheckFn = bool (*)();
+
+// Initialize I2S0 (PDM RX at 16 kHz) and I2S1 (Standard I2S TX at 24 kHz)
+// and allocate PSRAM circular pre-roll + 90-second WAV recording buffer.
 bool init();
 
-// Pump 16 kHz PDM samples into the 500ms circular pre-roll buffer while idle
+// Enable or disable continuous 500ms circular pre-roll sampling in idle loop.
+void setPrerollEnabled(bool enabled);
+
+// Continuously sample PDM mic into the 500ms circular pre-roll ring buffer while idle.
 void pumpPreroll();
 
-// Start PTT recording: copies the 500ms pre-roll into the PSRAM WAV payload buffer
+// Enable or disable on-device NLMS Acoustic Echo Cancellation (AEC) and 300ms full-duplex
+// speech barge-in detection. Scoped strictly to active Go Live sessions (off in normal PTT).
+void setLiveAecEnabled(bool enabled, float barge_in_rms_thresh = 0.008f);
+bool isLiveAecEnabled();
+
+// Returns true (and clears the flag) if user speech triggered a >=300ms AEC barge-in
+// during the most recent Go Live speaker playback chunk.
+bool consumeLiveBargeInFlag();
+
+// Drain any residual samples sitting in the I2S0 PDM RX DMA ring buffer after speaker playback.
+void flushRxDmaBuffer();
+
+// Apply 64-tap NLMS adaptive echo cancellation to a single 16 kHz mic sample against reference.
+int16_t processLiveAecSample(int16_t mic_sample, int16_t ref_sample);
+
+// Non-blocking read of 16 kHz 16-bit mono PCM samples from PDM mic into `dst` (up to `max_samples`).
+// When Go Live AEC is enabled, subtracts speaker reference echo before computing `*out_rms`.
+size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms = nullptr);
+
+// Start a push-to-talk / tap-to-talk recording session: copies the 500ms pre-roll
+// (if enabled and populated) into the start of the PSRAM WAV payload buffer.
 bool beginPttRecording();
 
-// Read available 16 kHz PDM samples during held PTT button (up to 15s max)
+// Poll and append incoming PDM mic samples into the PSRAM WAV buffer.
+// Returns total PCM samples recorded so far.
 size_t pollPttRecording();
 
-// Start/stop dedicated Core 0 FreeRTOS mic drain task so PTT chime & e-paper draw never drop speech
+// Spawn a dedicated Core 0 FreeRTOS task that continuously drains I2S0 PDM RX
+// while Core 1 plays chimes or refreshes the e-paper display over SPI.
 bool startAsyncPttTask();
+
+// Stop the background Core 0 PDM capture task before finalizing the WAV buffer.
 void stopAsyncPttTask();
 
-// Finalize PTT recording: writes the 44-byte RIFF WAV header and returns buffer view
+// Return total recorded PCM samples or elapsed recording duration in milliseconds.
+size_t getRecordedSamples();
+uint32_t getRecordedMs();
+
+// Compute normalized RMS [0.0, 1.0] over the most recent `window_samples`
+// (default 1600 samples = 100 ms at 16 kHz) for live Tap-to-Talk VAD silence detection.
+float getRecentRms(size_t window_samples = 1600);
+
+// Finalize PTT recording: writes the 44-byte RIFF WAV header and returns buffer view.
 WavView finishPttRecording();
+
+// Build a minimal silent WAV in the PSRAM buffer (used when dispatching a standalone
+// camera snapshot to gateways that require an `audio` part on /api/voice/interact).
+WavView buildSilentWav(uint32_t duration_ms = 250);
+
+// Register an optional callback checked every ~42 ms (1024 samples) during speaker playback.
+// If the callback returns true, playback aborts and mutes immediately (for Barge-In / Cancel).
+void setPlaybackAbortCheck(AbortCheckFn fn);
 
 // Play raw 16-bit signed mono PCM chunk over MAX98357A I2S TX (honors dynamic sample_rate, default 24000 Hz)
 bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_rate = 24000);
 
-// Play base64-encoded PCM chunk directly from Mirrormere `audio_chunk` SSE event
+// Play base64-encoded PCM chunk directly from Mirrormere `sentence` / `audio_chunk` SSE event
 bool playBase64PcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate = 24000);
 
 // Play short synthesized Tamagotchi UI chime ("ptt_start", "ptt_stop", "ready", "error")

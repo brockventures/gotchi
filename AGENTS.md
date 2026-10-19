@@ -12,7 +12,9 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`docs/ARCHITECTURE.md`**: System topology, Mirrormere `POST /api/voice/interact` wire specification, BLE-to-Tailscale relay protocol, and JSON-RPC config spec.
 - **`docs/MIRRORMERE_VOICE_CLIENT.md`**: Verified Mirrormere `POST /api/voice/interact` SSE event contract (`state`, `audio_chunk` `24 kHz` base64 PCM, error codes) and `client/eink-node/` refresh policy audit.
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
-- **`firmware/`** *(scaffolded in Milestone M1)*: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`).
+- **`firmware/`**: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`) including `log_buffer`, `voice_client`, `live_client`, `ble_framing`, `audio_hal`, `camera_hal`, and `epd_panel`. Build with: `pio run -d firmware -e seeed_xiao_esp32s3`.
+- **`backend/`**: Reference voice & live gateways and companion codecs (`voice_gateway.py`, `live_gateway.py`, `ble_framing.py`, `gateway_auth.py`).
+- **`tests/`**: Automated unit and firmware contract verification suite (`pytest tests/test_log_buffer.py tests/test_audio_routing.py tests/test_live_gateway.py tests/test_ble_framing.py`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.
 - **`cad/`** *(V1 two-part case + button cap)*: parametric Blender script generating STL, `.blend` and renders; see [`cad/README.md`](cad/README.md). Run: `blender -b --python cad/build_case.py -- --out cad`.
 
@@ -26,9 +28,9 @@ When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** w
 2. **MAX98357A I2S Audio Output Pins:**
    - `BCLK` = `D7` (`GPIO44` — silent `UART0_RX` at boot to prevent speaker pop), `LRCLK` = `D6` (`GPIO43`), `DIN` = `D9` (`GPIO8`).
    - *Crucial:* Never assign I2S to `D5` (`GPIO6`), as `D5` is assigned to the ePaper `BUSY` line.
-3. **Tactile Buttons & Reserved V2 Wake Pin:**
-   - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake) = `D2` (`GPIO3` / `RTC_GPIO3`, active-low with internal pull-up).
-   - `BTN_BOT` (Secondary / Mode / Snap) = `D4` (`GPIO5` / `RTC_GPIO5`, avoiding `GPIO0` boot-strapping).
+3. **Tactile Buttons & Multiplexed V1 Battery / Wall-Brick Sense:**
+   - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake + `5V VBUS` Wall-Brick Sense) = `D2` (`GPIO3` / `RTC_GPIO3` / `ADC1_CH2`, active-low with `220 kΩ / 220 kΩ` divider from `5V` to `GND`).
+   - `BTN_BOT` (Camera Snap / 5-Frame Burst + `VBAT` LiPo Fuel Gauge) = `D4` (`GPIO5` / `RTC_GPIO5` / `ADC1_CH4`, avoiding `GPIO0` boot-strapping, with `220 kΩ / 220 kΩ` divider from switched `BAT+` to `GND`).
 4. **Internal Sense Expansion Board Pins:**
    - Digital PDM Microphone: `CLK` = `GPIO42`, `DATA` = `GPIO41`.
    - Stock `OV2640`/`OV3660` (or Optional `OV5640` AF) DVP Camera: `GPIO10–18`, `GPIO38–40`, `GPIO47–48`.

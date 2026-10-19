@@ -173,8 +173,17 @@ void renderFrame(Adafruit_GFX& d, const GotchiUIState& ui, const char* refresh_m
     d.setFont(nullptr);
     d.setTextSize(1);
     d.setTextColor(GxEPD_WHITE, GxEPD_BLACK);
-    d.setCursor(164, 7);
-    d.print(strcmp(refresh_mode, "full") == 0 ? "FULL" : "PART");
+    if (ui.battery_pct >= 0) {
+        char bat_badge[10];
+        snprintf(bat_badge, sizeof(bat_badge), "%d%%%s", (int)ui.battery_pct, ui.wall_power ? "+" : "");
+        int badge_x = 195 - (int)strlen(bat_badge) * 6;
+        if (badge_x < 152) badge_x = 152;
+        d.setCursor(badge_x, 7);
+        d.print(bat_badge);
+    } else {
+        d.setCursor(164, 7);
+        d.print(strcmp(refresh_mode, "full") == 0 ? "FULL" : "PART");
+    }
 
     // Outer border, width 2.
     rectOutline(d, 0, 0, 199, 199, 2, GxEPD_BLACK);

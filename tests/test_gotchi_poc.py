@@ -29,6 +29,55 @@ def test_multipart_payload():
     assert b"gotchi-pi0" in body
 
 
+def test_multipart_single_image_and_prompt():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 50)
+    dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIFdummy"
+    body, ctype = build_multipart_wav(
+        wav,
+        node_id="gotchi-cam-1",
+        session_id="sess-snap-1",
+        image_jpeg=dummy_jpeg,
+        prompt="Analyze this object",
+        audio_out_mode="speaker",
+    )
+    assert b'name="audio"; filename="ptt.wav"' in body
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"JFIFdummy" in body
+    assert b'name="prompt"' in body
+    assert b"Analyze this object" in body
+    assert b'name="audio_out_mode"' in body
+    assert b"speaker" in body
+
+
+def test_multipart_five_photo_burst():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 50)
+    burst = [f"frame_{i}".encode() for i in range(5)]
+    body, ctype = build_multipart_wav(
+        wav,
+        node_id="gotchi-burst-1",
+        session_id="sess-burst-1",
+        burst_images=burst,
+    )
+    for i in range(5):
+        assert f'name="image_{i}"; filename="snap_{i}.jpg"'.encode() in body
+        assert f"frame_{i}".encode() in body
+
+
+def test_multipart_standalone_snapshot_without_audio():
+    dummy_jpeg = b"\xff\xd8\xff\xe0standalone"
+    body, ctype = build_multipart_wav(
+        wav_bytes=None,
+        node_id="gotchi-standalone",
+        session_id="sess-stand-1",
+        image_jpeg=dummy_jpeg,
+        prompt="What is this item?",
+    )
+    assert b'name="audio"' not in body
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"standalone" in body
+    assert b"What is this item?" in body
+
+
 def test_refresh_tracker_policy():
     rt = RefreshTracker(max_consecutive_partials=3, full_refresh_minutes=15.0)
     assert rt.select_refresh_mode(now=100.0) == "full"
@@ -133,3 +182,30 @@ def test_render_zero_skin_all_9_states():
         im = render_sprite_200x200(ui, refresh_mode="partial")
         assert im.size == (200, 200)
         assert im.mode == "1"
+
+
+def test_multipart_payload_with_snapshot_and_prompt():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 4000)
+    fake_jpeg = b"\xff\xd8\xff\xe0JFIF\x00\xff\xd9"
+    body, _ = build_multipart_wav(
+        wav,
+        node_id="gotchi-v1-01",
+        session_id="s-snap",
+        image_jpeg=fake_jpeg,
+        prompt="Describe what you see in this snapshot briefly.",
+    )
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"Content-Type: image/jpeg" in body
+    assert fake_jpeg in body
+    assert b'name="prompt"' in body
+    assert b"Describe what you see in this snapshot briefly." in body
+
+
+def test_is_whole_utterance_go_live():
+    from poc.gotchi_poc import is_whole_utterance_go_live
+    assert is_whole_utterance_go_live("Go Live") is True
+    assert is_whole_utterance_go_live("  go   live! ") is True
+    assert is_whole_utterance_go_live("Go live.") is True
+    assert is_whole_utterance_go_live("let us go live now") is False
+    assert is_whole_utterance_go_live("go live mode") is False
+    assert is_whole_utterance_go_live("") is False

@@ -74,26 +74,68 @@ def wrap_pcm16_to_wav(pcm_bytes: bytes, sample_rate: int = 16000, channels: int 
 
 
 def build_multipart_wav(
-    wav_bytes: bytes,
+    wav_bytes: Optional[bytes] = None,
     node_id: str = "gotchi-poc-01",
     session_id: str = "sess-poc-01",
     boundary: str = "---GotchiBoundary7MA4YWxkTrZu0gW",
+    image_jpeg: Optional[bytes] = None,
+    burst_images: Optional[List[bytes]] = None,
+    prompt: Optional[str] = None,
+    audio_out_mode: Optional[str] = None,
 ) -> Tuple[bytes, str]:
     """Construct multipart/form-data payload for POST /api/voice/interact."""
     crlf = b"\r\n"
-    parts = [
-        b"--" + boundary.encode() + crlf,
-        b'Content-Disposition: form-data; name="audio"; filename="ptt.wav"' + crlf,
-        b"Content-Type: audio/wav" + crlf + crlf,
-        wav_bytes + crlf,
+    parts = []
+
+    if wav_bytes is not None and len(wav_bytes) > 0:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="audio"; filename="ptt.wav"' + crlf,
+            b"Content-Type: audio/wav" + crlf + crlf,
+            wav_bytes + crlf,
+        ])
+
+    if burst_images:
+        for i, img_b in enumerate(burst_images):
+            if img_b:
+                parts.extend([
+                    b"--" + boundary.encode() + crlf,
+                    f'Content-Disposition: form-data; name="image_{i}"; filename="snap_{i}.jpg"'.encode() + crlf,
+                    b"Content-Type: image/jpeg" + crlf + crlf,
+                    img_b + crlf,
+                ])
+    elif image_jpeg:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="image"; filename="snap.jpg"' + crlf,
+            b"Content-Type: image/jpeg" + crlf + crlf,
+            image_jpeg + crlf,
+        ])
+
+    parts.extend([
         b"--" + boundary.encode() + crlf,
         b'Content-Disposition: form-data; name="node_id"' + crlf + crlf,
         node_id.encode() + crlf,
         b"--" + boundary.encode() + crlf,
         b'Content-Disposition: form-data; name="session_id"' + crlf + crlf,
         session_id.encode() + crlf,
-        b"--" + boundary.encode() + b"--" + crlf,
-    ]
+    ])
+
+    if prompt:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="prompt"' + crlf + crlf,
+            prompt.encode() + crlf,
+        ])
+
+    if audio_out_mode:
+        parts.extend([
+            b"--" + boundary.encode() + crlf,
+            b'Content-Disposition: form-data; name="audio_out_mode"' + crlf + crlf,
+            audio_out_mode.encode() + crlf,
+        ])
+
+    parts.append(b"--" + boundary.encode() + b"--" + crlf)
     body = b"".join(parts)
     content_type = f"multipart/form-data; boundary={boundary}"
     return body, content_type
@@ -384,3 +426,12 @@ if __name__ == "__main__":
     if args.demo_sheet:
         p = render_contact_sheet(args.demo_sheet)
         print(f"Wrote {p}")
+
+
+def is_whole_utterance_go_live(transcript: str) -> bool:
+    """Return True iff the normalized transcript is strictly the phrase 'go live' (PRD F21)."""
+    cleaned = "".join(
+        c.lower() if c.isalnum() else " "
+        for c in (transcript or "")
+    )
+    return " ".join(cleaned.split()) == "go live"
