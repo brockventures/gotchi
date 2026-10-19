@@ -342,11 +342,13 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
 
     String img_pre[ImageAttachment::MAX_BURST_FRAMES];
     size_t burst_total_len = 0;
+    bool wrote_part = has_audio;
 
     if (has_burst) {
         for (size_t i = 0; i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {
             if (image->burst_data[i] && image->burst_lengths[i] > 0) {
-                if (has_audio || i > 0) img_pre[i] += "\r\n";
+                if (wrote_part) img_pre[i] += "\r\n";
+                wrote_part = true;
                 img_pre[i] += "--";
                 img_pre[i] += BOUNDARY;
                 img_pre[i] += "\r\nContent-Disposition: form-data; name=\"image_" + String(i) + "\"; filename=\"snap_" + String(i) + ".jpg\"\r\n";
@@ -355,12 +357,18 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
             }
         }
     } else if (has_single_image) {
-        if (has_audio) img_pre[0] += "\r\n";
+        if (wrote_part) img_pre[0] += "\r\n";
+        wrote_part = true;
         img_pre[0] += "--";
         img_pre[0] += BOUNDARY;
         img_pre[0] += "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"snap.jpg\"\r\n";
         img_pre[0] += "Content-Type: image/jpeg\r\n\r\n";
         burst_total_len += img_pre[0].length() + image->length;
+    }
+
+    if (!wrote_part) {
+        setFailure(ui, UiState::ERROR, "bad_url", "BAD VOICE URL", cb);
+        return false;
     }
 
     String post = "\r\n--";
