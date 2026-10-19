@@ -75,3 +75,46 @@ the 1.54" SSD1681 and cannot be reused as is. The ideas below carry over:
 - **Deep sleep after every write**: it clears controller RAM, so a partial refresh must reload the previous frame first (`WaveshareEPDPanel` docstring). `GxEPD2` handles this for the 1.54" class; verify in bring-up.
 - **Event filtering** (`sse.py`): `voice.state` is in `IGNORED_EVENTS` there so voice does not flash the panel. A device that is itself the voice node needs the opposite choice; it must redraw on its own state.
 - **Buttons** (`buttons.py`): GPIO 5 and 6 are Raspberry Pi pins in that daemon; nothing carries over.
+
+## 4. Live gateway (2026-10-18)
+
+Endpoint, event names, and the `sentence` keys were checked live on 2026-10-18. Payload details not in that check are marked as such. The LAN address of the gateway is kept out of this repo (AGENTS.md §4); the device takes it from `voice_url` (`set_config`).
+
+- **Endpoint:** `POST http://<gateway-host>:9098/api/voice/interact`, the voice gateway on port **9098**. The firmware default `voice_url` is `http://mirrormere.local:9098/api/voice/interact`.
+- **Hub port `:8082` returns `503 "voice hub is disabled"`** while the voice hub is disabled. Do not target it.
+- **Request:** `multipart/form-data` with `audio` (`ptt.wav`, `audio/wav`, 16 kHz mono 16-bit WAV), `node_id`, `session_id`.
+- **Response:** `200 text/event-stream`.
+
+Events seen in live turns (order not recorded):
+
+| Event | Data | Notes |
+|---|---|---|
+| `turn` | payload not recorded | Turn bookkeeping. Clients ignore it. |
+| `state` | `{"state": "transcribing"}` etc. | Same state names as section 1. |
+| `transcript` | `{"text", "transcript", "speaker"}` | Both `text` and `transcript` are present. |
+| `status` | `{"status"}` | Brain progress text. |
+| `sentence` | see below | Audio. Up to about 14 per turn. |
+| `reply` | `{"reply"}` | Full reply text. |
+| `done` | `{"duration_ms"}` | End of stream. |
+
+Legacy `audio_chunk` (`{"sample_rate", "data", "is_final"}`) and `error` (`{"error", "message"}`) may also appear.
+**There is no `audio_chunk` in live turns.** The audio is in `sentence.audio_b64`.
+
+`sentence` shape:
+
+```json
+{"text": "...", "engine": "<name>", "format": "pcm", "sample_rate": 24000, "channels": 1, "audio_b64": "<base64 PCM16 LE>"}
+```
+
+Decode `audio_b64` as 16-bit signed little-endian mono PCM at `sample_rate`. Each `sentence` is described as "large" in the live check; sizes were not measured. The firmware parses it without copying the string. Its 256 KB line buffer is the known limit below.
+
+Pre-stream errors are JSON with an HTTP status:
+
+| Status | Device state |
+|---|---|
+| 400 | `error` (bad audio) |
+| 409 | `busy` |
+| 500 | `error` |
+| 503 | `offline` |
+
+Firmware (`firmware/src/voice_client.cpp`) implements this contract. It uses HTTP/1.1 with `Connection: close`, de-chunks `Transfer-Encoding: chunked` before splitting SSE lines, and drops any SSE line over 256 KB with a Serial message. Such a line is a sentence of about 4 s or more of 24 kHz audio, so the limit is a known gap.

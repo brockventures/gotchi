@@ -23,12 +23,16 @@
 #include "audio_hal.h"
 #include "camera_hal.h"
 #include "onboarding_portal.h"
+#include "voice_client.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
 
 struct GotchiConfig {
     String hub_url = "http://mirrormere.local:8080";
+    // Mirrormere voice gateway. Host is a placeholder: the bench LAN address is
+    // set per device with set_config (AGENTS.md §4: no RFC1918 IPs in tracked files).
+    String voice_url = "http://mirrormere.local:9098/api/voice/interact";
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"
     String audio_out_mode = "speaker";// "speaker" | "discord_voice" | "ble_phone"
@@ -42,12 +46,20 @@ static constexpr size_t PREROLL_BYTES   = SAMPLE_RATE_REC * sizeof(int16_t) / 2;
 static constexpr size_t MAX_WAV_BYTES   = 44 + SAMPLE_RATE_REC * sizeof(int16_t) * 15; // 15s cap
 static uint8_t* psram_wav_buf = nullptr;
 
+// Wi-Fi join at boot and push-to-talk timing.
+static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
+static constexpr uint32_t PTT_DEBOUNCE_MS = 30;
+static constexpr uint32_t PTT_MAX_MS      = 15000;
+static constexpr float    PTT_MIN_RMS     = 50.0f / 32768.0f;  // finishPttRecording() returns RMS normalized to [0,1]
+static constexpr size_t   PTT_MIN_BYTES   = 16000;
+
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
 
 void loadConfig() {
     prefs.begin("gotchi", true);
     cfg.hub_url        = prefs.getString("hub_url", cfg.hub_url);
+    cfg.voice_url      = prefs.getString("voice_url", cfg.voice_url);
     cfg.node_id        = prefs.getString("node_id", cfg.node_id);
     cfg.wake_mode      = prefs.getString("wake_mode", cfg.wake_mode);
     cfg.audio_out_mode = prefs.getString("audio_out_mode", cfg.audio_out_mode);
@@ -59,6 +71,7 @@ void loadConfig() {
 void saveConfig() {
     prefs.begin("gotchi", false);
     prefs.putString("hub_url", cfg.hub_url);
+    prefs.putString("voice_url", cfg.voice_url);
     prefs.putString("node_id", cfg.node_id);
     prefs.putString("wake_mode", cfg.wake_mode);
     prefs.putString("audio_out_mode", cfg.audio_out_mode);
@@ -83,6 +96,7 @@ String handleJsonRpc(const String& jsonLine) {
 
     if (cmd == "get_config") {
         res["hub_url"] = cfg.hub_url;
+        res["voice_url"] = cfg.voice_url;
         res["node_id"] = cfg.node_id;
         res["wake_mode"] = cfg.wake_mode;
         res["audio_out_mode"] = cfg.audio_out_mode;
@@ -91,6 +105,7 @@ String handleJsonRpc(const String& jsonLine) {
         res["fw_version"] = GOTCHI_FW_VERSION;
     } else if (cmd == "set_config") {
         if (req["hub_url"].is<const char*>()) cfg.hub_url = req["hub_url"].as<String>();
+        if (req["voice_url"].is<const char*>()) cfg.voice_url = req["voice_url"].as<String>();
         if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["audio_out_mode"].is<const char*>()) cfg.audio_out_mode = req["audio_out_mode"].as<String>();
@@ -141,21 +156,115 @@ void setup() {
     }
     loadConfig();
 
-    gotchi_audio::init(MAX_WAV_BYTES);
+    // Join the configured network before the UI comes up. Unprovisioned units
+    // skip this and fall through to the Soft-AP portal below.
+    bool wifi_configured = cfg.wifi_ssid.length() > 0;
+    bool wifi_up = false;
+    if (wifi_configured) {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_psk.c_str());
+        uint32_t t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_CONNECT_TIMEOUT_MS) {
+            delay(100);
+        }
+        wifi_up = (WiFi.status() == WL_CONNECTED);
+    }
+
+    gotchi_audio::init();
     gotchi_camera::init();
-    if (cfg.wifi_ssid.length() == 0) {
+    if (!wifi_configured) {
         gotchi_portal::startSoftApPortal(httpServer);
     }
 
     panel.begin();
-    GotchiUIState idle_ui;
-    panel.draw(idle_ui);
+    GotchiUIState boot_ui;
+    if (wifi_configured && !wifi_up) {
+        boot_ui.state = UiState::OFFLINE;
+        boot_ui.status_text = "NO WIFI";
+    }
+    panel.draw(boot_ui);
 
     httpServer.on("/api/rpc", HTTP_POST, []() {
         String resp = handleJsonRpc(httpServer.arg("plain"));
         httpServer.send(200, "application/json", resp);
     });
     httpServer.begin();
+}
+
+// Push-to-talk. BTN_TOP is active low; a level counts only after it has held
+// for PTT_DEBOUNCE_MS. Returns true if the button is at `pressed` level.
+static bool pttStable(bool pressed) {
+    const int want = pressed ? LOW : HIGH;
+    if (digitalRead(PIN_BTN_TOP_PTT) != want) return false;
+    delay(PTT_DEBOUNCE_MS);
+    return digitalRead(PIN_BTN_TOP_PTT) == want;
+}
+
+static void showIdle() {
+    GotchiUIState idle_ui;
+    panel.draw(idle_ui);
+}
+
+// Sprite callback for gotchi_voice::interact: redraw on every state change.
+static void onVoiceState(const GotchiUIState& ui) {
+    panel.draw(ui);
+}
+
+// One PTT turn: hold to record, release to send. Returns to idle when done.
+static void runPttTurn() {
+    gotchi_audio::playChime("ptt_start");
+    GotchiUIState ui;
+    ui.state = UiState::LISTENING;
+    ui.status_text = "REC 16kHz PDM MIC...";
+    panel.draw(ui);
+
+    if (!gotchi_audio::beginPttRecording()) {
+        ui.state = UiState::ERROR;
+        ui.error_code = "mic";
+        ui.status_text = "MIC ERROR";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    uint32_t t0 = millis();
+    while (millis() - t0 < PTT_MAX_MS) {
+        if (pttStable(false)) break;
+        gotchi_audio::pollPttRecording();
+        httpServer.handleClient();
+    }
+    gotchi_audio::playChime("ptt_stop");
+    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
+
+    if (wav.rms < PTT_MIN_RMS || wav.length < PTT_MIN_BYTES) {
+        ui.state = UiState::IDLE;
+        ui.status_text = "TOO SHORT";
+        panel.draw(ui);
+        delay(1500);
+        showIdle();
+        return;
+    }
+
+    if (WiFi.status() != WL_CONNECTED) {
+        ui.state = UiState::OFFLINE;
+        ui.status_text = "NO WIFI";
+        panel.draw(ui);
+        delay(2000);
+        showIdle();
+        return;
+    }
+
+    ui.state = UiState::TRANSCRIBING;
+    ui.status_text = "TRANSCRIBING...";
+    panel.draw(ui);
+
+    bool ok = gotchi_voice::interact(wav, cfg.voice_url, cfg.node_id, ui, onVoiceState);
+    if (!ok) {
+        // Hold the error / busy / offline sprite briefly so it is visible.
+        delay(2000);
+    }
+    showIdle();
 }
 
 void loop() {
@@ -167,5 +276,11 @@ void loop() {
             Serial.println(handleJsonRpc(line));
         }
     }
-    delay(5);
+
+    if (pttStable(true)) {
+        runPttTurn();
+        return;
+    }
+    gotchi_audio::pumpPreroll();
+    delay(2);
 }

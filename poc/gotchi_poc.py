@@ -191,9 +191,11 @@ def parse_sse_stream(
         elif ev == "reply":
             ui.reply = payload.get("reply", "")
             ui.status_text = "SPEAKING"
-        elif ev == "audio_chunk":
+        elif ev in ("audio_chunk", "sentence"):
+            # Live gateway (2026-10-18) sends `sentence` with `audio_b64`; legacy
+            # `audio_chunk` carries the same PCM under `data`.
             ui.state = "speaking"
-            b64 = payload.get("data", "")
+            b64 = payload.get("audio_b64" if ev == "sentence" else "data", "")
             sr = int(payload.get("sample_rate", 24000) or 24000)
             is_final = bool(payload.get("is_final", False))
             pcm = base64.b64decode(b64) if b64 else b""
@@ -201,6 +203,8 @@ def parse_sse_stream(
             ui.last_sample_rate = sr
             if on_audio_pcm and pcm:
                 on_audio_pcm(pcm, sr, is_final)
+        elif ev == "turn":
+            pass  # turn bookkeeping only; nothing to show
         elif ev == "error":
             ui.state = "error"
             ui.error_code = payload.get("error", "error")

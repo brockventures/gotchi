@@ -86,6 +86,46 @@ def test_parse_sse_stream_and_render_sprite():
     assert im.mode == "1"
 
 
+def test_parse_sse_live_sentence_stream():
+    # Live gateway shape (2026-10-18): turn, state, transcript, sentence x2, done.
+    pcm_a = b"\x10\x00" * 300  # 600 bytes
+    pcm_b = b"\x20\x00" * 50   # 100 bytes
+    sse_lines = [
+        "event: turn",
+        'data: {"turn_id": "t-1"}',
+        "",
+        "event: state",
+        'data: {"state": "transcribing"}',
+        "",
+        "event: transcript",
+        'data: {"text": "hello", "transcript": "hello", "speaker": ""}',
+        "",
+        "event: state",
+        'data: {"state": "speaking"}',
+        "",
+        "event: sentence",
+        'data: {"text": "one", "engine": "kokoro", "format": "pcm", "sample_rate": 24000, '
+        '"channels": 1, "audio_b64": "' + base64.b64encode(pcm_a).decode() + '"}',
+        "",
+        "event: sentence",
+        'data: {"text": "two", "engine": "kokoro", "format": "pcm", "sample_rate": 24000, '
+        '"channels": 1, "audio_b64": "' + base64.b64encode(pcm_b).decode() + '"}',
+        "",
+        "event: done",
+        'data: {"duration_ms": 1234}',
+        "",
+    ]
+    pcm_chunks = []
+    ui = parse_sse_stream(sse_lines, on_audio_pcm=lambda pcm, sr, final: pcm_chunks.append((pcm, sr, final)))
+    assert ui.audio_bytes_received == len(pcm_a) + len(pcm_b) == 700
+    assert len(pcm_chunks) == 2
+    assert pcm_chunks[0][0] == pcm_a and pcm_chunks[1][0] == pcm_b
+    assert all(sr == 24000 and final is False for _, sr, final in pcm_chunks)
+    assert ui.transcript == "hello"
+    assert ui.state == "idle"  # `done` is the last state change
+    assert ui.status_text == "DONE (1234ms)"
+
+
 def test_render_zero_skin_all_9_states():
     from poc.gotchi_poc import VALID_STATES
     for st in VALID_STATES:
