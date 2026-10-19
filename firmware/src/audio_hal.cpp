@@ -191,9 +191,10 @@ bool startAsyncPttTask() {
 void stopAsyncPttTask() {
     if (!s_ptt_task_running) return;
     s_ptt_task_running = false;
-    uint32_t t0 = millis();
-    while (s_ptt_task_handle != nullptr && (millis() - t0) < 100) {
-        delay(2);
+    // Wait deterministically for the Core 0 task (<=12 ms max cycle: 10 ms i2s_read + 2 ms delay)
+    // to clear s_ptt_task_handle so finishPttRecording() never overlaps s_rec_samples.
+    while (s_ptt_task_handle != nullptr) {
+        delay(1);
     }
 }
 

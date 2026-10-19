@@ -36,9 +36,20 @@ struct GotchiConfig {
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"
     String audio_out_mode = "speaker";// "speaker" | "discord_voice" | "ble_phone"
+    String skin = "zero";             // "zero" | "gotchi"
+    String bearer_token = "";         // Per-device Bearer token for off-LAN / tunnel auth (T3.2)
     String wifi_ssid = "";
     String wifi_psk = "";
 } cfg;
+
+static bool constantTimeEquals(const String& a, const String& b) {
+    if (a.length() != b.length()) return false;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < a.length(); ++i) {
+        diff |= (uint8_t)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
 
 // PSRAM Audio Buffers (16 kHz 16-bit mono recording + 500ms circular pre-roll)
 static constexpr size_t SAMPLE_RATE_REC = 16000;
@@ -206,6 +217,8 @@ void setup() {
         String resp = handleJsonRpc(httpServer.arg("plain"));
         httpServer.send(200, "application/json", resp);
     });
+    static const char* kCollectedHeaders[] = {"Authorization"};
+    httpServer.collectHeaders(kCollectedHeaders, 1);
     httpServer.begin();
 }
 
