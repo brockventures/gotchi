@@ -36,7 +36,7 @@ struct GotchiConfig {
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"
     String input_mode = "hybrid";     // "hybrid" | "tap" | "hold"
-    String preroll_mode = "usb_only"; // "usb_only" | "always" | "off"
+    String preroll_mode = "usb_host"; // "usb_host" (or "usb_only") | "always" | "off"
     String audio_out_mode = "speaker";// "speaker" | "discord_voice" | "ble_phone"
     String skin = "zero";             // "zero" | "gotchi"
     String bearer_token = "";         // Per-device Bearer token for off-LAN / tunnel auth (T3.2)
