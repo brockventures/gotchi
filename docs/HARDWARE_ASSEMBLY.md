@@ -94,10 +94,10 @@ Reference dimensions for the locked 7-item V1 BOM (`cad/` multi-part openable sh
 
 | # | Component | Nominal Dimensions (`L x W x H`) | Enclosure Cutout & Mounting Notes |
 | :--- | :--- | :--- | :--- |
-| **1** | **XIAO ESP32S3 + Sense Stack** | `21.0 x 17.8 x ~15.0 mm` | `USB-C` receptacle (`9.0 x 3.4 mm` opening) on edge; camera lens window (`~8.5 x 8.5 mm`) + PDM mic pinhole (`Ø 1.5 mm`) on Sense board; `U.FL` flex antenna patch (`~42 x 12 mm`). |
+| **1** | **XIAO ESP32S3 + Sense Stack** | `21.0 x 17.8 x ~15.0 mm` | `USB-C` receptacle (`9.0 x 3.4 mm` opening) on bottom edge; top-port MEMS PDM mic sits on the top face of the Sense expansion board adjacent to the camera FPC header (faces the same direction as the camera lens, so a `Ø 2.0 mm` pinhole next to the `~8.5 x 8.5 mm` camera cutout or a shared relief channel works cleanly); `U.FL` flex antenna patch (`~42 x 12 mm`). |
 | **2** | **Waveshare 1.54" E-Paper V2 (`SKU 12955`)** | **`48.0 x 33.0 x ~2.8 mm`** *(+ `~5.5 mm` rear PH2.0 header)* | Active viewing bezel opening: **`27.6 x 27.6 mm`** (`200x200` px). 4x **`M2` (`Ø 2.0 mm`)** corner mounting holes (`~43.0 x 28.0 mm` hole centers). |
 | **3** | **MAX98357A I2S Amp (`B0DPJRLMDJ`)** | `~19.0 x 17.8 x 3.0 mm` | Internal tray or siderib slot; 2x `M2` mounting holes. |
-| **4** | **1W 8Ω Cavity Speaker (`B0D7S8FFKY`)** | `~20.0 x 14.0 x 3.5 mm` *(allow `31 x 21 x 5 mm` bay)* | Enclosed resonant micro-speaker; place front sound grille slots facing outward. |
+| **4** | **1W 8Ω Cavity Speaker (`B0D7S8FFKY`)** | **`15.0 x 10.0 x 3.5 mm`** (`1510` cavity, allow `16.0 x 11.0 x 4.5 mm` pocket) | Enclosed resonant micro-speaker w/ JST-PH1.25 leads; place sound grille slots facing outward. |
 | **5** | **`803040` 1000mAh LiPo (`B0FRFY7KLH`)** | **`40.0 x 30.0 x 8.0 mm`** *(design bay **`42.0 x 32.0 x 9.0 mm`**)* | Flat rear compartment in the back shell half with `1.0 mm` swell clearance and wire exit channel. |
 | **6** | **2x Tactile Buttons (`B07VSNN9S2`)** | `6.0 x 6.0 x 5.0 mm` (`3.5 mm` base + `1.5 mm` stem) | Side-edge cradle for `BTN_TOP` (PTT) and `BTN_BOT` (Mode/Snap) with captive button caps or compliant flex paddles. |
 | **7** | **Mini SPDT Slide Switch (`B0FNK8B1YV`)** | `~8.5 x 3.5 x 4.0 mm` (`2.0 mm` slider travel) | Recessed perimeter slot (`~4.5 x 2.0 mm` window) so the power switch cannot flip accidentally in a pocket. |
