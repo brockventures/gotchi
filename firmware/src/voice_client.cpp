@@ -190,7 +190,7 @@ const char* findB64(const char* line, const char* key, size_t& out_len) {
 
 // Handles one `data:` line. Returns true when the event is `done` or aborted.
 bool handleEvent(const char* event, const char* line, const JsonDocument& filter,
-                 GotchiUIState& ui, StateCb cb) {
+                 GotchiUIState& ui, StateCb cb, bool mute_local_speaker = false) {
     if (checkAbortFlag()) return true;
     const bool is_sentence = strcmp(event, "sentence") == 0;
     const bool is_legacy   = strcmp(event, "audio_chunk") == 0;
@@ -243,8 +243,13 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
             ui.state = UiState::SPEAKING;
             if (cb) cb(ui);
         }
-        if (!gotchi_audio::playBase64PcmChunk(b64, b64_len, rate) && checkAbortFlag()) {
-            return true;
+        if (!mute_local_speaker) {
+            if (!gotchi_audio::playBase64PcmChunk(b64, b64_len, rate) && checkAbortFlag()) {
+                return true;
+            }
+        } else {
+            // Mute local speaker for discord_voice / ble_phone while keeping UI in sync (F8/T3.3)
+            if (checkAbortFlag()) return true;
         }
     } else if (strcmp(event, "error") == 0) {
         const char* code = doc["error"] | "error";
@@ -260,7 +265,7 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
 }
 
 // Reads SSE lines from rd into buf. Returns true if `done` was seen or user aborted.
-bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
+bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb, bool mute_local_speaker = false) {
     JsonDocument filter;
     filter["state"] = true;
     filter["transcript"] = true;
@@ -297,7 +302,7 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
             strncpy(event, name, sizeof(event) - 1);
             event[sizeof(event) - 1] = '\0';
         } else if (strncmp(buf, "data:", 5) == 0) {
-            if (handleEvent(event, buf + 5, filter, ui, cb)) return true;
+            if (handleEvent(event, buf + 5, filter, ui, cb, mute_local_speaker)) return true;
         }
         len = 0;
         overflow = false;
@@ -309,7 +314,7 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
               GotchiUIState& ui, StateCb cb, const String& bearer_token,
               const ImageAttachment* image, AbortPollFn abort_poll,
-              InteractResult* out_result) {
+              InteractResult* out_result, const String& audio_out_mode) {
     s_active_abort_poll = abort_poll;
     s_active_abort_kind = InteractResult::DONE;
     if (out_result) *out_result = InteractResult::ERROR;
@@ -384,6 +389,12 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         post += BOUNDARY;
         post += "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n";
         post += image->default_prompt;
+    }
+    if (audio_out_mode.length() > 0) {
+        post += "\r\n--";
+        post += BOUNDARY;
+        post += "\r\nContent-Disposition: form-data; name=\"audio_out_mode\"\r\n\r\n";
+        post += audio_out_mode;
     }
     post += "\r\n--";
     post += BOUNDARY;
@@ -491,8 +502,9 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
 
+    const bool mute_local = (audio_out_mode == "discord_voice" || audio_out_mode == "ble_phone");
     gotchi_audio::setPlaybackAbortCheck(checkAbortFlag);
-    bool done = streamEvents(rd, buf, ui, cb);
+    bool done = streamEvents(rd, buf, ui, cb, mute_local);
     gotchi_audio::setPlaybackAbortCheck(nullptr);
     s_active_abort_poll = nullptr;
 

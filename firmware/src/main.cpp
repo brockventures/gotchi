@@ -146,6 +146,9 @@ void loadConfig() {
     cfg.input_mode           = prefs.getString("input_mode", cfg.input_mode);
     cfg.preroll_mode         = prefs.getString("preroll_mode", cfg.preroll_mode);
     cfg.audio_out_mode       = prefs.getString("audio_out_mode", cfg.audio_out_mode);
+    if (cfg.audio_out_mode != "speaker" && cfg.audio_out_mode != "discord_voice" && cfg.audio_out_mode != "ble_phone") {
+        cfg.audio_out_mode = "speaker";
+    }
     cfg.skin                 = prefs.getString("skin", cfg.skin);
     cfg.bearer_token         = prefs.getString("bearer_token", "");
     cfg.wifi_ssid            = prefs.getString("wifi_ssid", "");
@@ -243,7 +246,12 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["input_mode"].is<const char*>()) cfg.input_mode = req["input_mode"].as<String>();
         if (req["preroll_mode"].is<const char*>()) cfg.preroll_mode = req["preroll_mode"].as<String>();
-        if (req["audio_out_mode"].is<const char*>()) cfg.audio_out_mode = req["audio_out_mode"].as<String>();
+        if (req["audio_out_mode"].is<const char*>()) {
+            String m = req["audio_out_mode"].as<String>();
+            if (m == "speaker" || m == "discord_voice" || m == "ble_phone") {
+                cfg.audio_out_mode = m;
+            }
+        }
         if (req["skin"].is<const char*>()) cfg.skin = req["skin"].as<String>();
         if (req["bearer_token"].is<const char*>()) cfg.bearer_token = req["bearer_token"].as<String>();
         if (req["ptt_max_ms"].is<uint32_t>()) {
@@ -471,7 +479,7 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
     gotchi_voice::InteractResult result = gotchi_voice::InteractResult::DONE;
     bool ok = gotchi_voice::interact(
         wav, cfg.voice_url, cfg.node_id, ui, onVoiceState, cfg.bearer_token,
-        img_ptr, pollVoiceAbort, &result
+        img_ptr, pollVoiceAbort, &result, cfg.audio_out_mode
     );
     if (ok) {
         gotchi_log::RingLogger.info("http", "Interact stream completed (done)");
