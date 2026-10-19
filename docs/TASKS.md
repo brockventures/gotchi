@@ -10,7 +10,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [x] **T1.2 — Audit Mirrormere Hub Voice Contract** (`Amos`)
   - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml` and documented in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md).
 - [x] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
-  - Ordered 1-unit BOM cart from [`docs/BOM.md`](BOM.md) on Amazon (2026-10-19).
+  - Ordered 1-unit BOM cart from [`docs/BOM.md`](BOM.md) on Amazon (Ryan, 2026-10-19).
 
 ---
 
@@ -46,12 +46,12 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - [x] Implement reference voice gateway server (`backend/voice_gateway.py`), multimodal single & burst parser, and test suite (`tests/test_voice_gateway.py`, `PR #23`, Closes #16).
 - [x] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
   - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` on device (NVS persistence, strict JSON-RPC validation returning `invalid_audio_out_mode`, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation) and reference gateway routing hook (`backend/voice_gateway.py`, F8 / Issue #19; firmware built, unflashed).
-  - [x] Connect reference gateway (`backend/voice_gateway.py`) `DiscordVoiceSink` (`discord_voice_bot: "zero" | "mirrormere" | "custom"`, webhook dispatch) and ESP32-S3 BLE peripheral fallback (`firmware/include/ble_transport.h`, `firmware/src/ble_transport.cpp`, `firmware/src/voice_client.cpp`).
+  - [x] Connect reference gateway (`backend/voice_gateway.py`) `DiscordVoiceSink` (`discord_voice_bot: "zero" | "mirrormere" | "custom"`, `https://` allowlisted webhook dispatch via `run_in_executor`) and ESP32-S3 BLE peripheral fallback (`firmware/include/ble_transport.h`, `firmware/src/ble_transport.cpp`, `firmware/src/voice_client.cpp`, PR #34 / PR #36).
 - [x] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
   - [x] Implement RFC 6455 WebSocket client (`firmware/include/live_client.h`, `firmware/src/live_client.cpp`) streaming 16 kHz PCM uplink / 24 kHz PCM downlink over `/api/live/ws` with `live_mode` off by default (F19, F21 / Issue #20; firmware built, unflashed).
   - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst base64 JSON injection, BTN_TOP single-press exit, HTTP/Serial RPC polling during active sessions, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
   - [x] Implement `backend/live_gateway.py` with `BearerTokenVerifier` enforcement, malformed payload handling, pluggable upstream provider adapter, and unit tests (`tests/test_live_gateway.py`).
-  - [x] Implement user-customizable LLM provider configuration (`backend/llm_config.py`, `GET/PUT/POST /api/config/llm`) supporting `mock` (default), metered `api_key` (`ApiKeyLiveProvider`), and personal `subscription` account bridges (`SubscriptionLiveProvider`) (`tests/test_llm_config_and_sinks.py`).
+  - [x] Implement user-customizable LLM provider configuration (`backend/llm_config.py`, `GET/PUT/POST /api/config/llm` protected by `GOTCHI_ADMIN_TOKEN`) supporting `mock` (default), metered `api_key` (`ApiKeyLiveProvider`), and gateway-preconfigured `subscription` account bridges (`SubscriptionLiveProvider`) (`tests/test_llm_config_and_sinks.py`, PR #35 / PR #36).
 
 ---
 
@@ -68,3 +68,19 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Model a multi-part openable enclosure in Blender / CAD sized to the locked 7-item mechanical envelope in [`docs/HARDWARE_ASSEMBLY.md`](HARDWARE_ASSEMBLY.md): Waveshare `48.0 x 33.0 mm` e-paper V2 module (`27.6 x 27.6 mm` bezel window + 4x `M2` bosses), stacked XIAO ESP32S3 Sense (`21.0 x 17.8 x 15.0 mm` w/ `USB-C` + camera/mic apertures), `803040` `40 x 30 x 8 mm` LiPo bay, `MAX98357A` + `1W 8Ω` cavity speaker grille, 2x `6x6x5mm` tactile button actuators, and recessed SPDT slide switch slot.
 - [ ] **T5.2 — V1.1 Wake-Word & Tiny Audio-Intent Classifier Spike** (`Mike`, `Zero`, `Amos`)
   - Benchmark `microWakeWord` / `ESP-SR` and Mike's wake-word-free tiny audio-intent classifier on the ESP32-S3 vector unit (`ESP-NN`), measuring real-world mA draw against the 1000 mAh LiPo.
+
+---
+
+## Epic 6: Mirrormere & Garage Voice QA Carry-Over (PRD Section 5c — From 2:23 PM PT Onward)
+- [ ] **T6.1 — Go Live Post-Playback I2S RX DMA Drain & `ESP-SR` AEC Bench Evaluation** (`Zero`, `Amos`, `Mike`) — [Issue #37](https://github.com/brockventures/gotchi/issues/37)
+  - Flush/drain the I2S RX DMA ring buffer and enforce a configurable post-playback mute tail (`live_echo_tail_ms`, default `250 ms`) after each synchronous speaker chunk in `firmware/src/live_client.cpp` so accumulated room reverb is never uploaded when `playPcmChunk` returns; benchmark whether `ESP-SR` Acoustic Echo Cancellation (`AEC`) is required on physical hardware.
+- [ ] **T6.2 — Default `800 ms` Trailing Silence (`ptt_silence_ms`) & Neural VAD vs. RMS Evaluation** (`Zero`, `Amos`, `Mike`) — [Issue #38](https://github.com/brockventures/gotchi/issues/38)
+  - Update the firmware default trailing silence starting point from `1500 ms` to Mirrormere's tested `800 ms` (`ptt_silence_ms` in `firmware/src/main.cpp`, keeping it configurable via `set_config` with a `10 s` cap) and benchmark on-device neural VAD (`ESP-SR` VADNet) against the plain `50 LSB` RMS threshold for false-trigger rejection.
+- [ ] **T6.3 — Firmware On-Device `node_id` Regex Validation (`^[A-Za-z0-9_-]{1,64}$`)** (`Zero`) — [Issue #39](https://github.com/brockventures/gotchi/issues/39)
+  - Add on-device `node_id` validation (`^[A-Za-z0-9_-]{1,64}$`, matching `backend/voice_gateway.py` in PR #36) inside `firmware/src/main.cpp` (`set_config`) and captive portal provisioning, returning `invalid_node_id` on malformed input.
+- [ ] **T6.4 — Real Whisper STT & Per-Sentence Kokoro TTS Adapter in Reference Gateway** (`Zero`, `Amos`) — [Issue #40](https://github.com/brockventures/gotchi/issues/40)
+  - Connect `backend/voice_gateway.py`'s per-sentence `tts_synthesizer` and STT hooks (added in PR #36 alongside the `1200 ms`/`5000 ms` spoken filler, `60`-word `reply_cap_words`, and `400 ms` ghost filter) to real Whisper STT and Kokoro TTS backends so standalone reference gateway deployments emit real speech audio rather than synthetic silence.
+- [ ] **T6.5 — Mirrormere Production Gateway (`services/mirrormere-voice-gateway/gateway.py`) Multimodal Image & Burst Support** (`Amos`, `Zero`, `Mike`) — [Issue #41](https://github.com/brockventures/gotchi/issues/41)
+  - Update the production Mirrormere voice gateway turn handler (`services/mirrormere-voice-gateway/gateway.py`, which currently reads `audio` and decodes all other multipart fields as text) to parse binary `image` and `image_0`..`image_4` JPEG attachments for single-snapshot (`F14`) and 5-frame burst (`F20`) turns.
+- [ ] **T6.6 — Garage E-Paper Animation Timing & Partial-Refresh Cadence Bench QA** (`Mike`, `Amos`, `Zero`, `Ryan`) — [Issue #42](https://github.com/brockventures/gotchi/issues/42)
+  - Apply garage UX testing notes on sprite state transition timing (`LISTENING` -> `THINKING` -> spoken filler -> `SPEAKING` -> `IDLE`), `0.3 s` partial-refresh frame pacing, and full-refresh ghosting recovery intervals on the physical Waveshare `1.54"` V2 panel once bench hardware arrives.
