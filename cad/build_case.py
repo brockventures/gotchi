@@ -7,7 +7,7 @@ Outputs under <out>/: stl/gotchi_front.stl, stl/gotchi_back.stl,
 stl/gotchi_button_cap.stl, gotchi_case.blend, renders/{front_iso,back_iso,exploded}.png
 
 Units: 1 Blender unit = 1 mm. X = width, Y = height (+Y top), Z = depth.
-Front face z=0, back face z=-27. Parameters: see P below (decided values, do not tune here).
+Front face z=0, back face z=-29. Parameters: see P below (decided values, do not tune here).
 Exits non-zero on any Python error or any non-manifold edge.
 """
 import math
@@ -20,21 +20,22 @@ from mathutils import Matrix, Vector
 
 P = dict(
     wall=2.0,
-    W_out=38.0, H_out=72.0, D_out=27.0,
+    W_out=38.0, H_out=72.0, D_out=29.0,
     W_in=34.0, H_in=68.0,
-    split_z=-9.0,
+    split_z=-11.0,
     edge_bevel=2.0, bevel_segments=6,
-    disp_w=33.0, disp_h=48.0, disp_d=7.0, disp_cy=4.0,
+    disp_w=33.0, disp_h=48.0, disp_d=9.0, disp_cy=4.0,
     win_w=28.4, win_h=28.4, win_off_x=0.0, win_off_y=0.0,
     plate_t=1.2, plate_y_top=28.0, plate_y_bot=-14.0,
     bat_w=30.0, bat_h=40.0, bat_d=7.8, bat_cy=7.0,
     xiao_w=21.0, xiao_h=17.8, xiao_d=15.0, xiao_cy=-24.1, xiao_z_front=-3.0,
     usb_w=10.0, usb_h=4.5, usb_cz=-4.6,
     cam_hole_d=9.0, cam_cx=0.0, cam_cy=-24.0,
+    mic_d=2.0, mic_cx=6.0, mic_cy=-24.0,
     boss_d=5.0, boss_x=14.5, boss_y=31.0, pilot_d=1.7, clear_d=2.4,
     cbore_d=4.2, cbore_depth=1.5,
-    btn_x=8.0, btn_cz=-16.0, btn_hole_d=3.8,
-    sw_cy=-24.0, sw_cz=-16.0, sw_slot_z=5.0, sw_slot_y=2.0,
+    btn_x=8.0, btn_cz=-18.0, btn_hole_d=3.8,
+    sw_cy=-24.0, sw_cz=-18.0, sw_slot_z=5.0, sw_slot_y=2.0,
     spk_cx=9.0, spk_cy=20.0, spk_w=15.4, spk_h=10.4, spk_d=3.5,
     grille_d=1.5, grille_nx=4, grille_ny=3, grille_pitch=3.0,
     amp_cx=-6.0, amp_cy=5.0,
@@ -176,12 +177,12 @@ def build_front():
 
     iw, ih = p['W_in'] / 2, p['H_in'] / 2
     # shell cavity, open at split face
-    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -9.0001, -2.0))
+    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -11.0001, -2.0))
 
     # --- unions (features) ---
     rib = bmesh.new()
-    add_box(rib, -17.0, 17.0, 28.3, 29.8, -9.0, -2.0)      # display stop, top
-    add_box(rib, -17.0, 17.0, -21.8, -20.3, -9.0, -2.0)    # display stop, bottom
+    add_box(rib, -17.0, 17.0, 28.3, 29.8, -11.0, -2.0)      # display stop, top
+    add_box(rib, -17.0, 17.0, -21.8, -20.3, -11.0, -2.0)    # display stop, bottom
     union(part, rib)
 
     # Boss top is embedded 0.01 mm into the front wall (z=-1.99, not -2.0). An exactly
@@ -192,7 +193,7 @@ def build_front():
         for sy in (-1, 1):
             add_cyl(bosses, p['boss_d'] / 2,
                     (sx * p['boss_x'], sy * p['boss_y'], -1.99),
-                    (sx * p['boss_x'], sy * p['boss_y'], -9.0))
+                    (sx * p['boss_x'], sy * p['boss_y'], -11.0))
     union(part, bosses)
 
     # --- holes last: one cutter per boolean (combined multi-shell operands gave bad results) ---
@@ -202,12 +203,12 @@ def build_front():
     wy = 4.0 + p['win_off_y']
     cutters.append(add_box(bmesh.new(), p['win_off_x'] - wx, p['win_off_x'] + wx,
                            wy - p['win_h'] / 2, wy + p['win_h'] / 2, -2.5, 1.0))
-    # pilot holes, depth 6.0 from split face toward front
+    # pilot holes, depth 6.0 from split face (z=-11) toward front
     for sx in (-1, 1):
         for sy in (-1, 1):
             cutters.append(add_cyl(bmesh.new(), p['pilot_d'] / 2,
-                                   (sx * p['boss_x'], sy * p['boss_y'], -9.5),
-                                   (sx * p['boss_x'], sy * p['boss_y'], -3.0)))
+                                   (sx * p['boss_x'], sy * p['boss_y'], -11.5),
+                                   (sx * p['boss_x'], sy * p['boss_y'], -5.0)))
     # USB-C slot through bottom wall
     uw, uh = p['usb_w'] / 2, p['usb_h'] / 2
     cutters.append(add_box(bmesh.new(), -uw, uw, -37.0, -33.5,
@@ -220,15 +221,15 @@ def build_front():
 def build_back():
     p = P
     hw, hh = p['W_out'] / 2, p['H_out'] / 2
-    bm = add_box(bmesh.new(), -hw, hw, -hh, hh, -27.0, p['split_z'])
+    bm = add_box(bmesh.new(), -hw, hw, -hh, hh, -p['D_out'], p['split_z'])
     bevel_all(bm, p['edge_bevel'], p['bevel_segments'])
     part = bm_to_obj('back', bm)
 
     iw, ih = p['W_in'] / 2, p['H_in'] / 2
-    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -25.0, -8.9999))
+    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -27.0, -10.9999))
 
     # display plate
-    plate = add_box(bmesh.new(), -17.0, 17.0, p['plate_y_bot'], p['plate_y_top'], -10.2, -9.0)
+    plate = add_box(bmesh.new(), -17.0, 17.0, p['plate_y_bot'], p['plate_y_top'], -12.2, -11.0)
     union(part, plate)
 
     # screw bosses (solid here, clearance bored at the end)
@@ -236,14 +237,14 @@ def build_back():
     for sx in (-1, 1):
         for sy in (-1, 1):
             add_cyl(bosses, p['boss_d'] / 2,
-                    (sx * p['boss_x'], sy * p['boss_y'], -9.0),
-                    (sx * p['boss_x'], sy * p['boss_y'], -25.0))
+                    (sx * p['boss_x'], sy * p['boss_y'], -11.0),
+                    (sx * p['boss_x'], sy * p['boss_y'], -27.0))
     union(part, bosses)
 
     # XIAO side ribs: 1.2 thick in X, centred x = +/-11.4
     ribs = bmesh.new()
     for cx in (11.4, -11.4):
-        add_box(ribs, cx - 0.6, cx + 0.6, -34.0, -14.0, -21.0, -9.0)
+        add_box(ribs, cx - 0.6, cx + 0.6, -34.0, -14.0, -23.0, -11.0)
     union(part, ribs)
 
     # button sockets: square tube 6.4 x 6.4 inner, wall 1.0, y +28..+34
@@ -265,13 +266,13 @@ def build_back():
     bool_op(frame, bm_to_obj('sw_void', inner), 'DIFFERENCE')
     bool_op(part, frame, 'UNION')
 
-    # speaker pocket frame on inside of back wall: inner 15.4 x 10.4, wall 1.0, z -25..-21.5
+    # speaker pocket frame on inside of back wall: inner 15.4 x 10.4, wall 1.0, z -27..-23.5
     scx, scy = p['spk_cx'], p['spk_cy']
     ow, oh = p['spk_w'] / 2 + 1.0, p['spk_h'] / 2 + 1.0
-    outer = add_box(bmesh.new(), scx - ow, scx + ow, scy - oh, scy + oh, -25.0, -21.5)
+    outer = add_box(bmesh.new(), scx - ow, scx + ow, scy - oh, scy + oh, -27.0, -23.5)
     spk = bm_to_obj('spk_frame', outer)
     iw2, ih2 = p['spk_w'] / 2, p['spk_h'] / 2
-    inner = add_box(bmesh.new(), scx - iw2, scx + iw2, scy - ih2, scy + ih2, -26.0, -21.0)
+    inner = add_box(bmesh.new(), scx - iw2, scx + iw2, scy - ih2, scy + ih2, -28.0, -23.0)
     bool_op(spk, bm_to_obj('spk_void', inner), 'DIFFERENCE')
     bool_op(part, spk, 'UNION')
 
@@ -280,11 +281,14 @@ def build_back():
     for sx in (-1, 1):
         for sy in (-1, 1):
             bx, by = sx * p['boss_x'], sy * p['boss_y']
-            cutters.append(add_cyl(bmesh.new(), p['clear_d'] / 2, (bx, by, -27.5), (bx, by, -8.5)))
-            cutters.append(add_cyl(bmesh.new(), p['cbore_d'] / 2, (bx, by, -27.5),
-                                   (bx, by, -27.0 + p['cbore_depth'])))
-    cutters.append(add_cyl(bmesh.new(), p['cam_hole_d'] / 2, (p['cam_cx'], p['cam_cy'], -27.5),
-                           (p['cam_cx'], p['cam_cy'], -24.5)))
+            cutters.append(add_cyl(bmesh.new(), p['clear_d'] / 2, (bx, by, -29.5), (bx, by, -10.5)))
+            cutters.append(add_cyl(bmesh.new(), p['cbore_d'] / 2, (bx, by, -29.5),
+                                   (bx, by, -29.0 + p['cbore_depth'])))
+    cutters.append(add_cyl(bmesh.new(), p['cam_hole_d'] / 2, (p['cam_cx'], p['cam_cy'], -29.5),
+                           (p['cam_cx'], p['cam_cy'], -26.5)))
+    # PDM mic port through the back wall only, 0.5 mm from the camera hole edge
+    cutters.append(add_cyl(bmesh.new(), p['mic_d'] / 2, (p['mic_cx'], p['mic_cy'], -29.5),
+                           (p['mic_cx'], p['mic_cy'], -26.5)))
     for bx in (-p['btn_x'], p['btn_x']):
         cutters.append(add_cyl(bmesh.new(), p['btn_hole_d'] / 2, (bx, 33.5, p['btn_cz']),
                                (bx, 36.5, p['btn_cz'])))
@@ -297,7 +301,7 @@ def build_back():
         for j in range(p['grille_ny']):
             gx = scx + (i - (p['grille_nx'] - 1) / 2) * p['grille_pitch']
             gy = scy + (j - (p['grille_ny'] - 1) / 2) * p['grille_pitch']
-            cutters.append(add_cyl(bmesh.new(), p['grille_d'] / 2, (gx, gy, -27.5), (gx, gy, -24.5)))
+            cutters.append(add_cyl(bmesh.new(), p['grille_d'] / 2, (gx, gy, -29.5), (gx, gy, -26.5)))
     for c in cutters:
         subtract(part, c)
     return part
@@ -431,13 +435,13 @@ def main():
 
     # exploded: back half (and its contents) moved -35 in Z; placeholders are render-only
     ph = []
-    ph.append(placeholder('ph_display', (0, P['disp_cy'], -5.5), (33, 48, 7), (0.2, 0.5, 0.9)))
+    ph.append(placeholder('ph_display', (0, P['disp_cy'], -6.5), (33, 48, P['disp_d']), (0.2, 0.5, 0.9)))
     back_z = -35.0
     back.location.z = back_z
-    ph.append(placeholder('ph_battery', (0, P['bat_cy'], -14.1), (30, 40, 7.8), (0.9, 0.6, 0.1)))
+    ph.append(placeholder('ph_battery', (0, P['bat_cy'], -16.1), (30, 40, 7.8), (0.9, 0.6, 0.1)))
     ph.append(placeholder('ph_xiao', (0, P['xiao_cy'], P['xiao_z_front'] - 7.5), (21, 17.8, 15), (0.2, 0.8, 0.3)))
-    ph.append(placeholder('ph_speaker', (P['spk_cx'], P['spk_cy'], -23.25), (15.4, 10.4, 3.5), (0.8, 0.2, 0.2)))
-    ph.append(placeholder('ph_amp', (P['amp_cx'], P['amp_cy'], -20.0), (20, 18, 4), (0.6, 0.2, 0.8)))
+    ph.append(placeholder('ph_speaker', (P['spk_cx'], P['spk_cy'], -25.25), (15.4, 10.4, 3.5), (0.8, 0.2, 0.2)))
+    ph.append(placeholder('ph_amp', (P['amp_cx'], P['amp_cy'], -22.0), (20, 18, 4), (0.6, 0.2, 0.8)))
     for bx in (-P['btn_x'], P['btn_x']):
         ph.append(placeholder('ph_button', (bx, 31.0, P['btn_cz']), (6, 5, 6), (0.95, 0.9, 0.2)))
     ph.append(placeholder('ph_switch', (-15.0, P['sw_cy'], P['sw_cz']), (3.5, 4.0, 8.6), (0.1, 0.9, 0.9)))
