@@ -40,13 +40,15 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F9 | Camera snapshot on the bottom button | `README.md` | Camera driver built; snapshot flow not built |
 | F11 | Recording cap raised to the longest the hardware reasonably supports | Ryan, #gotchi 2026-10-19 09:09 | Not built (15 s today) |
 | F12 | Pre-roll runs on USB power by default, with a setting to keep it on at all times | Ryan, #gotchi 2026-10-19 09:09 | Not built |
-| F13 | Pressing a button while a reply plays interrupts it; the bottom button can also cancel or mute playback | Ryan, #gotchi 2026-10-19 09:09 | Not built |
-| F14 | A snapshot attaches to the next voice prompt if that prompt starts within a debounce time; otherwise it is sent alone for the bot to comment on | Ryan, #gotchi 2026-10-19 09:09 | Not built |
+| F13 | Top button is for speaking only. While a reply plays, pressing it cancels or mutes the reply and returns to idle. It does not start a new recording | Ryan, #gotchi 2026-10-19 09:45 | Not built (PR #11 builds the older behaviour) |
+| F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. The bottom button no longer cancels a recording | Ryan, #gotchi 2026-10-19 09:15 and 09:45 | Not built (PR #11 builds the older behaviour) |
 | F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Config exists (`voice_url`) |
 | F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
 | F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
 | F18 | BLE relay test: the same turn with the phone away from home Wi-Fi | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
 | F19 | "Go Live" mode: a continuous two-way voice session through a live multimodal model, entered on purpose and ending on a timeout. Configurable so it can be turned off | Ryan, #gotchi 2026-10-19 09:21 and 09:35 | Not built; not designed |
+| F20 | Long press on the bottom button takes a burst of five photos over 3 seconds and sends them together, for something moving or being turned between frames | Ryan, #gotchi 2026-10-19 09:45 | Not built; the gateway reads no image today |
+| F21 | Saying "Go Live" as a voice command starts a Live session | Ryan, #gotchi 2026-10-19 09:45 | Not built; depends on F19 |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed |
 
 ## 5. Limits of today's build
@@ -72,13 +74,18 @@ Not yet confirmed: the `preroll_mode` default (`usb_only`, `always` or `off`). S
 
 Ryan wants the unit to support a live voice session, with the setting under Mike's control (Ryan, #gotchi 2026-10-19 09:35). Zero proposed a WebSocket from the unit to the gateway, which would hold the model session; the device streams 16 kHz audio up and plays 24 kHz audio down. Zero's battery figure for continuous streaming is 110 to 140 mA, about 7 to 8 hours on the 1000 mAh battery; it is an unmeasured estimate.
 
-- Off by default. A `live_mode` setting turns it on. Entry gesture and timeout are not decided.
+- Off by default. A `live_mode` setting turns it on.
+- Start: double-tap the top button, or say "Go Live" (F21). Detail below.
+- End: press the top button during a session, or 15 seconds of silence; the silence length is a setting (`live_silence_ms`).
+- The double-tap shares the top button with tap-to-talk. A second tap within a short interval (proposed 400 ms, a setting) of the first release counts as a double-tap and discards the clip the first tap started. A later second tap still means "send now".
+- "Go Live" is matched on the transcript, and only when it is the whole utterance, so a sentence that merely contains the words does not start a session.
 - Google's Gemini Live API is the known option. It bills per token, so it needs Mike's explicit approval before any key is used (house rule, #admin 2026-10-12).
 - Whether Claude offers an equivalent: a web search on 2026-10-19 found no official Anthropic realtime audio endpoint; the sources were low-quality third-party posts. Check Anthropic's own API docs before relying on this.
 
 ## 6. Open items
 
 Questions for people:
+- **Bottom button while recording:** with cancel removed, should a press take a photo and attach it to the turn in progress? Recommendation: yes.
 - **Go Live (F19):** Mike approves or declines the metered model API, and chooses the default for `live_mode`.
 - **Where the off-LAN gateway runs** (T3.2). Mike's call.
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
