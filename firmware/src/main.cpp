@@ -241,18 +241,23 @@ String handleJsonRpc(const String& jsonLine) {
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
     } else if (cmd == "set_config") {
+        if (req["audio_out_mode"].is<const char*>()) {
+            String m = req["audio_out_mode"].as<String>();
+            if (m != "speaker" && m != "discord_voice" && m != "ble_phone") {
+                res["ok"] = false;
+                res["error"] = "invalid_audio_out_mode";
+                String out;
+                serializeJson(res, out);
+                return out;
+            }
+            cfg.audio_out_mode = m;
+        }
         if (req["hub_url"].is<const char*>()) cfg.hub_url = req["hub_url"].as<String>();
         if (req["voice_url"].is<const char*>()) cfg.voice_url = req["voice_url"].as<String>();
         if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["input_mode"].is<const char*>()) cfg.input_mode = req["input_mode"].as<String>();
         if (req["preroll_mode"].is<const char*>()) cfg.preroll_mode = req["preroll_mode"].as<String>();
-        if (req["audio_out_mode"].is<const char*>()) {
-            String m = req["audio_out_mode"].as<String>();
-            if (m == "speaker" || m == "discord_voice" || m == "ble_phone") {
-                cfg.audio_out_mode = m;
-            }
-        }
         if (req["skin"].is<const char*>()) cfg.skin = req["skin"].as<String>();
         if (req["bearer_token"].is<const char*>()) cfg.bearer_token = req["bearer_token"].as<String>();
         if (req["ptt_max_ms"].is<uint32_t>()) {
@@ -371,11 +376,22 @@ static void onVoiceState(const GotchiUIState& ui) {
     panel.draw(ui);
 }
 
+static void pollRpcAndHttp() {
+    httpServer.handleClient();
+    if (Serial.available()) {
+        String line = Serial.readStringUntil('\n');
+        line.trim();
+        if (line.length() > 0) {
+            Serial.println(handleJsonRpc(line));
+        }
+    }
+}
+
 // Polled every ~42ms during TTS playback and SSE wait (PRD F13).
 // BTN_TOP cancels/mutes the reply and returns to IDLE (barge-in is dropped).
 // BTN_BOT is camera-only and never aborts voice playback.
 static gotchi_voice::InteractResult pollVoiceAbort() {
-    httpServer.handleClient();
+    pollRpcAndHttp();
     if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
         return gotchi_voice::InteractResult::ABORT_CANCEL;
     }
@@ -403,7 +419,7 @@ static size_t captureBurstFrames() {
     for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
         uint32_t target_ts = burst_start + (uint32_t)(i * interval_ms);
         while ((int32_t)(target_ts - millis()) > 0) {
-            httpServer.handleClient();
+            pollRpcAndHttp();
             delay(5);
         }
         if (captureIntoSlot(captured)) {
@@ -440,8 +456,26 @@ static void runLiveSession() {
         lcfg,
         ui,
         onVoiceState,
-        [](size_t slot) -> bool { return captureIntoSlot(slot); },
-        []() -> size_t { return captureBurstFrames(); }
+        [](size_t slot, gotchi_live::CapturedFrameView* out_frame) -> bool {
+            if (!captureIntoSlot(slot)) return false;
+            if (out_frame) {
+                out_frame->data = s_staged_jpeg_bufs[slot];
+                out_frame->length = s_staged_jpeg_lens[slot];
+            }
+            return true;
+        },
+        [](gotchi_live::CapturedFrameView* out_frames, size_t max_frames) -> size_t {
+            size_t count = captureBurstFrames();
+            if (count > max_frames) count = max_frames;
+            if (out_frames) {
+                for (size_t i = 0; i < count; ++i) {
+                    out_frames[i].data = s_staged_jpeg_bufs[i];
+                    out_frames[i].length = s_staged_jpeg_lens[i];
+                }
+            }
+            return count;
+        },
+        pollRpcAndHttp
     );
 
     showIdle();

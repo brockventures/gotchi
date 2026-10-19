@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
-GOTCHI V1 — Live Gateway Relay Server (`WebSocket /api/live/stream` & `POST /api/live/session`)
-==============================================================================================
+GOTCHI V1 — Live Gateway Relay Server (`WebSocket /api/live/ws` & `POST /api/live/session`)
+===========================================================================================
 Satisfies:
 - PRD Section 5b (F19, F21): Live bidirectional audio & vision streaming gateway relay.
-- Disabled unless explicitly enabled via config (live_mode: false by default).
+- Disabled unless explicitly enabled via config (`live_mode: false` by default).
+- Enforces Bearer token auth on BOTH `POST /api/live/session` and `WebSocket /api/live/ws`
+  whenever `auth_required` is True or `verifier.device_tokens` is populated.
+- Resilient to malformed JSON or invalid base64 frames (emits structured `{"type":"error"}`
+  without dropping the active WebSocket connection).
 - Pluggable upstream provider adapter (Gemini Multimodal Live / OpenAI Realtime / Mock provider).
 - Supports 16 kHz mono PCM uplink and 24 kHz mono PCM downlink chunks.
 - Supports mid-session multimodal frame injection (single JPEG snapshot and 5-photo burst).
@@ -12,6 +16,7 @@ Satisfies:
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import time
@@ -64,15 +69,13 @@ class MockLiveProvider(UpstreamLiveProvider):
         self.session_id = session_id
         self.node_id = node_id
         self.is_connected = True
-        # Send initial session confirmation
         await self._queue.put({"type": "session_started", "session_id": session_id})
 
     async def send_audio_chunk(self, pcm_chunk: bytes):
         self.audio_chunks_received += 1
-        # Echo synthetic reply audio every 5 audio chunks
         if self.audio_chunks_received % 5 == 0:
             synthetic_pcm = b"\x10\x00" * 480  # 960 bytes (20ms at 24kHz)
-            b64_pcm = base64.b64encode(synthetic_pcm).decode()
+            b64_pcm = base64.b64encode(synthetic_pcm).decode("ascii")
             await self._queue.put({
                 "type": "audio",
                 "sample_rate": self.sample_rate,
@@ -104,10 +107,12 @@ class LiveGatewayService:
         verifier: Optional[BearerTokenVerifier] = None,
         provider_factory: Optional[Callable[[], UpstreamLiveProvider]] = None,
         live_mode_enabled: bool = False,
+        auth_required: bool = False,
     ):
         self.verifier = verifier or BearerTokenVerifier()
         self.provider_factory = provider_factory or (lambda: MockLiveProvider())
         self.live_mode_enabled = live_mode_enabled  # Disabled by default per F19/F21
+        self.auth_required = bool(auth_required or self.verifier.device_tokens)
 
     def is_enabled(self) -> bool:
         return self.live_mode_enabled
@@ -145,7 +150,7 @@ def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
 
         headers = dict(request.headers)
         client_ip = request.client.host if request.client else "0.0.0.0"
-        if srv.verifier.device_tokens:
+        if srv.auth_required or srv.verifier.device_tokens:
             ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
             if not ok:
                 return JSONResponse(status_code=code, content=err)
@@ -181,9 +186,28 @@ def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
             await websocket.close(code=1008)
             return
 
+        headers = dict(websocket.headers)
+        # Allow token fallback via query parameter `?token=<token>` for clients that cannot set WS headers
+        query_token = websocket.query_params.get("token")
+        if query_token and "authorization" not in {k.lower() for k in headers}:
+            headers["Authorization"] = f"Bearer {query_token}"
+
+        client_ip = websocket.client.host if websocket.client else "0.0.0.0"
+        if srv.auth_required or srv.verifier.device_tokens:
+            ok, _code, err = srv.verifier.verify(headers, client_ip=client_ip)
+            if not ok:
+                await websocket.send_json({
+                    "type": "error",
+                    "error": err.get("error", "unauthorized"),
+                    "message": err.get("message", "Unauthorized"),
+                })
+                await websocket.close(code=1008)
+                return
+
+        node_id = headers.get("x-gotchi-node") or headers.get("X-Gotchi-Node") or "gotchi-ws-node"
         provider = srv.provider_factory()
         session_id = f"ws-live-{int(time.time()*1000)}"
-        await provider.connect(session_id, "gotchi-ws-node")
+        await provider.connect(session_id, node_id)
 
         async def downstream_pump():
             try:
@@ -202,14 +226,46 @@ def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
                 if "bytes" in msg and msg["bytes"]:
                     await provider.send_audio_chunk(msg["bytes"])
                 elif "text" in msg and msg["text"]:
-                    data = json.loads(msg["text"])
+                    try:
+                        data = json.loads(msg["text"])
+                        if not isinstance(data, dict):
+                            raise ValueError("JSON frame must be an object")
+                    except (json.JSONDecodeError, ValueError) as exc:
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "invalid_json",
+                            "message": f"Malformed JSON frame: {exc}",
+                        })
+                        continue
+
                     kind = data.get("type", "")
                     if kind == "image":
                         raw_b64 = data.get("image_b64", "")
                         frame_idx = data.get("frame_index", 0)
-                        if raw_b64:
-                            img_bytes = base64.b64decode(raw_b64)
-                            await provider.send_image_frame(img_bytes, frame_idx)
+                        if not raw_b64 or not isinstance(raw_b64, str):
+                            await websocket.send_json({
+                                "type": "error",
+                                "error": "missing_image",
+                                "message": "image frame missing image_b64 string",
+                            })
+                            continue
+                        try:
+                            img_bytes = base64.b64decode(raw_b64, validate=True)
+                        except (binascii.Error, ValueError) as exc:
+                            await websocket.send_json({
+                                "type": "error",
+                                "error": "invalid_base64",
+                                "message": f"Invalid base64 image payload: {exc}",
+                            })
+                            continue
+                        if len(img_bytes) == 0:
+                            await websocket.send_json({
+                                "type": "error",
+                                "error": "empty_image",
+                                "message": "Decoded image payload is 0 bytes",
+                            })
+                            continue
+                        await provider.send_image_frame(img_bytes, int(frame_idx))
                     elif kind == "ping":
                         await websocket.send_json({"type": "pong"})
         except (WebSocketDisconnect, RuntimeError):

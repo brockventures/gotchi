@@ -1,12 +1,13 @@
 #pragma once
 // ============================================================================
 // GOTCHI Go Live Bidirectional Streaming Client (F19 / F21 / Section 5b)
-//   - Bidirectional audio streaming over WiFiClient / WebSocket or HTTP stream:
-//     - Uplink: 16 kHz 16-bit mono PCM chunks.
-//     - Downlink: 24 kHz 16-bit mono PCM chunks played over MAX98357A I2S.
+//   - RFC 6455 WebSocket upgrade over WiFiClient to `/api/live/ws`:
+//     - Uplink: 16 kHz 16-bit mono PCM binary frames (`opcode 0x02`).
+//     - Downlink: 24 kHz 16-bit mono PCM JSON frames (`{"type":"audio","audio_b64":"..."}`)
+//       played over MAX98357A I2S (or muted when `audio_out_mode` is `discord_voice` / `ble_phone`).
 //   - Mid-session multimodal injection via BTN_BOT:
-//     - Short press: single snapshot JPEG.
-//     - Long press (>= cam_long_press_ms): 5-photo burst over 3s.
+//     - Short press: single snapshot JPEG encoded as base64 JSON text frame (`{"type":"image",...}`).
+//     - Long press (>= cam_long_press_ms): 5-photo burst over 3s injected sequentially.
 //   - Exit triggers:
 //     - BTN_TOP single press immediately ends session.
 //     - VAD silence timeout (configurable live_silence_ms, default 15000 ms).
@@ -37,9 +38,19 @@ struct LiveSessionConfig {
     bool enabled = false;
 };
 
+struct CapturedFrameView {
+    const uint8_t* data = nullptr;
+    size_t length = 0;
+};
+
 // Snapshot capture callback type for mid-session camera injection
-using SnapshotCallback = bool (*)(size_t slot_idx);
-using BurstCallback = size_t (*)();
+using SnapshotCallback = bool (*)(size_t slot_idx, CapturedFrameView* out_frame);
+using BurstCallback = size_t (*)(CapturedFrameView* out_frames, size_t max_frames);
+using PollTickCallback = void (*)();
+
+// Converts an HTTP/WS voice_url (e.g. "http://host:9098/api/voice/interact")
+// into host, port, and "/api/live/ws" path.
+bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path);
 
 // Runs the interactive bidirectional Go Live session loop until exit.
 SessionEndReason runSession(
@@ -47,7 +58,8 @@ SessionEndReason runSession(
     GotchiUIState& ui,
     gotchi_voice::StateCb cb,
     SnapshotCallback snap_cb = nullptr,
-    BurstCallback burst_cb = nullptr
+    BurstCallback burst_cb = nullptr,
+    PollTickCallback poll_tick_cb = nullptr
 );
 
 } // namespace gotchi_live

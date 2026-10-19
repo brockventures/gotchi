@@ -60,6 +60,8 @@ def _read_part_bytes(val: Any) -> Optional[bytes]:
 class VoiceGatewayService:
     """Core domain logic for parsing GOTCHI multipart turns and generating SSE events."""
 
+    VALID_AUDIO_OUT_MODES = ("speaker", "discord_voice", "ble_phone")
+
     def __init__(
         self,
         verifier: Optional[BearerTokenVerifier] = None,
@@ -68,6 +70,7 @@ class VoiceGatewayService:
         mock_sample_rate: int = 24000,
         event_format: str = "sentence",
         turn_handler: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+        audio_sink_router: Optional[Callable[[str, str, bytes, int, str], None]] = None,
     ):
         self.verifier = verifier or BearerTokenVerifier.from_env_or_file()
         self.auth_required = auth_required or bool(self.verifier.device_tokens)
@@ -75,6 +78,8 @@ class VoiceGatewayService:
         self.mock_sample_rate = mock_sample_rate
         self.event_format = event_format
         self.turn_handler = turn_handler
+        self.audio_sink_router = audio_sink_router
+        self.routed_audio_events: List[Dict[str, Any]] = []
         self.interactions_count = 0
 
     def parse_multipart_data(
@@ -83,12 +88,16 @@ class VoiceGatewayService:
     ) -> Dict[str, Any]:
         """
         Extract audio, images (single or burst), node_id, session_id, prompt, audio_out_mode.
-        Rejects empty (`0-byte`) uploaded files.
+        Rejects empty (`0-byte`) uploaded files and invalid `audio_out_mode` values.
         """
         node_id = form_data.get("node_id") or "gotchi-device"
         session_id = form_data.get("session_id") or f"sess-{int(time.time()*1000)}"
         prompt = form_data.get("prompt")
-        audio_out_mode = form_data.get("audio_out_mode") or "speaker"
+        audio_out_mode = str(form_data.get("audio_out_mode") or "speaker")
+        if audio_out_mode not in self.VALID_AUDIO_OUT_MODES:
+            raise ValueError(
+                f"Invalid audio_out_mode '{audio_out_mode}'; expected speaker | discord_voice | ble_phone"
+            )
 
         audio_bytes: Optional[bytes] = None
         if "audio" in form_data:
@@ -185,9 +194,22 @@ class VoiceGatewayService:
 
         yield build_sse_event("state", {"state": "speaking"})
 
+        audio_out_mode = parsed_turn.get("audio_out_mode", "speaker")
+        node_id = parsed_turn.get("node_id", "gotchi-device")
+
         for idx, raw_pcm in enumerate(pcm_chunks):
             is_final = (idx == len(pcm_chunks) - 1)
             b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
+            if audio_out_mode in ("discord_voice", "ble_phone"):
+                if self.audio_sink_router is not None:
+                    self.audio_sink_router(audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, reply_text)
+                self.routed_audio_events.append({
+                    "mode": audio_out_mode,
+                    "node_id": node_id,
+                    "chunk_index": idx,
+                    "pcm_bytes": len(raw_pcm),
+                    "sample_rate": self.mock_sample_rate,
+                })
             if self.event_format == "sentence":
                 yield build_sse_event(
                     "sentence",
@@ -198,6 +220,7 @@ class VoiceGatewayService:
                         "sample_rate": self.mock_sample_rate,
                         "channels": 1,
                         "is_final": is_final,
+                        "audio_out_mode": audio_out_mode,
                         "audio_b64": b64_pcm,
                     },
                 )
@@ -210,6 +233,7 @@ class VoiceGatewayService:
                         "sample_rate": self.mock_sample_rate,
                         "channels": 1,
                         "is_final": is_final,
+                        "audio_out_mode": audio_out_mode,
                         "data": b64_pcm,
                     },
                 )

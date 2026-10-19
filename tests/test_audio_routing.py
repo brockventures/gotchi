@@ -1,84 +1,91 @@
 """
-Unit tests for audio reply routing modes (F8 / T3.3).
-Tests audio_out_mode validation, multipart encoding, and muted speaker SSE parsing.
+Tests for GOTCHI Reply Audio Routing Mode (F8 / T3.3).
+Covers:
+- Direct VoiceGatewayService validation & routing in backend/voice_gateway.py
+  (rejecting invalid audio_out_mode with ValueError/400, routing discord_voice & ble_phone chunks via audio_sink_router)
+- Firmware C++ source verification on firmware/src/main.cpp (set_config rejects unknown audio_out_mode with ok:false, error:invalid_audio_out_mode)
+- Multipart form-data encoding and muted local speaker SSE state synchronization.
 """
 import base64
 import json
-from typing import Dict, Any, List
+import pathlib
+from typing import Any, Dict, List
+import pytest
+from fastapi.testclient import TestClient
+
+from backend.voice_gateway import VoiceGatewayService, create_app
 from poc.gotchi_poc import (
-    GotchiUIState,
     build_multipart_wav,
     parse_sse_stream,
     wrap_pcm16_to_wav,
 )
 
-
-def mock_handle_rpc_config(req_json: str, cfg: Dict[str, Any]) -> str:
-    """Mock RPC config handler mirroring firmware/src/main.cpp."""
-    req = json.loads(req_json)
-    cmd = req.get("cmd", "")
-    res = {"cmd": cmd, "ok": True}
-
-    if cmd == "get_config":
-        res["audio_out_mode"] = cfg.get("audio_out_mode", "speaker")
-    elif cmd == "set_config":
-        if "audio_out_mode" in req and isinstance(req["audio_out_mode"], str):
-            mode = req["audio_out_mode"]
-            if mode in ("speaker", "discord_voice", "ble_phone"):
-                cfg["audio_out_mode"] = mode
-    else:
-        res["ok"] = False
-        res["error"] = "unknown_command"
-
-    return json.dumps(res)
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+MAIN_CPP = REPO_ROOT / "firmware" / "src" / "main.cpp"
 
 
-def test_audio_out_mode_rpc_validation():
-    cfg = {"audio_out_mode": "speaker"}
+def test_firmware_set_config_rejects_invalid_audio_out_mode():
+    """Verify firmware/src/main.cpp returns ok:false and error:invalid_audio_out_mode for unknown values."""
+    src = MAIN_CPP.read_text(encoding="utf-8")
+    assert 'if (m != "speaker" && m != "discord_voice" && m != "ble_phone")' in src
+    assert 'res["ok"] = false;' in src
+    assert 'res["error"] = "invalid_audio_out_mode";' in src
 
-    # Query initial
-    res1 = json.loads(mock_handle_rpc_config('{"cmd": "get_config"}', cfg))
-    assert res1["audio_out_mode"] == "speaker"
 
-    # Set valid mode discord_voice
-    mock_handle_rpc_config('{"cmd": "set_config", "audio_out_mode": "discord_voice"}', cfg)
-    assert cfg["audio_out_mode"] == "discord_voice"
+def test_backend_voice_gateway_routes_and_validates_audio_out_mode():
+    """Verify backend/voice_gateway.py validates audio_out_mode and triggers audio_sink_router for non-speaker modes."""
+    routed_calls: List[Dict[str, Any]] = []
 
-    # Set valid mode ble_phone
-    mock_handle_rpc_config('{"cmd": "set_config", "audio_out_mode": "ble_phone"}', cfg)
-    assert cfg["audio_out_mode"] == "ble_phone"
+    def sink_router(mode: str, node_id: str, pcm: bytes, sr: int, text: str):
+        routed_calls.append({
+            "mode": mode,
+            "node_id": node_id,
+            "pcm_bytes": len(pcm),
+            "sr": sr,
+            "text": text,
+        })
 
-    # Set invalid mode should be rejected / ignored
-    mock_handle_rpc_config('{"cmd": "set_config", "audio_out_mode": "invalid_hdmi"}', cfg)
-    assert cfg["audio_out_mode"] == "ble_phone"
+    srv = VoiceGatewayService(audio_sink_router=sink_router)
+    app = create_app(srv)
+    client = TestClient(app)
+
+    wav = wrap_pcm16_to_wav(b"\x01\x00" * 160)
+
+    # 1. Invalid audio_out_mode is rejected with 400 Bad Request
+    r_bad = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi-01", "audio_out_mode": "invalid_hdmi"},
+        files={"audio": ("clip.wav", wav, "audio/wav")},
+    )
+    assert r_bad.status_code == 400
+    assert r_bad.json()["error"] == "bad_request"
+    assert "Invalid audio_out_mode" in r_bad.json()["message"]
+
+    # 2. Valid discord_voice mode invokes audio_sink_router and tags SSE events
+    r_ok = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi-01", "audio_out_mode": "discord_voice"},
+        files={"audio": ("clip.wav", wav, "audio/wav")},
+    )
+    assert r_ok.status_code == 200
+    assert len(routed_calls) >= 1
+    assert routed_calls[0]["mode"] == "discord_voice"
+    assert routed_calls[0]["node_id"] == "gotchi-01"
+    assert routed_calls[0]["pcm_bytes"] > 0
+    assert '"audio_out_mode": "discord_voice"' in r_ok.text
 
 
 def test_multipart_payload_audio_out_modes():
     wav = wrap_pcm16_to_wav(b"\x00\x00" * 100)
 
-    # 1. Default speaker
-    body_spk, _ = build_multipart_wav(wav, audio_out_mode="speaker")
-    assert b'name="audio_out_mode"' in body_spk
-    assert b"\r\nspeaker\r\n" in body_spk
-
-    # 2. Discord voice
-    body_disc, _ = build_multipart_wav(wav, audio_out_mode="discord_voice")
-    assert b'name="audio_out_mode"' in body_disc
-    assert b"\r\ndiscord_voice\r\n" in body_disc
-
-    # 3. BLE phone
-    body_ble, _ = build_multipart_wav(wav, audio_out_mode="ble_phone")
-    assert b'name="audio_out_mode"' in body_ble
-    assert b"\r\nble_phone\r\n" in body_ble
+    for mode in ("speaker", "discord_voice", "ble_phone"):
+        body, _ = build_multipart_wav(wav, audio_out_mode=mode)
+        assert b'name="audio_out_mode"' in body
+        assert f"\r\n{mode}\r\n".encode() in body
 
 
 def test_sse_speaking_ui_sync_when_muted():
-    """
-    Verifies that when audio playback is muted (e.g. discord_voice or ble_phone),
-    incoming SSE sentence/audio_chunk events still transition the UI state to
-    'speaking', track received audio bytes, and update reply text.
-    """
-    raw_pcm = b"\x10\x00" * 300  # 600 bytes
+    raw_pcm = b"\x10\x00" * 300
     b64_pcm = base64.b64encode(raw_pcm).decode()
     sse_lines = [
         "event: state",
@@ -100,11 +107,7 @@ def test_sse_speaking_ui_sync_when_muted():
 
     states_seen: List[str] = []
     pcm_chunks_played: List[bytes] = []
-
-    # Emulate audio_out_mode = "discord_voice": on_audio_pcm is suppressed or muted,
-    # but on_state_change is always triggered for UI animation sync
-    audio_out_mode = "discord_voice"
-    mute_speaker = (audio_out_mode in ("discord_voice", "ble_phone"))
+    mute_speaker = True
 
     def handle_pcm(pcm: bytes, sr: int, final: bool):
         if not mute_speaker:
@@ -116,10 +119,7 @@ def test_sse_speaking_ui_sync_when_muted():
         on_audio_pcm=handle_pcm,
     )
 
-    # UI animation states MUST have transitioned through 'speaking'
     assert "speaking" in states_seen
     assert ui.reply == "Routed to AirPods"
     assert ui.audio_bytes_received == len(raw_pcm)
-
-    # Local speaker received 0 PCM chunks because it was muted
     assert len(pcm_chunks_played) == 0
