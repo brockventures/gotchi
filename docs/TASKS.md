@@ -6,7 +6,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 
 ## Epic 1: Architecture, Spec & Procurement (Milestone M0)
 - [x] **T1.1 — Lock V1 Hardware BOM & Pinout Allocation** (`Zero`, `Amos`, `Ryan`, `Mike`)
-  - Locked 8-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$68.81` Seeed+Waveshare+Amazon / `$76.81` Seeed+Amazon / `$86.81` All-Amazon, plus bench wire/insulation consumables): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch + `1/4W 1%` resistor kit (4x `220 kΩ` for V1 battery fuel gauge & wall-brick sense).
+  - Locked 8-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$68.81` Seeed+Waveshare+Amazon / `$76.81` Seeed+Amazon / `$86.81` All-Amazon, plus bench wire/insulation consumables): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch + `1/4W 1%` resistor kit (3x `220 kΩ` for V1 battery fuel gauge & wall-brick sense).
 - [x] **T1.2 — Audit Mirrormere Hub Voice Contract** (`Amos`)
   - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml` and documented in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md).
 - [x] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
@@ -32,8 +32,9 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Firmware renderer: PR #5 (GOTCHI firmware T2.6: e-paper renderer and refresh policy (C++), plus AGENTS.md pin fixes)
 - [x] **T2.7 — QR Soft-AP Captive Portal Onboarding (`192.168.4.1`)** (`Zero`)
   - Render scannable Wi-Fi QR code on the 200x200 e-paper screen when unprovisioned; serve mobile captive portal to set Wi-Fi and hub URL without an on-screen keyboard.
-- [x] **T2.8 — V1 Multiplexed ADC Battery Fuel Gauge (`D4`) & Wall-Brick `5V VBUS` Sense (`D2`)** (`Zero`, `Ryan`)
-  - Promoted to V1 PRD: 4x `220 kΩ` resistors form two symmetric voltage dividers on `D4` (`GPIO5` / `ADC1_CH4`, shared with `BTN_BOT` for live `3.30V–4.20V` -> `0–100%` LiPo fuel gauge) and `D2` (`GPIO3` / `ADC1_CH2`, shared with `BTN_TOP` for dumb 5V USB-C wall-brick detection). Auto-detects divider presence at boot with graceful fallback to `INPUT_PULLUP`, enables `preroll_mode: "usb_host"` on wall power, renders battery `%` badge on the e-paper header, and exposes `battery_mv`, `battery_pct`, and `wall_power_connected` in `get_config` / `self_test`.
+- [x] **T2.8 — V1 Multiplexed ADC Battery Fuel Gauge (`D4`) & Wall-Brick `5V VBUS` Sense (`D2`)** (`Zero`, `Amos`, `Ryan`)
+  - Promoted to V1 PRD: 3x `220 kΩ` resistors (`2x 220 kΩ` symmetric `1:1` divider on `D4` / `GPIO5` / `ADC1_CH4` shared with `BTN_BOT` for live `3.30V–4.20V` -> `0–100%` LiPo fuel gauge; `1x 220 kΩ` series resistor on `D2` / `GPIO3` / `ADC1_CH2` shared with `BTN_TOP` sampled against internal `45 kΩ` `INPUT_PULLDOWN` for dumb 5V USB-C wall-brick detection). Auto-detects wiring at boot with graceful fallback to `INPUT_PULLUP`, enables `preroll_mode: "usb_host"` on wall power, renders battery `%` badge on the e-paper header, and exposes `battery_mv`, `battery_pct`, and `wall_power_connected` in `get_config` / `self_test`.
+  - [ ] Bench verification: measure idle voltage on `D2` (on battery vs. USB-C) and on the XIAO `BAT+` pad (`SGM40567-4.2XG/TR` charger output) + `D4` with USB-C plugged in and the battery slide switch OFF (no cell connected; `2.95 V` if `BAT+` is driven to `4.2 V`, vs. `2.34 V` if `BAT+` sits at `0 V`, in which case add the `< 400 mV` ADC fallback in `btnStable()`).
 
 ---
 
@@ -76,7 +77,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 ## Epic 6: Mirrormere & Garage Voice QA Carry-Over (PRD Section 5c — From 2:23 PM PT Onward)
 - [~] **T6.1 — Go Live On-Device Acoustic Echo Cancellation (`AEC`) & Barge-In (Active Only in Go Live)** (`Zero`, `Amos`, `Mike`) — [Issue #37](https://github.com/brockventures/gotchi/issues/37)
   - [x] Implemented 64-tap NLMS adaptive Acoustic Echo Cancellation (`processLiveAecSample` in `firmware/src/audio_hal.cpp`), 300 ms full-duplex speech barge-in (`consumeLiveBargeInFlag` + `{"type":"barge_in"}` WS notification), and post-playback I2S RX DMA drain (`flushRxDmaBuffer`) **scoped strictly to active Go Live sessions** (`firmware/src/live_client.cpp`), gated behind `live_barge_in` (`false` by default in `set_config` / NVS so Go Live defaults to half-duplex + DMA drain until bench delay calibration is verified).
-  - [ ] Bench verification: measure physical I2S TX-to-PDM RX DMA delay and evaluate `ESP-SR` AEC alongside the 64-tap NLMS filter on the assembled `XIAO ESP32S3 Sense` + `MAX98357A` cavity enclosure before enabling `live_barge_in` by default.
+  - [ ] Bench verification: measure physical I2S TX-to-PDM RX DMA delay and evaluate `ESP-SR` AEC alongside the 64-tap NLMS filter on the assembled `XIAO ESP32S3 Sense` + `MAX98357A` cavity enclosure before enabling `live_barge_in` by default; also record `BAT+` pad (`SGM40567-4.2XG/TR`) and `D4`/`D2` idle voltages with the battery slide switch ON and OFF (USB-C plugged in, no cell connected) per `T2.8`.
 - [ ] **T6.2 — Bench Comparison of `800 ms`, `1.0 s`, and `1.5 s` Trailing Silence & Neural VAD vs. RMS** (`Zero`, `Amos`, `Mike`, `Ryan`) — [Issue #38](https://github.com/brockventures/gotchi/issues/38)
   - Keep Ryan's confirmed `1.5 s` (`1500 ms`) default `ptt_silence_ms` unchanged in firmware; on the bench, compare `800 ms`, `1.0 s`, and `1.5 s` trailing silence alongside `ESP-SR` VADNet vs. plain `50 LSB` RMS threshold, changing the default only on Ryan's explicit approval.
 - [x] **T6.3 — Firmware On-Device `node_id` Regex Validation (`^[A-Za-z0-9_-]{1,64}$`)** (`Zero`) — [Issue #39](https://github.com/brockventures/gotchi/issues/39)
@@ -98,5 +99,5 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [ ] **V2.4 — Dedicated I2C Fuel Gauge IC (`MAX17048`) on V2 Carrier PCB** (`Zero`, `Amos`, `Ryan`)
   - Upgrade from V1's 2-resistor ADC fuel gauge divider (`D4`) to a dedicated `MAX17048` ModelGauge I2C fuel gauge IC integrated onto the V2 carrier PCB (`V2.5`) with hardware low-SOC alert interrupt.
 - [ ] **V2.5 — Custom Flex/Carrier PCB & Magnetic Pogo-Pin Desk Dock** (`Ryan`, `Amos`, `Zero`)
-  - Replace V1 point-to-point hand wiring (`MAX98357A`, tactile buttons, SPDT switch, Waveshare 8-pin harness, 4x `220 kΩ` dividers) with a compact carrier PCB and magnetic pogo-pin desk charging cradle.
+  - Replace V1 point-to-point hand wiring (`MAX98357A`, tactile buttons, SPDT switch, Waveshare 8-pin harness, 3x `220 kΩ` resistors) with a compact carrier PCB and magnetic pogo-pin desk charging cradle.
 
