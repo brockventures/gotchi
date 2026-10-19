@@ -38,6 +38,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [~] **T3.1 — Mirrormere `/api/voice/interact` Device Client Spec & SSE Parser** (`Amos`, `Zero`)
   - [x] Documented wire spec in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) (PR #1): multipart WAV upload, SSE events (`state`, `transcript`, `status`, `thinking`, `reply`, `audio_chunk` at `24 kHz` default base64 PCM, `error`, `done`), and `400`/`409`/`500`/`503` handling (sprite state derived on-device from `state` events).
   - [x] Implement device multipart WAV client, SSE stream parser, and Pi Zero W POC harness (`poc/gotchi_poc.py`, `firmware/`).
+  - Firmware client: PR #8 (T3.1 firmware, the Mirrormere voice client), PTT to upload to SSE to playback. Not flashed, not hardware-tested.
 - [ ] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
   - Add bearer token verification middleware for off-LAN requests arriving from mobile hotspots or the Android BLE-to-Tailscale forwarder.
 - [ ] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
