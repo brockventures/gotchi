@@ -73,7 +73,7 @@ Questions for people:
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
 
 Checks the robots owe:
-- Whether the gateway accepts an optional `image` field on `/api/voice/interact` (Amos).
+- Checked 2026-10-19 in `services/mirrormere-voice-gateway/gateway.py` (read, not run against the live gateway): the turn handler splits every multipart part, takes `audio`, and decodes all other parts as text fields. An `image` part would not fail the request, but nothing reads it, so attaching a snapshot needs a gateway change (Amos).
 - Whether the XIAO ESP32S3 Sense exposes a USB-power sense pin (Zero).
 
 ## 7. Out of scope for V1
