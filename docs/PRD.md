@@ -83,6 +83,19 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 - Google's Gemini Live API is the known option. It bills per token. Mike approved a metered API for Go Live on 2026-10-19 14:02 PT (#gotchi), on one condition: the LLM configuration must be user-customizable, so a metered API key works and his own subscription account can be hooked up instead. The provider is therefore a setting on the gateway, never hard-coded; `live_mode` stays off by default.
 - Whether Claude offers an equivalent: a web search on 2026-10-19 found no official Anthropic realtime audio endpoint; the sources were low-quality third-party posts. Check Anthropic's own API docs before relying on this.
 
+## 5c. Lessons carried over from Mirrormere and the household voice work
+
+Source: Mike, #gotchi 2026-10-19 14:23. Facts below come from `services/mirrormere-voice-gateway/gateway.py`, `specs/2026-10-02-lammen-voice-pipeline.md`, `specs/2026-10-16-gap-fill-topical-openers.md` and the ear client config in `specs/2026-10-16-ear-bargein-merge/`. Marked "proposed" until Ryan or Mike accepts.
+
+- **Spoken filler while the brain thinks (proposed).** The room gateway plays one short clip after 1200 ms with no audio, and one more after 5 s. Filler began 1250 to 2270 ms into a turn, on 36 of 73 recent turns. One GOTCHI turn measured on 2026-10-19 took 606 ms for speech-to-text, 4.8 s to the first reply text and 6.4 s to the first audio. The device already shows THINKING; the gateway should also send a short filler sentence, and the device should not time out before it arrives.
+- **First sentence plays first (proposed).** Text-to-speech runs per sentence so audio starts at the first sentence, not the whole reply. The reference gateway must do the same once it has real speech output; today it returns silence.
+- **Cap spoken reply length (proposed).** The room profile caps replies at 60 words. The measured GOTCHI turn spoke 19 s of audio for 325 characters, which costs battery and attention on a pocket device. Add a `reply_cap_words` setting.
+- **Filter speech-to-text ghosts (proposed).** Whisper invents phrases from silence, so the gateway drops known ghost lines and clips with under 400 ms of voiced audio. The device's 250 ms floor and loudness check alone do not catch this.
+- **Silence length.** The room ear ends a turn after 800 ms of silence, with a 10 s cap and a neural voice detector, chosen over a plain loudness threshold after false triggers. GOTCHI uses 1.5 s and loudness only. Both stay configurable; the 800 ms figure is the tested starting point.
+- **No barge-in without echo cancellation.** The room ear keeps barge-in off by default, needs 300 ms of speech and a stricter threshold during playback because echo leaks through. GOTCHI has no echo cancellation and its speaker sits centimetres from the mic. This supports Ryan's decision to drop barge-in, and it is a hazard for Go Live (F19), where the mic streams while the speaker plays.
+- **Per-turn timing log (proposed).** The room gateway writes one line per turn: speech-to-text time, first text, first audio, total. GOTCHI should log the same fields on the device and the gateway, and keep `node_id` to letters, digits, dash and underscore, 64 characters at most.
+- **Tuning knobs stay config.** Mirrormere keeps filler delay, reply cap and silence length as settings. GOTCHI already does this for most timings.
+
 ## 6. Open items
 
 Questions for people:
