@@ -46,6 +46,7 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
 | F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
 | F18 | BLE relay test: the same turn with the phone away from home Wi-Fi | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
+| F19 | "Go Live" mode: a continuous two-way voice session through a live multimodal model, entered on purpose and ending on a timeout. Configurable so it can be turned off | Ryan, #gotchi 2026-10-19 09:21 and 09:35 | Not built; not designed |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed |
 
 ## 5. Limits of today's build
@@ -67,9 +68,18 @@ Confirmed by Ryan (#gotchi 2026-10-19 09:15): hybrid button behaviour, 120 s rec
 
 Not yet confirmed: the `preroll_mode` default (`usb_only`, `always` or `off`). See section 6.
 
+## 5b. Go Live mode (F19)
+
+Ryan wants the unit to support a live voice session, with the setting under Mike's control (Ryan, #gotchi 2026-10-19 09:35). Zero proposed a WebSocket from the unit to the gateway, which would hold the model session; the device streams 16 kHz audio up and plays 24 kHz audio down. Zero's battery figure for continuous streaming is 110 to 140 mA, about 7 to 8 hours on the 1000 mAh battery; it is an unmeasured estimate.
+
+- Off by default. A `live_mode` setting turns it on. Entry gesture and timeout are not decided.
+- Google's Gemini Live API is the known option. It bills per token, so it needs Mike's explicit approval before any key is used (house rule, #admin 2026-10-12).
+- Whether Claude offers an equivalent: a web search on 2026-10-19 found no official Anthropic realtime audio endpoint; the sources were low-quality third-party posts. Check Anthropic's own API docs before relying on this.
+
 ## 6. Open items
 
 Questions for people:
+- **Go Live (F19):** Mike approves or declines the metered model API, and chooses the default for `live_mode`.
 - **Where the off-LAN gateway runs** (T3.2). Mike's call.
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
 
