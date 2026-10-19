@@ -10,6 +10,7 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`docs/BOM.md`**: Locked V1 Bill of Materials, exact part numbers, and verified purchase links.
 - **`docs/HARDWARE_ASSEMBLY.md`**: Physical pinout allocation table (`D0–D10` + internal Sense pins) and step-by-step meatspace soldering/wiring instructions.
 - **`docs/ARCHITECTURE.md`**: System topology, Mirrormere `POST /api/voice/interact` wire specification, BLE-to-Tailscale relay protocol, and JSON-RPC config spec.
+- **`docs/MIRRORMERE_VOICE_CLIENT.md`**: Verified Mirrormere `POST /api/voice/interact` SSE event contract (`state`, `audio_chunk` `24 kHz` base64 PCM, error codes) and `client/eink-node/` refresh policy audit.
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
 - **`firmware/`** *(scaffolded in Milestone M1)*: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.

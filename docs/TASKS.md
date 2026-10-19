@@ -25,16 +25,18 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Configure I2S TX on `D7` (`GPIO44` BCLK — silent at boot), `D6` (`GPIO43` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks and Tamagotchi UI chimes.
 - [ ] **T2.5 — `OV5640` Camera Driver & Single-Shot VCM Autofocus** (`Zero`)
   - Initialize DVP camera pins, load `OV5640` AF firmware registers (`0x3022 = 0x08`), and expose snapshot capture for multimodal prompts.
-- [ ] **T2.6 — 1.54" E-Paper (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)
-  - Audit `clients/eink-node` in Mirrormere (`Amos`), configure `GxEPD2` / `Seeed_GFX` on pins `D0/D1/D3/D5/D8/D10`, and implement `0.3s` partial refresh for animated companion states + full refresh every N frames to prevent ghosting.
+- [~] **T2.6 — 1.54" E-Paper (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)
+  - [x] Audited `client/eink-node/` in Mirrormere (`Amos` in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) / PR #1).
+  - [ ] Configure `GxEPD2` / `Seeed_GFX` on pins `D0/D1/D3/D5/D8/D10` with bounded `BUSY` timeout (`30s`), and implement partial refresh for animated companion states + full refresh every N frames (`PanelManager.write_frame` policy).
 - [ ] **T2.7 — QR Soft-AP Captive Portal Onboarding (`192.168.4.1`)** (`Zero`)
   - Render scannable Wi-Fi QR code on the 200x200 e-paper screen when unprovisioned; serve mobile captive portal to set Wi-Fi and hub URL without an on-screen keyboard.
 
 ---
 
 ## Epic 3: Backend Integration & Remote Auth (`backend/`) (Milestone M2)
-- [ ] **T3.1 — Mirrormere `/api/voice/interact` Device Client Spec & SSE Parser** (`Amos`)
-  - Document and implement the multipart WAV upload and SSE response parser (`transcript`, `sprite_state`, `audio_chunk`, `409`/`503` handling).
+- [~] **T3.1 — Mirrormere `/api/voice/interact` Device Client Spec & SSE Parser** (`Amos`, `Zero`)
+  - [x] Documented wire spec in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) (PR #1): multipart WAV upload, SSE events (`state`, `transcript`, `status`, `thinking`, `reply`, `audio_chunk` at `24 kHz` default base64 PCM, `error`, `done`), and `400`/`409`/`500`/`503` handling (sprite state derived on-device from `state` events).
+  - [ ] Implement device multipart WAV client and SSE stream parser in `firmware/`.
 - [ ] **T3.2 — Per-Device Bearer Token Auth & Remote Tunnel Gateway** (`Amos`, `Zero`)
   - Add bearer token verification middleware for off-LAN requests arriving from mobile hotspots or the Android BLE-to-Tailscale forwarder.
 - [ ] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
