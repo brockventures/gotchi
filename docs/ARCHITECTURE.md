@@ -10,7 +10,7 @@
 |                (Seeed Studio XIAO ESP32S3 Sense)                  |
 |                                                                   |
 |  [BTN_TOP: PTT/Wake] ---> [PDM Mic 16kHz PCM]                     |
-|  [BTN_BOT: Snap/Nav] ---> [OV5640 5MP AF Cam]                     |
+|  [BTN_BOT: Snap/Nav] ---> [Stock Cam / Optional OV5640 AF]        |
 |  [1.54" E-Paper]     <--- [GxEPD2 / Seeed GFX]                    |
 |  [MAX98357A Speaker] <--- [I2S Audio Pipeline]                    |
 +---------+--------------------------+-----------------------+------+
@@ -66,9 +66,10 @@ sess-20261018-01
 
 ### Response (`text/event-stream` Server-Sent Events)
 - Streams structured SSE events back to the edge node as the pipeline progresses:
-  - `event: transcript` -> updates e-paper status/subtitle if enabled
-  - `event: sprite_state` -> transitions the 200x200 e-paper companion sprite (`thinking`, `speaking`, `happy`, `idle`) using `0.3s` partial refresh
-  - `event: audio_chunk` / `audio_url` -> streams PCM/WAV chunks to the `MAX98357A` I2S ring buffer in 8MB PSRAM (unless `audio_out_mode == "discord_voice"` is active for headphone listening)
+  - `event: state` -> `{"state": "received" | "transcribing" | "thinking" | "synthesizing"}` transitions the 200x200 e-paper companion sprite using `0.3s` partial refresh (`2.0s` full refresh every N frames)
+  - `event: transcript` / `event: reply` -> updates e-paper status/subtitle if enabled
+  - `event: audio_chunk` -> streams base64 PCM chunks (`24 kHz` default) to the `MAX98357A` I2S ring buffer in 8MB PSRAM (unless `audio_out_mode == "discord_voice"` is active for headphone listening)
+  - `event: error` / `event: done` -> returns companion sprite to error/idle state (see [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) for full SSE schema)
 - **Status Codes:**
   - `200 OK`: SSE stream active
   - `409 Conflict`: Another interaction is already in flight
@@ -117,7 +118,7 @@ Both **USB-C Serial (`115200` baud, newline-delimited JSON)** and **HTTP (`POST 
 | `get_config` | `{"schema": true}` (optional) | Returns active NVS configuration values (secrets masked) plus JSON schema of all configurable keys, types, and enums. |
 | `set_config` | `{"key": "val", ...}` | Validates against schema, persists to NVS, and applies live without recompiling (`hub_url`, `node_id`, `wake_mode`, `audio_out_mode`, `display_mode`). |
 | `set_wifi` | `{"ssid": "...", "psk": "...", "slot": 0}` | Stores primary (Home) or secondary (Hotspot) Wi-Fi credentials in encrypted NVS. |
-| `self_test` | `{}` | Runs full hardware loop: speaker tone -> PDM mic RMS -> `OV5640` AF + frame CRC -> e-paper pattern, returning structured JSON pass/fail receipts. |
+| `self_test` | `{}` | Runs full hardware loop: speaker tone -> PDM mic RMS -> camera sensor ID + JPEG frame CRC -> e-paper pattern, returning structured JSON pass/fail receipts. |
 | `get_logs` | `{"lines": 50}` | Returns recent ring-buffer diagnostic logs (scrubbed of tokens/PSKs). |
 | `reboot` | `{"mode": "normal" \| " bootloader"}` | Cleanly restarts the MCU or enters ROM USB bootloader. |
 | `factory_reset` | `{"confirm": true}` | Wipes user NVS namespace and reboots into QR Soft-AP onboarding mode (`192.168.4.1`). |

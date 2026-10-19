@@ -2,37 +2,38 @@
 
 **Pocket E-Ink AI Companion & Agent-Configurable Hardware Node**
 
-`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and a **Waveshare 1.54" (200x200) SPI E-Paper** display (`SSD1681`, 4-level grayscale + `0.3s` partial refresh). It captures push-to-talk (PTT) audio and 5MP autofocus camera snapshots (`OV5640`), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Kokoro TTS) to the **Mirrormere** backend hub over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android BLE-to-Tailscale forwarder**.
+`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and the **Waveshare 1.54" (200x200) E-Paper Module V2** (`SKU 12955` / Amazon `B0728BJTZC`, `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh). It captures push-to-talk (PTT) audio and camera snapshots (using the included stock `OV2640`/`OV3660` camera or optional `OV5640` 5MP autofocus upgrade), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Kokoro TTS) to the **Mirrormere** backend hub over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android BLE-to-Tailscale forwarder**.
 
 ---
 
 ## Documentation Index
 
-- **[`docs/BOM.md`](docs/BOM.md):** Locked V1 Bill of Materials, verified part specifications, direct purchase links, and upgrade/future-proofing notes.
-- **[`docs/HARDWARE_ASSEMBLY.md`](docs/HARDWARE_ASSEMBLY.md):** Step-by-step meatspace wiring guide, full GPIO pinout map (with conflict resolution for `D5`/`D7` I2S vs. ePaper `BUSY`), and V2 wake-hardware pin reservations.
+- **[`docs/BOM.md`](docs/BOM.md):** Locked V1 7-item Bill of Materials, verified 1-unit shopping list (`$62.32` / `$70.32` / `$80.32`), direct store links, and optional camera upgrade.
+- **[`docs/HARDWARE_ASSEMBLY.md`](docs/HARDWARE_ASSEMBLY.md):** Step-by-step meatspace wiring guide, direct 8-pin PH2.0 display harness map, GPIO pinout allocation (`D0–D10`), and mechanical component dimensions for the multi-part 3D-printed enclosure.
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md):** End-to-end system design covering the Mirrormere `POST /api/voice/interact` wire contract, dual-transport JSON-RPC agent configuration, Android BLE-to-Tailscale packet forwarder, and future wake-word / tiny audio-intent classifier upgrade paths.
-- **[`docs/TASKS.md`](docs/TASKS.md):** V1 software, firmware, mobile relay, and enclosure engineering task board across **Zero**, **Amos**, **Ryan**, and **Mike (Arbiter)**.
+- **[`docs/MIRRORMERE_VOICE_CLIENT.md`](docs/MIRRORMERE_VOICE_CLIENT.md):** Verified Mirrormere `POST /api/voice/interact` SSE event specification and `client/eink-node/` refresh policy notes.
+- **[`docs/TASKS.md`](docs/TASKS.md):** V1 software, firmware, mobile relay, and multi-part Blender/CAD enclosure task board across **Zero**, **Amos**, **Ryan**, and **Mike (Arbiter)**.
 - **[`AGENTS.md`](AGENTS.md):** Autonomous agent operating guide, USB-C/HTTP JSON-RPC provisioning protocol, `self_test` hardware verification contract, and security guardrails.
 
 ---
 
-## 1. Locked V1 Architecture & Hardware Baseline
+## 1. Locked V1 Architecture & Hardware Baseline (7-Item BOM)
 
 | Subsystem | V1 Locked Specification | Key Capabilities & Rationale |
 | :--- | :--- | :--- |
-| **Core Compute & Mic** | **Seeed Studio XIAO ESP32S3 Sense** | Dual-core XTensa LX7 (240 MHz), 8MB PSRAM, 8MB Flash, onboard PDM digital mic (`GPIO41`/`GPIO42`), Wi-Fi + BLE 5.0, integrated LiPo charger. |
-| **Camera Module** | **OV5640 5MP Autofocus Camera** | Plugs into the XIAO Sense B2B camera header; voice-coil motor (VCM) single-shot autofocus (`0x3022`) for crisp document and object snapshots. |
-| **Display & Adapter** | **1.54" 200x200 E-Paper (`SSD1681`) + Seeed ePaper Breakout Board** | Bare glass 24-pin FPC panel (`0.3s` partial refresh + 4-level grayscale) driven by Seeed's $5 socketed XIAO ePaper Breakout Board. |
-| **Audio Output** | **MAX98357A I2S Class-D Amp + 1W 8Ω Micro-Speaker** | Driven via ESP32-S3 hardware I2S (`BCLK`, `LRCLK`, `DIN`) for spoken replies and retro Tamagotchi alert chimes; auto-mutes when routing audio to phone/Discord headphones. |
-| **Controls & Power** | **800–1000 mAh LiPo (`803040`) + 2 Tactile Buttons + SPDT Slide Switch** | Hardware power disconnect switch plus Top (PTT / Deep-Sleep Wake on `RTC_GPIO`) and Bottom (Action / Back) tactile buttons. |
-| **Future-Proofing** | **Reserved `RTC_GPIO` (`D2`) + I2C Bus (`D4`/`D5`) + 8MB PSRAM** | Supports V1.1 on-chip wake words (`ESP-SR` / `microWakeWord`), tiny audio-intent classifiers, or a V2 ultralow-power neural DSP daughterboard with zero rewiring. |
+| **Core Compute & Mic** | **Seeed Studio XIAO ESP32S3 Sense** (`$13.99` Seeed / `$23.99` Amazon `B0C69FFVHH`) | Dual-core XTensa LX7 (240 MHz), 8MB PSRAM, 8MB Flash, onboard PDM digital mic (`GPIO41`/`GPIO42`), Wi-Fi + BLE 5.0, integrated LiPo charger. |
+| **Camera Module** | **Stock Sense Camera (`OV2640`/`OV3660`, Included)** · *Optional:* **Seeed `OV5640` 5MP AF (`$11.99`)** | Stock camera plugs into the XIAO Sense B2B header at `$0` extra cost; firmware auto-detects the sensor and enables VCM autofocus (`0x3022`) if upgraded to `OV5640`. |
+| **Display Module** | **Waveshare 1.54" E-Paper Module V2** (`$9.99` Waveshare `SKU 12955` / `$17.99` Amazon `B0728BJTZC`) | Complete `48.0 x 33.0 mm` module (`200x200` `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh, onboard 3.3V/5V translator, 4x M2 holes) with included 8-pin PH2.0 wire harness. Eliminates the discontinued Seeed ePaper Breakout. |
+| **Audio Output** | **MAX98357A I2S 3W Amp (`B0DPJRLMDJ`) + 1W 8Ω Cavity Speaker (`B0D7S8FFKY`)** | Driven via ESP32-S3 hardware I2S (`BCLK` on silent `D7`, `LRCLK` on `D6`, `DIN` on `D9`) for spoken replies and Tamagotchi chimes; auto-mutes when routing audio to phone/Discord headphones. |
+| **Controls & Power** | **1000 mAh `803040` LiPo (`B0FRFY7KLH`) + 2x `6x6x5mm` Tactile Buttons (`B07VSNN9S2`) + Mini SPDT Slide Switch (`B0FNK8B1YV`)** | Hardware battery cutoff slide switch plus Top (`BTN_TOP` PTT / Deep-Sleep Wake on `D2` / `RTC_GPIO3`) and Bottom (`BTN_BOT` Mode / Snap on `D4` / `RTC_GPIO5`) buttons. |
+| **1-Unit Cart Totals** | **`$62.32`** (Seeed + Waveshare + Amazon) · **`$70.32`** (Seeed + Amazon) · **`$80.32`** (All-Amazon) | Verified single-unit prototype totals before shipping and tax; see [`docs/BOM.md`](docs/BOM.md) for itemized links. |
 
 ---
 
 ## 2. Transport & Audio Routing Modes
 
 1. **Home Wi-Fi (Direct LAN / Tailscale):**
-   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) to the Mirrormere hub, receiving SSE state events and TTS audio frames.
+   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) to the Mirrormere hub, receiving SSE state events and `24 kHz` PCM TTS audio chunks.
 2. **Android Walk-Out-The-Door Roaming (Headless BLE-to-Tailscale Forwarder):**
    - Bonds over **BLE 5.0 (`L2CAP CoC` / GATT)** (`~2–5 mA` idle draw) to a lightweight headless Android background service on Ryan's Pixel, forwarding audio/snapshots over Tailscale without toggling the phone's Wi-Fi hotspot.
 3. **iOS / Universal On-The-Go Mode (2.4 GHz Hotspot + Discord Backdoor):**
@@ -46,6 +47,6 @@
 Every GOTCHI / SPRITE node exposes an identical JSON command contract over **USB-C CDC Serial (`115200` baud)** and **Wi-Fi HTTP**:
 - `get_config` (supports `"schema": true` for self-describing agent discovery)
 - `set_config` / `set_wifi`
-- `self_test` (automated speaker tone -> PDM mic RMS check -> `OV5640` frame checksum -> e-paper test pattern)
+- `self_test` (automated speaker tone -> PDM mic RMS check -> camera frame checksum -> e-paper test pattern)
 - `get_logs` (scrubbed of credentials/PSKs)
 - `reboot` / `factory_reset` (with `ota_0` / `ota_1` automatic rollback protection)

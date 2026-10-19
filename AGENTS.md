@@ -14,7 +14,7 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
 - **`firmware/`** *(scaffolded in Milestone M1)*: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.
-- **`cad/`** *(scaffolded in Milestone M4)*: OpenSCAD / STEP files and print-ready STLs for the 3D-printed pocket shell.
+- **`cad/`** *(scaffolded in Milestone M4)*: Multi-part openable 3D-printed pocket enclosure models (Blender / OpenSCAD / STEP / STL).
 
 ---
 
@@ -32,7 +32,7 @@ When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** w
    - `D4` (`GPIO5` / `RTC_GPIO5`) is reserved as the future hardware wake interrupt / `I2C_SDA` expansion pin.
 4. **Internal Sense Expansion Board Pins:**
    - Digital PDM Microphone: `CLK` = `GPIO41`, `DATA` = `GPIO42`.
-   - `OV5640` DVP Camera: `GPIO10–18`, `GPIO38–40`, `GPIO47–48`.
+   - Stock `OV2640`/`OV3660` (or Optional `OV5640` AF) DVP Camera: `GPIO10–18`, `GPIO38–40`, `GPIO47–48`.
 
 ---
 

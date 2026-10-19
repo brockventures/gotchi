@@ -6,11 +6,11 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 
 ## Epic 1: Architecture, Spec & Procurement (Milestone M0)
 - [x] **T1.1 — Lock V1 Hardware BOM & Pinout Allocation** (`Zero`, `Amos`, `Ryan`, `Mike`)
-  - Locked `XIAO ESP32S3 Sense` + `OV5640` AF camera + `$5 Seeed ePaper Breakout` + `1.54" SSD1681` e-paper + `MAX98357A` I2S amp + `800–1000 mAh LiPo` + 2 tactile buttons + slide switch.
+  - Locked 7-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$62.32` Seeed+Waveshare+Amazon / `$70.32` Seeed+Amazon / `$80.32` All-Amazon): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch.
 - [x] **T1.2 — Audit Mirrormere Hub Voice Contract** (`Amos`)
-  - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml`.
+  - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml` and documented in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md).
 - [ ] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
-  - Order BOM items from [`docs/BOM.md`](BOM.md).
+  - Order 1-unit BOM cart from [`docs/BOM.md`](BOM.md).
 
 ---
 
@@ -22,12 +22,12 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [ ] **T2.3 — PDM Microphone Capture & PSRAM WAV Ring Buffer** (`Zero`)
   - Configure I2S/PDM RX on `GPIO41` (`CLK`) and `GPIO42` (`DATA`) at `16 kHz` 16-bit mono; buffer PTT recordings in PSRAM with a 500ms circular pre-roll.
 - [ ] **T2.4 — `MAX98357A` I2S Audio Output & Chime/TTS Stream Player** (`Zero`)
-  - Configure I2S TX on `D7` (`GPIO44` BCLK — silent at boot), `D6` (`GPIO43` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks and Tamagotchi UI chimes.
-- [ ] **T2.5 — `OV5640` Camera Driver & Single-Shot VCM Autofocus** (`Zero`)
-  - Initialize DVP camera pins, load `OV5640` AF firmware registers (`0x3022 = 0x08`), and expose snapshot capture for multimodal prompts.
-- [~] **T2.6 — 1.54" E-Paper (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)
+  - Configure I2S TX on `D7` (`GPIO44` BCLK — silent at boot), `D6` (`GPIO43` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks (`24 kHz` default from Mirrormere SSE) and Tamagotchi UI chimes.
+- [ ] **T2.5 — Camera Driver (`OV2640`/`OV3660` Stock Baseline + Optional `OV5640` AF)** (`Zero`)
+  - Auto-detect attached DVP sensor on boot (`OV2640`/`OV3660` stock baseline out of the box; enable `0x3022 = 0x08` single-shot VCM autofocus when `OV5640` is present) and expose JPEG snapshot capture for multimodal prompts.
+- [~] **T2.6 — Waveshare 1.54" E-Paper V2 (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)
   - [x] Audited `client/eink-node/` in Mirrormere (`Amos` in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) / PR #1).
-  - [ ] Configure `GxEPD2` / `Seeed_GFX` on pins `D0/D1/D3/D5/D8/D10` with bounded `BUSY` timeout (`30s`), and implement partial refresh for animated companion states + full refresh every N frames (`PanelManager.write_frame` policy).
+  - [ ] Configure `GxEPD2` (`GxEPD2_154_D67` / `SSD1681`, `200x200`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh) on direct 8-pin harness pins `D0/D1/D3/D5/D8/D10` with bounded `BUSY` timeout (`30s`) and `PanelManager.write_frame` full-refresh recovery policy.
 - [ ] **T2.7 — QR Soft-AP Captive Portal Onboarding (`192.168.4.1`)** (`Zero`)
   - Render scannable Wi-Fi QR code on the 200x200 e-paper screen when unprovisioned; serve mobile captive portal to set Wi-Fi and hub URL without an on-screen keyboard.
 
@@ -52,8 +52,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 
 ---
 
-## Epic 5: 3D Enclosure CAD & Future Wake Models (Milestone M4)
-- [ ] **T5.1 — Parametric 3D-Printed Pocket Shell (`cad/`)** (`Zero`, `Ryan`)
-  - Model compact snap-fit enclosure housing the stacked XIAO + Sense + Seeed Breakout, `803040` 1000mAh LiPo bay, `1.54"` e-paper bezel, speaker grille, side tactile buttons, and slide switch cutout.
+## Epic 5: Multi-Part 3D-Printed Enclosure & Future Wake Models (Milestone M4)
+- [~] **T5.1 — Multi-Part Openable 3D-Printed Pocket Case (`cad/`)** (`Amos`, `Zero`, `Ryan`)
+  - Model a multi-part openable enclosure in Blender / CAD sized to the locked 7-item mechanical envelope in [`docs/HARDWARE_ASSEMBLY.md`](HARDWARE_ASSEMBLY.md): Waveshare `48.0 x 33.0 mm` e-paper V2 module (`27.6 x 27.6 mm` bezel window + 4x `M2` bosses), stacked XIAO ESP32S3 Sense (`21.0 x 17.8 x 15.0 mm` w/ `USB-C` + camera/mic apertures), `803040` `40 x 30 x 8 mm` LiPo bay, `MAX98357A` + `1W 8Ω` cavity speaker grille, 2x `6x6x5mm` tactile button actuators, and recessed SPDT slide switch slot.
 - [ ] **T5.2 — V1.1 Wake-Word & Tiny Audio-Intent Classifier Spike** (`Mike`, `Zero`, `Amos`)
   - Benchmark `microWakeWord` / `ESP-SR` and Mike's wake-word-free tiny audio-intent classifier on the ESP32-S3 vector unit (`ESP-NN`), measuring real-world mA draw against the 1000 mAh LiPo.
