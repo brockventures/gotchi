@@ -49,11 +49,15 @@ These are what the firmware does now. None is a decision.
 
 ## 6. Open requirements (need Ryan or Mike)
 
-- **OPEN: maximum utterance length.** Is 15 s enough for a spoken question, or should it be longer? A longer cap costs PSRAM (about 32 KB per second of recording).
+- **OPEN: maximum utterance length.** Today 15 s. Zero proposes 60 s (about 1.9 MB of PSRAM, about 32 KB per second of recording). Free PSRAM at runtime is unmeasured.
+- **OPEN: shortest accepted press.** Today a press under 0.5 s (16,000 bytes) or below 50 LSB RMS is discarded and the screen shows TOO SHORT for 1.5 s. Zero notes that one-word replies such as "yes" or "stop" may be 0.25 to 0.4 s and proposes a 200 ms floor. The 0.25 to 0.4 s figure is Zero's estimate, not measured.
+- **OPEN: pre-roll against battery life.** The 500 ms pre-roll keeps the microphone running. Zero estimates 20 to 35 mA, about 30 hours idle on the 1000 mAh battery; that is an unmeasured estimate. Options Zero raised: pre-roll only on USB power, or for a few minutes after a press, with cold wake on battery.
+- **OPEN: interrupting a reply.** Today both buttons are ignored while a reply plays. Should the top button cut the audio and start a new recording, and should the bottom button cancel playback?
+- **OPEN: bottom button and camera.** Does it stage a snapshot to attach to the next push-to-talk turn, or send a standalone snapshot? Attaching needs an optional `image` field on `/api/voice/interact`; whether the gateway accepts one has not been checked.
+- **OPEN: backend per unit.** Does each unit's `voice_url` point at the same hub, or may Ryan's and Mike's units use different backends that share the wire contract?
 - **OPEN: where the off-LAN gateway runs** (T3.2). Mike's call.
 - **OPEN: hotspot and BLE modes** are in scope for V1, but no acceptance test exists.
 - **OPEN: target battery life** and whether deep sleep is required for V1.
-- **OPEN: what the bottom button does** beyond camera snapshot (cancel, mode).
 - **OPEN: wake word** is deferred to V1.1 (T5.2); confirm that stays out of V1.
 
 ## 7. Out of scope for V1
