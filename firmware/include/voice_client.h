@@ -23,8 +23,12 @@ enum class InteractResult : uint8_t {
 };
 
 struct ImageAttachment {
+    static constexpr size_t MAX_BURST_FRAMES = 5;
     const uint8_t* data = nullptr;
     size_t length = 0;
+    const uint8_t* burst_data[MAX_BURST_FRAMES] = {nullptr};
+    size_t burst_lengths[MAX_BURST_FRAMES] = {0};
+    size_t burst_count = 0;
     String default_prompt = "";
 };
 

@@ -413,10 +413,17 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
 
     gotchi_voice::ImageAttachment img;
     const gotchi_voice::ImageAttachment* img_ptr = nullptr;
-    if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_count > 0 &&
-        s_staged_jpeg_bufs[0] && s_staged_jpeg_lens[0] > 0) {
-        img.data = s_staged_jpeg_bufs[0];
-        img.length = s_staged_jpeg_lens[0];
+    if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_count > 0) {
+        if (s_staged_jpeg_count > 1) {
+            img.burst_count = s_staged_jpeg_count;
+            for (size_t i = 0; i < s_staged_jpeg_count && i < gotchi_voice::ImageAttachment::MAX_BURST_FRAMES; ++i) {
+                img.burst_data[i] = s_staged_jpeg_bufs[i];
+                img.burst_lengths[i] = s_staged_jpeg_lens[i];
+            }
+        } else if (s_staged_jpeg_bufs[0] && s_staged_jpeg_lens[0] > 0) {
+            img.data = s_staged_jpeg_bufs[0];
+            img.length = s_staged_jpeg_lens[0];
+        }
         if (is_standalone_snap) {
             img.default_prompt = cfg.default_image_prompt;
         }
