@@ -50,7 +50,7 @@ static uint8_t* psram_wav_buf = nullptr;
 static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 static constexpr uint32_t PTT_DEBOUNCE_MS = 30;
 static constexpr uint32_t PTT_MAX_MS      = 15000;
-static constexpr float    PTT_MIN_RMS     = 50.0f;
+static constexpr float    PTT_MIN_RMS     = 50.0f / 32768.0f;  // finishPttRecording() returns RMS normalized to [0,1]
 static constexpr size_t   PTT_MIN_BYTES   = 16000;
 
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.

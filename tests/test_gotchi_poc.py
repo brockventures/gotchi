@@ -124,3 +124,12 @@ def test_parse_sse_live_sentence_stream():
     assert ui.transcript == "hello"
     assert ui.state == "idle"  # `done` is the last state change
     assert ui.status_text == "DONE (1234ms)"
+
+
+def test_render_zero_skin_all_9_states():
+    from poc.gotchi_poc import VALID_STATES
+    for st in VALID_STATES:
+        ui = GotchiUIState(state=st, skin="zero", status_text=f"TEST {st.upper()}")
+        im = render_sprite_200x200(ui, refresh_mode="partial")
+        assert im.size == (200, 200)
+        assert im.mode == "1"
