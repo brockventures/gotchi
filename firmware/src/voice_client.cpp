@@ -1,5 +1,5 @@
 // ============================================================================
-// GOTCHI Mirrormere voice client (T3.1) — see include/voice_client.h.
+// GOTCHI Mirrormere / Zero Gateway Voice Client (T3.1) — see include/voice_client.h.
 // ============================================================================
 
 #include <WiFi.h>
@@ -13,12 +13,27 @@
 namespace gotchi_voice {
 namespace {
 
-constexpr const char* BOUNDARY         = "----GotchiBoundary7MA4YWxkTrZu0gW";
-constexpr size_t      SSE_BUF_BYTES    = 256 * 1024;
+constexpr const char* BOUNDARY           = "----GotchiBoundary7MA4YWxkTrZu0gW";
+constexpr size_t      SSE_BUF_BYTES      = 256 * 1024;
 constexpr uint32_t    CONNECT_TIMEOUT_MS = 5000;
-constexpr uint32_t    IDLE_TIMEOUT_MS  = 60000;
-constexpr size_t      UPLOAD_CHUNK     = 1460;
-constexpr uint32_t    DEFAULT_RATE_HZ  = 24000;
+constexpr uint32_t    IDLE_TIMEOUT_MS    = 60000;
+constexpr size_t      UPLOAD_CHUNK       = 1460;
+constexpr uint32_t    DEFAULT_RATE_HZ    = 24000;
+
+static AbortPollFn    s_active_abort_poll = nullptr;
+static InteractResult s_active_abort_kind = InteractResult::DONE;
+
+bool checkAbortFlag() {
+    if (s_active_abort_kind != InteractResult::DONE) return true;
+    if (s_active_abort_poll) {
+        InteractResult r = s_active_abort_poll();
+        if (r != InteractResult::DONE) {
+            s_active_abort_kind = r;
+            return true;
+        }
+    }
+    return false;
+}
 
 // Buffered socket reader. When `chunked` is set it strips HTTP chunk framing
 // (size line + CRLF after each chunk), so an SSE line that spans a chunk
@@ -29,8 +44,9 @@ public:
 
     void setChunked(bool on) { chunked_ = on; }
 
-    // Next body byte, or -1 on EOF / idle timeout / terminating chunk.
+    // Next body byte, or -1 on EOF / idle timeout / terminating chunk / user abort.
     int next() {
+        if (checkAbortFlag()) return -1;
         if (!chunked_) return rawByte();
         while (chunk_left_ == 0) {
             char line[32];
@@ -47,7 +63,7 @@ public:
     }
 
     // Reads one raw line (CR stripped) into out, NUL-terminated, truncated to cap-1.
-    // Returns stored length, or -1 on EOF / idle timeout.
+    // Returns stored length, or -1 on EOF / idle timeout / abort.
     int readLine(char* out, size_t cap) {
         size_t len = 0;
         while (true) {
@@ -70,6 +86,7 @@ private:
     bool fill() {
         uint32_t t0 = millis();
         while (true) {
+            if (checkAbortFlag()) return false;
             int avail = c_.available();
             if (avail > 0) {
                 size_t want = (size_t)avail < sizeof(buf_) ? (size_t)avail : sizeof(buf_);
@@ -136,7 +153,6 @@ bool containsIgnoreCase(const char* hay, const char* needle) {
     return false;
 }
 
-// Pre-stream HTTP status -> device sprite state (docs/MIRRORMERE_VOICE_CLIENT.md).
 UiState stateForHttpStatus(int code) {
     switch (code) {
         case 409: return UiState::BUSY;     // another interaction in flight
@@ -172,9 +188,10 @@ const char* findB64(const char* line, const char* key, size_t& out_len) {
     return p;
 }
 
-// Handles one `data:` line. Returns true when the event is `done`.
+// Handles one `data:` line. Returns true when the event is `done` or aborted.
 bool handleEvent(const char* event, const char* line, const JsonDocument& filter,
                  GotchiUIState& ui, StateCb cb) {
+    if (checkAbortFlag()) return true;
     const bool is_sentence = strcmp(event, "sentence") == 0;
     const bool is_legacy   = strcmp(event, "audio_chunk") == 0;
 
@@ -226,7 +243,9 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
             ui.state = UiState::SPEAKING;
             if (cb) cb(ui);
         }
-        gotchi_audio::playBase64PcmChunk(b64, b64_len, rate);
+        if (!gotchi_audio::playBase64PcmChunk(b64, b64_len, rate) && checkAbortFlag()) {
+            return true;
+        }
     } else if (strcmp(event, "error") == 0) {
         const char* code = doc["error"] | "error";
         const char* msg  = doc["message"] | "";
@@ -237,14 +256,11 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
     } else if (strcmp(event, "done") == 0) {
         return true;
     }
-    // `turn` and unknown events are ignored.
     return false;
 }
 
-// Reads SSE lines from rd into buf. Returns true if `done` was seen.
+// Reads SSE lines from rd into buf. Returns true if `done` was seen or user aborted.
 bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
-    // Allow-list filter: only small scalar keys are kept. audio_b64 / data are
-    // not in the list, so they are skipped during parsing and never copied.
     JsonDocument filter;
     filter["state"] = true;
     filter["transcript"] = true;
@@ -259,8 +275,9 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
     size_t len = 0;
     bool overflow = false;
     while (true) {
+        if (checkAbortFlag()) return true;
         int b = rd.next();
-        if (b < 0) return false;            // EOF or idle timeout before `done`
+        if (b < 0) return checkAbortFlag();
         if (b == '\r') continue;
         if (b != '\n') {
             if (len < SSE_BUF_BYTES - 1) buf[len++] = (char)b;
@@ -270,11 +287,10 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
 
         buf[len] = '\0';
         if (overflow) {
-            // Line is larger than the buffer: drop it, never write past the end.
             Serial.printf("voice: dropped SSE line over %u bytes (event '%s')\n",
                           (unsigned)SSE_BUF_BYTES, event);
         } else if (len == 0) {
-            event[0] = '\0';                // blank line ends the event block
+            event[0] = '\0';
         } else if (strncmp(buf, "event:", 6) == 0) {
             const char* name = buf + 6;
             while (*name == ' ') name++;
@@ -291,7 +307,13 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
 } // namespace
 
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
-              GotchiUIState& ui, StateCb cb, const String& bearer_token) {
+              GotchiUIState& ui, StateCb cb, const String& bearer_token,
+              const ImageAttachment* image, AbortPollFn abort_poll,
+              InteractResult* out_result) {
+    s_active_abort_poll = abort_poll;
+    s_active_abort_kind = InteractResult::DONE;
+    if (out_result) *out_result = InteractResult::ERROR;
+
     String host, path;
     uint16_t port = 80;
     if (!parseUrl(url, host, port, path) || !wav.data || wav.length == 0) {
@@ -303,7 +325,6 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
 
-    // multipart/form-data body = pre + WAV + post (matches poc build_multipart_wav).
     char session[24];
     snprintf(session, sizeof(session), "gotchi-%lu", (unsigned long)millis());
 
@@ -313,6 +334,15 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     pre += "\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"ptt.wav\"\r\n";
     pre += "Content-Type: audio/wav\r\n\r\n";
 
+    const bool has_image = (image != nullptr && image->data != nullptr && image->length > 0);
+    String img_pre;
+    if (has_image) {
+        img_pre += "\r\n--";
+        img_pre += BOUNDARY;
+        img_pre += "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"snap.jpg\"\r\n";
+        img_pre += "Content-Type: image/jpeg\r\n\r\n";
+    }
+
     String post = "\r\n--";
     post += BOUNDARY;
     post += "\r\nContent-Disposition: form-data; name=\"node_id\"\r\n\r\n";
@@ -321,11 +351,20 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     post += BOUNDARY;
     post += "\r\nContent-Disposition: form-data; name=\"session_id\"\r\n\r\n";
     post += session;
+    if (has_image && image->default_prompt.length() > 0) {
+        post += "\r\n--";
+        post += BOUNDARY;
+        post += "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n";
+        post += image->default_prompt;
+    }
     post += "\r\n--";
     post += BOUNDARY;
     post += "--\r\n";
 
     size_t content_len = pre.length() + wav.length + post.length();
+    if (has_image) {
+        content_len += img_pre.length() + image->length;
+    }
 
     String head = "POST " + path + " HTTP/1.1\r\n";
     head += "Host: " + host;
@@ -354,6 +393,13 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         size_t n = wav.length - off < UPLOAD_CHUNK ? wav.length - off : UPLOAD_CHUNK;
         sent = writeAll(client, wav.data + off, n);
     }
+    if (sent && has_image) {
+        sent = writeAll(client, (const uint8_t*)img_pre.c_str(), img_pre.length());
+        for (size_t off = 0; sent && off < image->length; off += UPLOAD_CHUNK) {
+            size_t n = image->length - off < UPLOAD_CHUNK ? image->length - off : UPLOAD_CHUNK;
+            sent = writeAll(client, image->data + off, n);
+        }
+    }
     sent = sent && writeAll(client, (const uint8_t*)post.c_str(), post.length());
     if (!sent) {
         client.stop();
@@ -366,6 +412,10 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     int n = rd.readLine(line, sizeof(line));
     if (n < 0) {
         client.stop();
+        if (s_active_abort_kind != InteractResult::DONE) {
+            if (out_result) *out_result = s_active_abort_kind;
+            return true;
+        }
         setFailure(ui, UiState::ERROR, "no_response", "NO RESPONSE", cb);
         return false;
     }
@@ -375,7 +425,6 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         if (sp) status = atoi(sp + 1);
     }
     if (status != 200) {
-        // Pre-stream error: JSON body follows; the status is all we act on.
         client.stop();
         char code[8];
         snprintf(code, sizeof(code), "%d", status);
@@ -405,11 +454,20 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
 
+    gotchi_audio::setPlaybackAbortCheck(checkAbortFlag);
     bool done = streamEvents(rd, buf, ui, cb);
+    gotchi_audio::setPlaybackAbortCheck(nullptr);
+    s_active_abort_poll = nullptr;
 
     free(buf);
     gotchi_audio::muteSpeaker();
     client.stop();
+
+    if (s_active_abort_kind != InteractResult::DONE) {
+        if (out_result) *out_result = s_active_abort_kind;
+        return true;
+    }
+    if (out_result) *out_result = done ? InteractResult::DONE : InteractResult::ERROR;
     return done;
 }
 
