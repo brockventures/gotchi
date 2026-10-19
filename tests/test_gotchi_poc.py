@@ -150,3 +150,13 @@ def test_multipart_payload_with_snapshot_and_prompt():
     assert fake_jpeg in body
     assert b'name="prompt"' in body
     assert b"Describe what you see in this snapshot briefly." in body
+
+
+def test_is_whole_utterance_go_live():
+    from poc.gotchi_poc import is_whole_utterance_go_live
+    assert is_whole_utterance_go_live("Go Live") is True
+    assert is_whole_utterance_go_live("  go   live! ") is True
+    assert is_whole_utterance_go_live("Go live.") is True
+    assert is_whole_utterance_go_live("let us go live now") is False
+    assert is_whole_utterance_go_live("go live mode") is False
+    assert is_whole_utterance_go_live("") is False

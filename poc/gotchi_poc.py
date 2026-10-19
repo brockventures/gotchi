@@ -401,3 +401,12 @@ if __name__ == "__main__":
     if args.demo_sheet:
         p = render_contact_sheet(args.demo_sheet)
         print(f"Wrote {p}")
+
+
+def is_whole_utterance_go_live(transcript: str) -> bool:
+    """Return True iff the normalized transcript is strictly the phrase 'go live' (PRD F21)."""
+    cleaned = "".join(
+        c.lower() if c.isalnum() else " "
+        for c in (transcript or "")
+    )
+    return " ".join(cleaned.split()) == "go live"
