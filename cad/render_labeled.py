@@ -448,6 +448,11 @@ def generate_side_labeled(p, out_path):
     d.rectangle(rect_yz(p["xiao_y1"], p["mic_cz"] - 1.3, p["xiao_y1"] + 0.8, p["mic_cz"] + 1.3), fill=(250, 204, 21), outline=(161, 98, 7), width=2)
     d.rectangle(rect_yz(p["y_max"] - p["wall"], p["mic_cz"] - 1.1, p["y_max"], p["mic_cz"] + 1.1), fill=(239, 68, 68), outline=(153, 27, 27), width=2)
 
+    # Rear slide-in groove & internal sealed reinforcement spine on back wall
+    d.rectangle(rect_yz(p["slot_y_entry"] - 1.2, -p["D_out"] + p["back_wall"], p["slot_y_top"] + 1.5, p["slot_spine_z"]), fill=(203, 213, 225), outline=(51, 65, 85), width=2)
+    d.rectangle(rect_yz(p["slot_y_entry"], -p["D_out"], p["slot_y_top"], p["slot_z_base"]), fill=(241, 245, 249), outline=(14, 116, 144), width=2)
+    d.rectangle(rect_yz(p["slot_y_rail"], -p["D_out"], p["slot_y_top"], p["slot_z_neck"]), fill=(103, 232, 249), outline=(14, 116, 144), width=2)
+
     d.rectangle(rect_yz(p["cam_cy"] - p["cam_h"]/2, p["cam_z1"], p["cam_cy"] + p["cam_h"]/2, -2.8), fill=(51, 65, 85), outline=(15, 23, 42), width=3)
     d.rectangle(rect_yz(p["cam_cy"] - p["cam_lens_d"]/2, -2.8, p["cam_cy"] + p["cam_lens_d"]/2, 0.0), fill=(56, 189, 248), outline=(2, 132, 199), width=2)
 
@@ -459,7 +464,7 @@ def generate_side_labeled(p, out_path):
         ("803040 LiPo Battery (z = -6.2..-14.2 mm, 8mm thick)", pt(-5.0, -10.2), "L", 550),
         ("MAX98357A Class-D Amp (z = -15.2..-18.2 mm)", pt(-2.0, -16.7), "L", 660),
         ("15x10x3.5mm Speaker + Rear Acoustic Slots", pt(-19.0, -17.5), "L", 770),
-        ("Back Wall (Z = -20.8 mm — 8.2 mm thinner than Rev 1!)", pt(-12.0, -20.1), "L", 880),
+        ("Rear Twin-Rail Undercut Groove (Clip / Kickstand Slot)", pt(9.0, -20.0), "L", 880),
 
         ("Forward-Firing Camera (+Z aperture in Top Crown)", pt(27.5, -1.5), "R", 160),
         ("Display Top FPC Fold Relief Pocket (z = -0.8..-2.6 mm)", pt(20.2, -1.8), "R", 265),
@@ -608,7 +613,7 @@ def main():
     save_titled_render(
         im, os.path.join(ren_dir, "back_iso.png"),
         "GOTCHI V1 (Rev 4) — Back Isometric",
-        "4x Counterbored M2 Corners | 5-Slot Speaker Grille | Top PTT (+Y) & Side Mode (+X) Buttons"
+        "Flush Twin-Rail Slide-In Groove (Clip / Kickstand) | 4x M2 Corners | 5-Slot Speaker Grille"
     )
 
     # 3. front_straight.png

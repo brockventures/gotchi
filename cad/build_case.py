@@ -175,6 +175,21 @@ P = dict(
     clear_d=2.3,
     cbore_d=3.8,
     cbore_depth=1.3,
+
+    # 8. Rear Slide-In Accessory Groove (Twin-Rail Undercut Receiver for Spring Clip / Kickstand):
+    #    - Outer slot neck width: 12.0 mm (x = -6.0..+6.0 mm, z = -20.8..-20.0 mm)
+    #    - Undercut rail width:   16.4 mm (x = -8.2..+8.2 mm, z = -20.0..-19.3 mm; 2.2 mm rails per side)
+    #    - Engaged rail Y span:   y = -0.5 to +19.5 mm (20.0 mm locked track; closed top stop at y = +19.5 mm)
+    #    - Drop-in entry bay:     y = -11.5 to -0.5 mm (11.0 mm open entry above speaker grille)
+    #    - Internal sealed spine: z = -19.3 to -18.35 mm (maintains 0.95 mm sealed inner wall, 0 collision)
+    slot_neck_w=12.0,
+    slot_base_w=16.4,
+    slot_y_entry=-11.5,
+    slot_y_rail=-0.5,
+    slot_y_top=19.5,
+    slot_z_neck=-20.0,
+    slot_z_base=-19.3,
+    slot_spine_z=-18.35,
 )
 
 
@@ -383,6 +398,42 @@ def build_back_shell():
 
     part = trimesh.boolean.union([outer] + adds, engine='manifold')
     part = trimesh.boolean.difference([part] + cutters, engine='manifold')
+
+    # 11. Rear Slide-In Accessory Groove (Twin-Rail Undercut Receiver for Clip / Kickstand)
+    #     Internal sealed reinforcement pad (z = -19.5 to -18.35 mm) keeps wall 100% sealed behind groove
+    spine_pad = make_box(
+        -p['slot_base_w'] / 2.0 - 1.5, p['slot_base_w'] / 2.0 + 1.5,
+        p['slot_y_entry'] - 1.2, p['slot_y_top'] + 1.5,
+        -p['D_out'] + p['back_wall'] - 0.3, p['slot_spine_z']
+    )
+    groove_cuts = [
+        # Center neck opening along full track (x = -6.0..+6.0 mm, y = -11.5..+19.5 mm, z = -20.8..-19.3 mm)
+        make_box(
+            -p['slot_neck_w'] / 2.0, p['slot_neck_w'] / 2.0,
+            p['slot_y_entry'], p['slot_y_top'],
+            -p['D_out'] - 0.5, p['slot_z_base']
+        ),
+        # Twin undercut side grooves in upper locked zone (x = -8.2..+8.2 mm, y = -0.5..+19.5 mm, z = -20.0..-19.3 mm)
+        make_box(
+            -p['slot_base_w'] / 2.0, p['slot_base_w'] / 2.0,
+            p['slot_y_rail'], p['slot_y_top'],
+            p['slot_z_neck'], p['slot_z_base']
+        ),
+        # Lower drop-in entry cutout (x = -8.2..+8.2 mm, y = -11.5..-0.5 mm, full depth z = -20.8..-19.3 mm)
+        make_box(
+            -p['slot_base_w'] / 2.0, p['slot_base_w'] / 2.0,
+            p['slot_y_entry'], p['slot_y_rail'],
+            -p['D_out'] - 0.5, p['slot_z_base']
+        ),
+    ]
+    detent_bump = make_box(
+        -3.5, 3.5,
+        0.0, 1.2,
+        p['slot_z_base'] - 0.35, p['slot_z_base'] + 0.1
+    )
+    part = trimesh.boolean.union([part, spine_pad], engine='manifold')
+    part = trimesh.boolean.difference([part] + groove_cuts, engine='manifold')
+    part = trimesh.boolean.union([part, detent_bump], engine='manifold')
     return part
 
 
@@ -390,6 +441,49 @@ def build_button_cap():
     flange = make_cyl_z(5.5 / 2.0, 0.0, 1.0)
     stem = make_cyl_z(3.4 / 2.0, 0.95, 3.8)
     return trimesh.boolean.union([flange, stem], engine='manifold')
+
+
+def build_spring_clip():
+    """
+    Buildable slide-in compliant spring lapel/pocket clip that locks into the rear twin-rail grooves.
+    Positioned in assembled coordinates (behind z = -20.8 mm).
+    """
+    p = P
+    # T-tongue (0.2 mm clearance per side: 16.0 mm flange width, 11.6 mm neck width, 18.5 mm tall in Y: y = +0.8..+19.3)
+    flange = make_box(-8.0, 8.0, 0.8, 19.3, -19.95, -19.40)
+    neck = make_box(-5.8, 5.8, 0.8, 19.3, -21.0, -19.35)
+    # Detent notch in tongue face for snap-fit bump
+    notch = make_box(-3.8, 3.8, -0.2, 1.5, -19.55, -19.20)
+    # Top C-loop spring arch (y = +16.5..+20.5, curving back to z = -25.6 mm)
+    arch_top = make_box(-6.5, 6.5, 16.8, 19.8, -25.6, -20.8)
+    arch_hollow = make_box(-7.0, 7.0, 15.0, 17.6, -23.8, -21.0)
+    # Spring arm extending downward to y = -18.0 mm (2.0 mm thick beam, clamping gap to z = -21.4 mm at tip)
+    arm = make_box(-6.5, 6.5, -18.0, 18.0, -25.6, -23.6)
+    pinch_jaw = make_box(-6.5, 6.5, -14.5, -11.0, -23.8, -21.5)
+    flare_tip = make_box(-6.5, 6.5, -19.5, -17.5, -26.4, -24.2)
+    clip = trimesh.boolean.union([flange, neck, arch_top, arm, pinch_jaw, flare_tip], engine='manifold')
+    clip = trimesh.boolean.difference([clip, notch, arch_hollow], engine='manifold')
+    return clip
+
+
+def build_kickstand():
+    """
+    Buildable slide-in 20-degree desk kickstand that locks into the same rear twin-rail grooves
+    and props the enclosure at an ergonomic desk viewing angle down to y = y_min (-27.2 mm).
+    """
+    p = P
+    flange = make_box(-8.0, 8.0, 0.8, 19.3, -19.95, -19.40)
+    neck = make_box(-5.8, 5.8, 0.8, 19.3, -21.2, -19.35)
+    notch = make_box(-3.8, 3.8, -0.2, 1.5, -19.55, -19.20)
+    # Angled A-frame kickstand leg extending from (y = +16.0, z = -21.0) down to desk level (y = -27.2, z = -36.5)
+    # Built as a hull of top hinge bar and wide bottom desk foot, with a center weight-relief cutout
+    top_bar = make_box(-7.0, 7.0, 13.0, 18.5, -23.2, -20.8)
+    foot_bar = make_box(-11.0, 11.0, p['y_min'], p['y_min'] + 3.2, -36.5, -33.5)
+    leg_hull = trimesh.convex.convex_hull(np.vstack([top_bar.vertices, foot_bar.vertices]))
+    window_cut = make_box(-4.2, 4.2, -21.0, 9.0, -40.0, -21.3)
+    stand = trimesh.boolean.union([flange, neck, leg_hull], engine='manifold')
+    stand = trimesh.boolean.difference([stand, notch, window_cut], engine='manifold')
+    return stand
 
 
 def build_internal_3d_components():
@@ -431,7 +525,7 @@ def build_internal_3d_components():
     return comps
 
 
-def export_stls(out_dir, front, back, cap):
+def export_stls(out_dir, front, back, cap, clip=None, kickstand=None):
     stl_dir = os.path.join(out_dir, "stl")
     os.makedirs(stl_dir, exist_ok=True)
 
@@ -451,6 +545,22 @@ def export_stls(out_dir, front, back, cap):
     cap_print = cap.copy()
     cap_print.apply_translation([0, 0, -cap_print.bounds[0][2]])
     cap_print.export(os.path.join(stl_dir, "gotchi_button_cap.stl"))
+
+    if clip is not None:
+        # Orient spring clip on its side (+X/-X profile flat on Z=0 bed) for maximum layer strength along spring loop
+        clip_print = clip.copy()
+        rot_y90 = trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0])
+        clip_print.apply_transform(rot_y90)
+        clip_print.apply_translation([0, 0, -clip_print.bounds[0][2]])
+        clip_print.export(os.path.join(stl_dir, "gotchi_clip.stl"))
+
+    if kickstand is not None:
+        stand_print = kickstand.copy()
+        rot_y90 = trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0])
+        stand_print.apply_transform(rot_y90)
+        stand_print.apply_translation([0, 0, -stand_print.bounds[0][2]])
+        stand_print.export(os.path.join(stl_dir, "gotchi_kickstand.stl"))
+
     print(f"Exported watertight print-oriented STLs to {stl_dir}/")
 
 
@@ -462,9 +572,11 @@ def main():
     front = build_front_shell()
     back = build_back_shell()
     cap = build_button_cap()
+    clip = build_spring_clip()
+    kickstand = build_kickstand()
     comps = build_internal_3d_components()
 
-    for name, m in [("front", front), ("back", back), ("button_cap", cap)]:
+    for name, m in [("front", front), ("back", back), ("button_cap", cap), ("spring_clip", clip), ("kickstand", kickstand)]:
         print(f"{name}: verts={len(m.vertices)} faces={len(m.faces)} watertight={m.is_watertight} extents={np.round(m.extents, 2)}")
         if not m.is_watertight:
             raise RuntimeError(f"Mesh {name} is not watertight!")
@@ -489,7 +601,7 @@ def main():
         raise RuntimeError(f"Detected {hits} collision(s)!")
     print("ALL 3D COMPONENT & SHELL CLEARANCES VERIFIED: 0 COLLISIONS (0.00 mm^3)")
 
-    export_stls(args.out, front, back, cap)
+    export_stls(args.out, front, back, cap, clip, kickstand)
 
 
 if __name__ == "__main__":
