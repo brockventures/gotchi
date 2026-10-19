@@ -31,6 +31,10 @@ bool beginPttRecording();
 // Read available 16 kHz PDM samples during held PTT button (up to 15s max)
 size_t pollPttRecording();
 
+// Start/stop dedicated Core 0 FreeRTOS mic drain task so PTT chime & e-paper draw never drop speech
+bool startAsyncPttTask();
+void stopAsyncPttTask();
+
 // Finalize PTT recording: writes the 44-byte RIFF WAV header and returns buffer view
 WavView finishPttRecording();
 

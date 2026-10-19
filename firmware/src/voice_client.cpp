@@ -291,7 +291,7 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb) {
 } // namespace
 
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
-              GotchiUIState& ui, StateCb cb) {
+              GotchiUIState& ui, StateCb cb, const String& bearer_token) {
     String host, path;
     uint16_t port = 80;
     if (!parseUrl(url, host, port, path) || !wav.data || wav.length == 0) {
@@ -336,6 +336,10 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     head += "\r\n";
     head += "Content-Length: " + String((unsigned long)content_len) + "\r\n";
     head += "Accept: text/event-stream\r\n";
+    head += "X-Gotchi-Node: " + node_id + "\r\n";
+    if (bearer_token.length() > 0) {
+        head += "Authorization: Bearer " + bearer_token + "\r\n";
+    }
     head += "Connection: close\r\n\r\n";
 
     WiFiClient client;

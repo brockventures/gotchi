@@ -20,6 +20,6 @@ using StateCb = void (*)(const GotchiUIState&);
 // calls `cb(ui)` ONLY when ui.state changes or a transcript/reply text arrives
 // (and once on a non-200 HTTP status or on an `error` event).
 bool interact(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
-              GotchiUIState& ui, StateCb cb);
+              GotchiUIState& ui, StateCb cb, const String& bearer_token = "");
 
 } // namespace gotchi_voice
