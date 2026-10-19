@@ -6,6 +6,8 @@ design, and five PNG renders (`front_iso`, `front_straight`, `back_iso`, `back_l
 
 ## Run
 
+Labelled top-down and side views (after `build_case.py`): `blender -b --python cad/render_labeled.py -- --out cad` writes `renders/top_labeled.png` and `renders/side_labeled.png`. Needs Pillow in Blender's Python.
+
 ```bash
 blender -b --python cad/build_case.py -- --out cad
 ls -la cad/stl cad/renders
