@@ -89,3 +89,12 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 ## V2 Hardware & Industrial Design Backlog
 - [ ] **V2.1 — Ambient Diffused LED "Glow" Indicator When Listening** (`Ryan`, `Zero`, `Amos`) — [Issue #44](https://github.com/brockventures/gotchi/issues/44)
   - Add a diffused LED lightpipe / glow ring integrated into the lower enclosure seam that softly illuminates when Gotchi is actively listening (`LISTENING` / Go Live voice capture), inspired by current-generation Google speaker hardware.
+- [ ] **V2.2 — `OV5640` 5MP Autofocus Camera Upgrade & Heatsink Clearance** (`Ryan`, `Zero`, `Amos`) — [Issue #48](https://github.com/brockventures/gotchi/issues/48)
+  - Upgrade from the stock fixed-focus `OV2640`/`OV3660` Sense camera to the 5MP VCM autofocus `OV5640` module (w/ heatsink; readily available on Amazon/Seeed). Firmware (`firmware/src/camera_hal.cpp`) already auto-detects `OV5640` at boot and triggers single-shot VCM autofocus (`0x3022 = 0x08`); V2 covers ordering the module, verifying rear-shell heatsink/thermal clearance in `cad/`, and benchmarking close-up macro text/document capture and 5-frame burst latency.
+- [ ] **V2.3 — Ultra-Low-Power Neural Wake Co-Processor Daughterboard (`<100 µA`)** (`Mike`, `Zero`, `Amos`)
+  - Hardware escape hatch documented in [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) Section 4.4 (e.g. Syntiant `NDP120` over I2C + hardware wake interrupt) if software-only `ESP-SR` / `ESP-NN` wake-word monitoring (`T5.2`) draws too much continuous battery current for all-day untethered pocket carry.
+- [ ] **V2.4 — I2C LiPo Fuel Gauge (`MAX17048`) & On-Screen Battery Telemetry** (`Zero`, `Amos`, `Ryan`)
+  - Add an inline `MAX17048` I2C fuel gauge IC to report accurate state-of-charge (`%`) and low-battery warnings on the 200x200 e-paper status bar (V1 solders the `803040` LiPo directly to the XIAO charger pads without a fuel-gauge ADC).
+- [ ] **V2.5 — Custom Flex/Carrier PCB & Magnetic Pogo-Pin Desk Dock** (`Ryan`, `Amos`, `Zero`)
+  - Replace V1 point-to-point hand wiring (`MAX98357A`, tactile buttons, SPDT switch, Waveshare 8-pin harness) with a compact carrier PCB and magnetic pogo-pin desk charging cradle (auto-enabling `preroll_mode: "usb_host"` and continuous wake-word listening when docked).
+
