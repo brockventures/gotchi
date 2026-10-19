@@ -6,7 +6,7 @@ Status: draft for Ryan and Mike to correct. Every requirement names its source. 
 
 A pocket e-ink companion. The user holds a button and speaks. The device sends the speech to a voice backend over the Mirrormere wire protocol and plays the spoken reply, showing a character face that reflects what it is doing.
 
-GOTCHI uses no Mirrormere hardware. The Pi Zero panel on the bench is only a proof of e-ink visuals (Mike, #gotchi 2026-10-19 09:27). Which backend a unit talks to is set per unit with `voice_url`.
+GOTCHI uses no Mirrormere hardware. The Pi Zero panel and the Pi gateway on the bench may be used to test software, and for nothing else; the locked V1 bill of materials is the hardware goal, changed only by what testing shows (Mike, #gotchi 2026-10-19 09:27 and 09:29). Which backend a unit talks to is set per unit with `voice_url`.
 
 Sources: `README.md`; Mike and Ryan in #gotchi, 2026-10-18.
 
