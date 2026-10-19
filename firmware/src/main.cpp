@@ -18,6 +18,8 @@
 #include <driver/i2s.h>
 #include "esp_camera.h"
 #include "pins.h"
+#include "epd_panel.h"
+#include "ui_state.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -37,12 +39,8 @@ static constexpr size_t PREROLL_BYTES   = SAMPLE_RATE_REC * sizeof(int16_t) / 2;
 static constexpr size_t MAX_WAV_BYTES   = 44 + SAMPLE_RATE_REC * sizeof(int16_t) * 15; // 15s cap
 static uint8_t* psram_wav_buf = nullptr;
 
-// E-Paper Refresh Policy State (`PanelManager.write_frame` port)
-static uint8_t  consecutive_partials = 0;
-static uint32_t last_full_refresh_ms = 0;
-static constexpr uint8_t  MAX_CONSECUTIVE_PARTIALS = 8;
-static constexpr uint32_t FULL_REFRESH_INTERVAL_MS = 15UL * 60UL * 1000UL;
-static constexpr uint32_t EPD_BUSY_TIMEOUT_MS      = 30000UL;
+// E-paper panel + refresh policy live in epd_panel.{h,cpp}.
+EpdPanel panel;
 
 void loadConfig() {
     prefs.begin("gotchi", true);
@@ -64,17 +62,6 @@ void saveConfig() {
     prefs.putString("wifi_ssid", cfg.wifi_ssid);
     prefs.putString("wifi_psk", cfg.wifi_psk);
     prefs.end();
-}
-
-bool waitEpdBusy(uint32_t timeout_ms = EPD_BUSY_TIMEOUT_MS) {
-    uint32_t t0 = millis();
-    while (digitalRead(PIN_EPD_BUSY) == HIGH) {
-        if (millis() - t0 > timeout_ms) {
-            return false; // Bounded 30s timeout guard
-        }
-        delay(5);
-    }
-    return true;
 }
 
 String handleJsonRpc(const String& jsonLine) {
@@ -111,7 +98,7 @@ String handleJsonRpc(const String& jsonLine) {
         saveConfig();
     } else if (cmd == "self_test") {
         res["psram_ok"] = (psramFound() && ESP.getFreePsram() > 4000000);
-        res["epd_busy_clear"] = waitEpdBusy(500);
+        res["epd_busy_clear"] = epdWaitBusy(500);
         res["btn_top_state"] = digitalRead(PIN_BTN_TOP_PTT);
         res["btn_bot_state"] = digitalRead(PIN_BTN_BOT_MOD);
         sensor_t* s = esp_camera_sensor_get();
@@ -121,6 +108,13 @@ String handleJsonRpc(const String& jsonLine) {
         prefs.clear();
         prefs.end();
         res["status"] = "cleared_nvs";
+    } else if (cmd == "draw_state") {
+        GotchiUIState ui;
+        ui.state = uiStateFromString(req["state"] | "idle");
+        if (req["status_text"].is<const char*>()) ui.status_text = req["status_text"].as<String>();
+        bool force_full = req["force_full"] | false;
+        res["ok"] = panel.draw(ui, force_full);
+        res["mode"] = panel.lastMode();
     } else if (cmd == "reboot") {
         ESP.restart();
     } else {
@@ -143,6 +137,10 @@ void setup() {
         psram_wav_buf = (uint8_t*)ps_malloc(MAX_WAV_BYTES);
     }
     loadConfig();
+
+    panel.begin();
+    GotchiUIState idle_ui;
+    panel.draw(idle_ui);
 
     httpServer.on("/api/rpc", HTTP_POST, []() {
         String resp = handleJsonRpc(httpServer.arg("plain"));
