@@ -28,6 +28,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [~] **T2.6 — Waveshare 1.54" E-Paper V2 (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)
   - [x] Audited `client/eink-node/` in Mirrormere (`Amos` in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md) / PR #1).
   - [ ] Configure `GxEPD2` (`GxEPD2_154_D67` / `SSD1681`, `200x200`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh) on direct 8-pin harness pins `D0/D1/D3/D5/D8/D10` with bounded `BUSY` timeout (`30s`) and `PanelManager.write_frame` full-refresh recovery policy.
+  - Firmware renderer: PR #5 (GOTCHI firmware T2.6: e-paper renderer and refresh policy (C++), plus AGENTS.md pin fixes)
 - [ ] **T2.7 — QR Soft-AP Captive Portal Onboarding (`192.168.4.1`)** (`Zero`)
   - Render scannable Wi-Fi QR code on the 200x200 e-paper screen when unprovisioned; serve mobile captive portal to set Wi-Fi and hub URL without an on-screen keyboard.
 
