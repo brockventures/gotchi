@@ -29,9 +29,8 @@ When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** w
 3. **Tactile Buttons & Reserved V2 Wake Pin:**
    - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake) = `D2` (`GPIO3` / `RTC_GPIO3`, active-low with internal pull-up).
    - `BTN_BOT` (Secondary / Mode / Snap) = `D4` (`GPIO5` / `RTC_GPIO5`, avoiding `GPIO0` boot-strapping).
-   - `D4` (`GPIO5` / `RTC_GPIO5`) is reserved as the future hardware wake interrupt / `I2C_SDA` expansion pin.
 4. **Internal Sense Expansion Board Pins:**
-   - Digital PDM Microphone: `CLK` = `GPIO41`, `DATA` = `GPIO42`.
+   - Digital PDM Microphone: `CLK` = `GPIO42`, `DATA` = `GPIO41`.
    - Stock `OV2640`/`OV3660` (or Optional `OV5640` AF) DVP Camera: `GPIO10–18`, `GPIO38–40`, `GPIO47–48`.
 
 ---
