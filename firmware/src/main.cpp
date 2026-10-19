@@ -94,12 +94,13 @@ static bool     s_enter_live_pending = false;
 EpdPanel panel;
 
 // ============================================================================
-// V1 Power & Battery Telemetry (4x 220k Multiplexed ADC Dividers on D4 & D2)
+// V1 Power & Battery Telemetry (3x 220k Multiplexed ADC Sense on D4 & D2)
 //   - D4 (PIN_BTN_BOT_MOD / GPIO5 / ADC1_CH4): 220k to switched BAT+, 220k to GND
-//   - D2 (PIN_BTN_TOP_PTT / GPIO3 / ADC1_CH2): 220k to 5V (VBUS), 220k to GND
-// Normal operation keeps INPUT_PULLUP active on both pins (>2.74V CMOS HIGH) so
-// digitalRead() and ext0 deep-sleep wake work natively. Once per second when idle,
-// a 250us pulsed high-Z ADC read measures VBAT/2 on D4 and VBUS/2 on D2.
+//   - D2 (PIN_BTN_TOP_PTT / GPIO3 / ADC1_CH2): single 220k series resistor to 5V (VBUS)
+// Normal operation keeps INPUT_PULLUP (45k to 3.3V) active on both pins so even if
+// 5V (VBUS) sits at 0V on battery, D2 idles at >= 2.74V and D4 at >= 2.82V (well above
+// ESP32-S3 VIH_min = 0.75 * VDD = 2.475V). Once per second when idle, a 250us pulsed
+// ADC read measures VBAT/2 on D4 (high-Z) and VBUS on D2 (against internal 45k INPUT_PULLDOWN).
 // ============================================================================
 static constexpr uint32_t POWER_TELEMETRY_INTERVAL_MS = 1000;
 static uint32_t s_last_power_sample_ts = 0;
@@ -153,11 +154,9 @@ static void samplePowerAndBatteryTelemetry(bool force = false) {
         s_battery_pct = -1;
     }
 
-    // 2. Sample 5V VBUS/2 divider on D2 (PIN_BTN_TOP_PTT):
-    //    Reads ~2500 mV (>= 1800 mV) when 5V wall brick or USB host is present, < 400 mV on battery or unwired.
+    // 2. Sample 5V VBUS via single 220k series resistor on D2 (PIN_BTN_TOP_PTT) against internal 45k INPUT_PULLDOWN:
+    //    Reads ~849 mV (>= 450 mV) when 5V wall brick or USB host is present, < 150 mV on battery or unwired.
     pinMode(PIN_BTN_TOP_PTT, INPUT_PULLDOWN);
-    delayMicroseconds(50);
-    pinMode(PIN_BTN_TOP_PTT, INPUT);
     delayMicroseconds(200);
     uint32_t vbus_div_mv = analogReadMilliVolts(PIN_BTN_TOP_PTT);
     pinMode(PIN_BTN_TOP_PTT, INPUT_PULLUP);

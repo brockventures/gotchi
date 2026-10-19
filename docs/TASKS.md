@@ -21,7 +21,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Shared command dispatcher over USB-C CDC Serial (`115200`) and Wi-Fi HTTP (`get_config`, `set_config`, `set_wifi`, `self_test`, `get_logs`, `clear_logs`, `reboot`, `factory_reset`).
   - [x] Bounded circular log ring buffer in RAM/PSRAM (`firmware/include/log_buffer.h`, `firmware/src/log_buffer.cpp`) with unconditional credential scrubbing (`psk`, `bearer_token`) and multi-subsystem lifecycle telemetry (F6 / Issue #18).
 - [x] **T2.3 — PDM Microphone Capture & PSRAM WAV Ring Buffer** (`Zero`)
-  - Configure I2S/PDM RX on `GPIO41` (`CLK`) and `GPIO42` (`DATA`) at `16 kHz` 16-bit mono; buffer PTT recordings in PSRAM with a 500ms circular pre-roll.
+  - Configure I2S/PDM RX on `GPIO42` (`CLK`) and `GPIO41` (`DATA`) at `16 kHz` 16-bit mono; buffer PTT recordings in PSRAM with a 500ms circular pre-roll.
 - [x] **T2.4 — `MAX98357A` I2S Audio Output & Chime/TTS Stream Player** (`Zero`)
   - Configure I2S TX on `D7` (`GPIO44` BCLK — silent at boot), `D6` (`GPIO43` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks (`24 kHz` default from Mirrormere SSE) and Tamagotchi UI chimes.
 - [x] **T2.5 — Camera Driver (`OV2640`/`OV3660` Stock Baseline + Optional `OV5640` AF)** (`Zero`)
