@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-GOTCHI V1 Printable Enclosure — Revision 4 (Slim Forward-Firing Multi-Tier Architecture)
-========================================================================================
+GOTCHI V1 Printable Enclosure — Revision 5 (Dual Upper-Right Side Buttons & Full Switch Collision Verification)
+===============================================================================================================
 Outer envelope: 36.4 x 60.2 x 20.8 mm (45.6 cm^3 — 42.5% smaller volume than Rev 1's
 38.0 x 72.0 x 29.0 mm / 79.3 cm^3 box, 8.2 mm thinner in Z, 11.8 mm shorter in Y,
 with slim 4.2 mm side bezels around the 28.0 x 28.0 mm active screen window).
@@ -26,19 +26,15 @@ Key Architectural & Packaging Improvements:
      1.5 mm acoustic waveguide (dia 2.2 mm) in the top wall.
    - The XIAO USB-C port exits cleanly through the left side wall (-X at y = +24.8 mm).
 
-3. Non-Cubic Multi-Feature Component Modeling & Stepped Z-Stack (20.8 mm Total Depth):
-   - Removing the 4 factory M2 brass hex standoffs from the Waveshare 1.54" PCB reduces
-     the upper 40.0 mm of the display module to a 2.7 mm flat glass+PCB laminate
-     (z = -1.45..-4.1 mm) plus 1.4 mm SMD clearance (z = -4.1..-5.5 mm).
-   - The 4.8 mm tall 8-pin PH2.0 JST header is localized to the bottom 6.4 mm edge of the
-     display PCB (y = -25.4..-19.0 mm, z = -4.1..-8.7 mm).
-   - The 803040 LiPo battery (30.0 x 40.0 x 8.0 mm) nestles directly behind the flat upper
-     40.0 mm of the display PCB (y = -18.2..+21.8 mm, z = -6.2..-14.2 mm), while the tall
-     PH2.0 connector sits in the bottom chin strip below the battery — saving ~8.0 mm of Z depth.
-   - A 16.5 x 4.8 x 1.8 mm underside bezel relief pocket (y = +17.8..+22.6 mm) protects
-     the display's folded top 24-pin FPC ribbon from clamping pressure.
-   - Rear Slim Audio Bay (z = -15.2..-19.2 mm): MAX98357A class-D amp (19.0 x 17.8 x 3.0 mm)
-     and 15 x 10 x 3.5 mm speaker sit behind the battery/PH2.0 layer with a 5-slot rear grille.
+3. Dual Upper-Right Side Buttons (+X Right Wall):
+   - Both tactile buttons (`BTN_TOP` for Voice/Live at `y = +20.5 mm`, `BTN_BOT` for Camera/Burst
+     at `y = +10.5 mm`) sit on the upper-right side wall (`+X`) at `z = -15.2 mm` (behind the
+     battery plane `z = -6.2..-14.2 mm` and in the open right-side corridor beside the left-shifted
+     `MAX98357A` amp), leaving the top wall completely clean except for the microphone port.
+   - Both `6x6x5mm` tactile switches (`btn_top_tactile`, `btn_bot_tactile`) and the `Mini SPDT`
+     power slide switch (`spdt_slide_switch`) are modeled as explicit 3D meshes in
+     `build_internal_3d_components()` and verified for `0.00 mm^3` collision against all components
+     and enclosure shells.
 
 Usage:
     python3 cad/build_case.py --out cad
@@ -106,7 +102,6 @@ P = dict(
     # 3. Top Crown (y = +22.8 to +31.4 mm):
     #    Left side (x = -16.5 to +4.5 mm): Horizontal XIAO ESP32S3 + Sense Stack (Sense PCB + PDM Mic facing UP +Y)
     #    Right-front (x = +6.0 to +14.5 mm): Forward-firing Camera (+Z) fed by 90-deg FPC flex ribbon from Sense x=+4.5mm
-    #    Right-rear (x = +7.5 to +13.5 mm): Top-shoulder PTT tactile button (+Y)
     xiao_x0=-16.5,
     xiao_x1=4.5,    # 21.0 mm length along X (USB-C at left wall x=-16.5; camera FPC header at x=+4.5)
     xiao_y0=22.8,
@@ -150,13 +145,13 @@ P = dict(
     spk_z1=-19.2,
 
     # 6. Controls:
-    # BTN_TOP (PTT): Top-right shoulder (+Y top wall, behind forward camera at z = -13.2 mm)
-    ptt_cx=10.2,
-    ptt_cz=-13.2,
+    # Both BTN_TOP (PTT/Voice) and BTN_BOT (Camera/Burst) stacked on the Upper-Right Side Wall (+X wall)
+    # at z = -15.2 mm (behind battery plane z = -6.2..-14.2 mm, in the clear right-rear corridor x = +11.7..+16.7 mm)
+    ptt_cy=20.5,    # Upper-right side button (BTN_TOP — Voice / Live)
+    ptt_cz=-15.2,
+    snap_cy=10.5,   # Lower-right side button (BTN_BOT — Camera / 5-Photo Burst, 10.0 mm below BTN_TOP)
+    snap_cz=-15.2,
     btn_hole_d=3.9,
-    # BTN_BOT (Mode/Snap): Upper-right side wall (+X wall)
-    snap_cy=12.0,
-    snap_cz=-13.2,
     # Mini SPDT Slide Switch: Lower-left side wall (-X wall)
     sw_cy=-20.5,
     sw_cz=-13.5,
@@ -350,8 +345,8 @@ def build_back_shell():
     # 3. Battery retention side rails & rear standoffs
     adds.append(make_box(-16.2, -15.1, p['bat_y0'], p['bat_y1'], -14.5, p['split_z']))
     adds.append(make_box(15.1, 16.2, p['bat_y0'], p['bat_y1'], -14.5, p['split_z']))
-    adds.append(make_box(-14.0, 14.0, 10.0, 12.0, -15.1, -14.3))
-    adds.append(make_box(-14.0, 14.0, 18.0, 20.0, -15.1, -14.3))
+    adds.append(make_box(-14.0, 11.4, 10.0, 12.0, -15.1, -14.3))
+    adds.append(make_box(-14.0, 11.4, 18.0, 20.0, -15.1, -14.3))
 
     # 4. Speaker pocket frame on inside of back wall (15.0 x 10.0 x 3.5 mm speaker)
     sx0, sx1 = p['spk_cx'] - p['spk_w']/2 - 0.3, p['spk_cx'] + p['spk_w']/2 + 0.3
@@ -360,17 +355,17 @@ def build_back_shell():
     spk_inner = make_box(sx0, sx1, sy0, sy1, -p['D_out'] + p['back_wall'], -15.0)
     adds.append(trimesh.boolean.difference([spk_outer, spk_inner], engine='manifold'))
 
-    # 5. Top-shoulder PTT button cradle (+Y top wall at x = ptt_cx, z = ptt_cz)
-    px, pz = p['ptt_cx'], p['ptt_cz']
-    ptt_outer = make_box(px - 4.0, px + 4.0, p['y_max'] - p['wall'] - 5.0, p['y_max'] - p['wall'] + 0.1, pz - 4.0, pz + 4.0)
-    ptt_inner = make_box(px - 3.1, px + 3.1, p['y_max'] - p['wall'] - 4.0, p['y_max'] + 0.5, pz - 3.1, pz + 3.1)
+    # 5. Upper-Right Side BTN_TOP (PTT / Voice) cradle (+X right wall at y = ptt_cy, z = ptt_cz)
+    py, pz = p['ptt_cy'], p['ptt_cz']
+    ptt_outer = make_box(iw / 2.0 - 5.0, iw / 2.0 + 0.1, py - 4.0, py + 4.0, pz - 3.1, pz + 0.9)
+    ptt_inner = make_box(iw / 2.0 - 4.0, iw / 2.0 + 0.5, py - 3.1, py + 3.1, pz - 3.2, pz + 1.0)
     adds.append(trimesh.boolean.difference([ptt_outer, ptt_inner], engine='manifold'))
-    cutters.append(make_cyl_y(p['btn_hole_d'] / 2.0, p['y_max'] - 4.0, p['y_max'] + 1.0, cx=px, cz=pz))
+    cutters.append(make_cyl_x(p['btn_hole_d'] / 2.0, iw / 2.0 - 1.0, p['W_out'] / 2.0 + 1.0, cy=py, cz=pz))
 
-    # 6. Side Mode/Snap button cradle (+X right wall at y = snap_cy, z = snap_cz)
+    # 6. Upper-Right Side BTN_BOT (Camera / Burst) cradle (+X right wall at y = snap_cy, z = snap_cz)
     sy, sz = p['snap_cy'], p['snap_cz']
-    snap_outer = make_box(iw / 2.0 - 5.0, iw / 2.0 + 0.1, sy - 4.0, sy + 4.0, sz - 4.0, sz + 4.0)
-    snap_inner = make_box(iw / 2.0 - 4.0, iw / 2.0 + 0.5, sy - 3.1, sy + 3.1, sz - 3.1, sz + 3.1)
+    snap_outer = make_box(iw / 2.0 - 5.0, iw / 2.0 + 0.1, sy - 4.0, sy + 4.0, sz - 3.1, sz + 0.9)
+    snap_inner = make_box(iw / 2.0 - 4.0, iw / 2.0 + 0.5, sy - 3.1, sy + 3.1, sz - 3.2, sz + 1.0)
     adds.append(trimesh.boolean.difference([snap_outer, snap_inner], engine='manifold'))
     cutters.append(make_cyl_x(p['btn_hole_d'] / 2.0, iw / 2.0 - 1.0, p['W_out'] / 2.0 + 1.0, cy=sy, cz=sz))
 
@@ -487,8 +482,9 @@ def build_kickstand():
 
 
 def build_internal_3d_components():
-    """Build true multi-feature 3D component meshes (non-cubic) and verify zero collisions."""
+    """Build true multi-feature 3D component meshes (including switches) and verify zero collisions."""
     p = P
+    iw = p['W_out'] - 2 * p['wall']  # 33.4 mm
     comps = {}
 
     # 1. Waveshare 1.54" V2 Composite Module (PCB with 4 corner M2 holes + front glass + top FPC fold + rear ZIF + bottom PH2.0)
@@ -521,6 +517,21 @@ def build_internal_3d_components():
 
     # 6. MAX98357A Amp (19 x 17.8 x 3.0 mm)
     comps['amp_max98357a'] = make_box(p['amp_cx'] - p['amp_w']/2, p['amp_cx'] + p['amp_w']/2, p['amp_cy'] - p['amp_h']/2, p['amp_cy'] + p['amp_h']/2, p['amp_z1'], p['amp_z0'])
+
+    # 7. Upper-Right Side BTN_TOP 6x6x5mm Tactile Switch (+X wall at y = ptt_cy, z = ptt_cz)
+    ptt_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['ptt_cy'] - 3.0, p['ptt_cy'] + 3.0, p['ptt_cz'] - 3.0, p['ptt_cz'] + 0.8)
+    ptt_stem = make_cyl_x(1.6, iw / 2.0 - 0.2, iw / 2.0 + 1.3, cy=p['ptt_cy'], cz=p['ptt_cz'])
+    comps['btn_top_tactile'] = trimesh.boolean.union([ptt_body, ptt_stem], engine='manifold')
+
+    # 8. Upper-Right Side BTN_BOT 6x6x5mm Tactile Switch (+X wall at y = snap_cy, z = snap_cz)
+    snap_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['snap_cy'] - 3.0, p['snap_cy'] + 3.0, p['snap_cz'] - 3.0, p['snap_cz'] + 0.8)
+    snap_stem = make_cyl_x(1.6, iw / 2.0 - 0.2, iw / 2.0 + 1.3, cy=p['snap_cy'], cz=p['snap_cz'])
+    comps['btn_bot_tactile'] = trimesh.boolean.union([snap_body, snap_stem], engine='manifold')
+
+    # 9. Lower-Left Mini SPDT Slide Switch (-X wall at y = sw_cy, z = sw_cz)
+    sw_body = make_box(-iw / 2.0 + 0.1, -iw / 2.0 + 3.6, p['sw_cy'] - 1.75, p['sw_cy'] + 1.75, p['sw_cz'] - 4.25, p['sw_cz'] + 4.25)
+    sw_knob = make_box(-iw / 2.0 - 1.3, -iw / 2.0 + 0.2, p['sw_cy'] - 0.8, p['sw_cy'] + 0.8, p['sw_cz'] - 1.0, p['sw_cz'] + 1.0)
+    comps['spdt_slide_switch'] = trimesh.boolean.union([sw_body, sw_knob], engine='manifold')
 
     return comps
 
