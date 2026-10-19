@@ -17,16 +17,107 @@ static constexpr size_t   PREROLL_SAMPLES = REC_SAMPLE_RATE / 2; // 500 ms = 8,0
 static constexpr size_t   MAX_REC_SAMPLES = REC_SAMPLE_RATE * 120; // 120s max in 8MB PSRAM = 1,920,000 samples (3.84 MB)
 static constexpr size_t   WAV_HEADER_SIZE = 44;
 
+// Go Live NLMS Acoustic Echo Cancellation (AEC) & 300ms Barge-In state (active ONLY in Go Live mode)
+static constexpr size_t   AEC_TAPS              = 64;
+static constexpr size_t   AEC_REF_RING_CAP      = 4096;
+static constexpr uint32_t BARGE_IN_HOLD_MS      = 300;
+static constexpr float    NLMS_STEP_MU          = 0.15f;
+static constexpr float    NLMS_EPSILON          = 1e-4f;
+
+static bool     s_live_aec_enabled        = false;
+static bool     s_live_barge_in_triggered = false;
+static float    s_barge_in_rms_thresh     = 0.008f;
+static uint32_t s_barge_in_voiced_ms      = 0;
+static float    s_aec_weights[AEC_TAPS]   = {0.0f};
+static float    s_aec_x_history[AEC_TAPS] = {0.0f};
+static int16_t  s_aec_ref_ring[AEC_REF_RING_CAP] = {0};
+static size_t   s_aec_ref_write = 0;
+static size_t   s_aec_ref_read  = 0;
+
 static int16_t* s_preroll_ring    = nullptr;
 static size_t   s_preroll_head    = 0;
 static bool     s_preroll_full    = false;
 static bool     s_preroll_enabled = true;
 
-static uint8_t*      s_wav_buf      = nullptr;
-static volatile size_t s_rec_samples = 0;
-static size_t        s_max_samples  = MAX_REC_SAMPLES;
-static uint32_t      s_cur_tx_rate  = 24000;
-static AbortCheckFn  s_abort_check  = nullptr;
+static uint8_t*        s_wav_buf      = nullptr;
+static volatile size_t s_rec_samples  = 0;
+static size_t          s_max_samples  = MAX_REC_SAMPLES;
+static uint32_t        s_cur_tx_rate  = 24000;
+static AbortCheckFn    s_abort_check  = nullptr;
+
+static void pushAecReferenceSamples(const int16_t* tx_samples, size_t count, uint32_t tx_rate) {
+    if (!s_live_aec_enabled || !tx_samples || count == 0) return;
+    // Downsample/resample TX audio (typically 24 kHz) to 16 kHz reference ring
+    for (size_t i = 0; i < count; ++i) {
+        if (tx_rate == 24000 && (i % 3 == 2)) continue; // 2 of every 3 samples: 24 kHz -> 16 kHz
+        s_aec_ref_ring[s_aec_ref_write] = tx_samples[i];
+        s_aec_ref_write = (s_aec_ref_write + 1) % AEC_REF_RING_CAP;
+        if (s_aec_ref_write == s_aec_ref_read) {
+            s_aec_ref_read = (s_aec_ref_read + 1) % AEC_REF_RING_CAP;
+        }
+    }
+}
+
+static int16_t popAecReferenceSample() {
+    if (s_aec_ref_read == s_aec_ref_write) return 0;
+    int16_t s = s_aec_ref_ring[s_aec_ref_read];
+    s_aec_ref_read = (s_aec_ref_read + 1) % AEC_REF_RING_CAP;
+    return s;
+}
+
+int16_t processLiveAecSample(int16_t mic_sample, int16_t ref_sample) {
+    float x = static_cast<float>(ref_sample) / 32768.0f;
+    float d = static_cast<float>(mic_sample) / 32768.0f;
+
+    for (size_t i = AEC_TAPS - 1; i > 0; --i) {
+        s_aec_x_history[i] = s_aec_x_history[i - 1];
+    }
+    s_aec_x_history[0] = x;
+
+    float y_hat = 0.0f;
+    float norm = NLMS_EPSILON;
+    for (size_t i = 0; i < AEC_TAPS; ++i) {
+        y_hat += s_aec_weights[i] * s_aec_x_history[i];
+        norm += s_aec_x_history[i] * s_aec_x_history[i];
+    }
+
+    float err = d - y_hat;
+    float step = (NLMS_STEP_MU * err) / norm;
+    for (size_t i = 0; i < AEC_TAPS; ++i) {
+        s_aec_weights[i] += step * s_aec_x_history[i];
+    }
+
+    if (err > 1.0f) err = 1.0f;
+    if (err < -1.0f) err = -1.0f;
+    return static_cast<int16_t>(err * 32767.0f);
+}
+
+void setLiveAecEnabled(bool enabled, float barge_in_rms_thresh) {
+    s_live_aec_enabled = enabled;
+    s_live_barge_in_triggered = false;
+    s_barge_in_rms_thresh = barge_in_rms_thresh > 0.001f ? barge_in_rms_thresh : 0.008f;
+    s_barge_in_voiced_ms = 0;
+    s_aec_ref_write = 0;
+    s_aec_ref_read = 0;
+    memset(s_aec_weights, 0, sizeof(s_aec_weights));
+    memset(s_aec_x_history, 0, sizeof(s_aec_x_history));
+}
+
+bool isLiveAecEnabled() {
+    return s_live_aec_enabled;
+}
+
+bool consumeLiveBargeInFlag() {
+    bool triggered = s_live_barge_in_triggered;
+    s_live_barge_in_triggered = false;
+    return triggered;
+}
+
+void flushRxDmaBuffer() {
+    int16_t discard[128];
+    size_t bytes_read = 0;
+    while (i2s_read(PORT_PDM_RX, discard, sizeof(discard), &bytes_read, 0) == ESP_OK && bytes_read > 0) {}
+}
 
 static void writeWavHeader(uint8_t* dst, uint32_t pcm_bytes, uint32_t sample_rate) {
     uint32_t riff_size   = 36 + pcm_bytes;
@@ -150,12 +241,15 @@ size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms) {
         return 0;
     }
     size_t n = bytes_read / sizeof(int16_t);
-    if (out_rms && n > 0) {
-        double sum_sq = 0.0;
-        for (size_t i = 0; i < n; ++i) {
-            double v = static_cast<double>(dst[i]) / 32768.0;
-            sum_sq += v * v;
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        if (s_live_aec_enabled) {
+            dst[i] = processLiveAecSample(dst[i], popAecReferenceSample());
         }
+        double v = static_cast<double>(dst[i]) / 32768.0;
+        sum_sq += v * v;
+    }
+    if (out_rms && n > 0) {
         *out_rms = static_cast<float>(sqrt(sum_sq / static_cast<double>(n)));
     }
     return n;
@@ -178,10 +272,7 @@ bool beginPttRecording() {
             s_rec_samples = s_preroll_head;
         }
     } else {
-        // Flush stale DMA RX samples before starting fresh capture
-        int16_t dummy[128];
-        size_t bytes_read = 0;
-        while (i2s_read(PORT_PDM_RX, dummy, sizeof(dummy), &bytes_read, 0) == ESP_OK && bytes_read > 0) {}
+        flushRxDmaBuffer();
     }
     return true;
 }
@@ -307,6 +398,8 @@ bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_r
             return false;
         }
         size_t chunk = (sample_count - offset) < SLICE_SAMPLES ? (sample_count - offset) : SLICE_SAMPLES;
+        pushAecReferenceSamples(samples + offset, chunk, s_cur_tx_rate);
+
         size_t bytes_written = 0;
         esp_err_t err = i2s_write(
             PORT_I2S_TX,
@@ -317,6 +410,28 @@ bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_r
         );
         if (err != ESP_OK) return false;
         offset += chunk;
+
+        // When Go Live AEC is active, sample the PDM mic during playback, cancel echo,
+        // and trigger full-duplex barge-in if near-end speech persists for >= 300 ms.
+        if (s_live_aec_enabled) {
+            int16_t rx_slice[684];
+            float cleaned_rms = 0.0f;
+            size_t rx_n = readLivePcmChunk(rx_slice, 684, &cleaned_rms);
+            if (rx_n > 0) {
+                uint32_t slice_ms = (uint32_t)((rx_n * 1000ULL) / REC_SAMPLE_RATE);
+                if (cleaned_rms >= s_barge_in_rms_thresh) {
+                    s_barge_in_voiced_ms += (slice_ms > 0 ? slice_ms : 20);
+                    if (s_barge_in_voiced_ms >= BARGE_IN_HOLD_MS) {
+                        s_live_barge_in_triggered = true;
+                        s_barge_in_voiced_ms = 0;
+                        muteSpeaker();
+                        return false;
+                    }
+                } else {
+                    s_barge_in_voiced_ms = 0;
+                }
+            }
+        }
     }
     return true;
 }
@@ -351,7 +466,9 @@ void playChime(const char* kind) {
     else if (strcmp(kind, "snap") == 0) { f1 = 1760.0f; f2 = 2093.0f; }
 
     AbortCheckFn saved = s_abort_check;
+    bool saved_aec = s_live_aec_enabled;
     s_abort_check = nullptr;
+    s_live_aec_enabled = false;
     for (float freq : {f1, f2}) {
         for (size_t i = 0; i < n; ++i) {
             float env = 1.0f - ((float)i / (float)n);
@@ -359,6 +476,7 @@ void playChime(const char* kind) {
         }
         playPcmChunk(buf, n, sr);
     }
+    s_live_aec_enabled = saved_aec;
     s_abort_check = saved;
     muteSpeaker();
 }

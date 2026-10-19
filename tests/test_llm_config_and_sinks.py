@@ -453,9 +453,18 @@ def test_cpp_ble_transport_and_voice_client_invariants():
         assert uuid in ble_h
         assert uuid in kotlin_srv
 
+    audio_h = (REPO_ROOT / "firmware" / "include" / "audio_hal.h").read_text(encoding="utf-8")
+    audio_cpp = (REPO_ROOT / "firmware" / "src" / "audio_hal.cpp").read_text(encoding="utf-8")
+
     assert "BLEDevice::init" in ble_cpp
     assert "BLEDevice::setMTU((uint16_t)512)" in ble_cpp
     assert "IDLE_TIMEOUT_MS    = 60000;" in voice_cpp
     assert "turn_timing stt_ms=" in voice_cpp
-    assert "speaker_active" in live_cpp
+    assert "setLiveAecEnabled(bool enabled" in audio_h
+    assert "processLiveAecSample(" in audio_cpp
+    assert "BARGE_IN_HOLD_MS      = 300;" in audio_cpp
+    assert "gotchi_audio::setLiveAecEnabled(true" in live_cpp
+    assert "gotchi_audio::setLiveAecEnabled(false);" in live_cpp
+    assert "gotchi_audio::consumeLiveBargeInFlag()" in live_cpp
+    assert '"invalid_node_id"' in main_cpp
     assert '#include "ble_transport.h"' in main_cpp
