@@ -41,7 +41,7 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F11 | Recording cap raised to the longest the hardware reasonably supports | Ryan, #gotchi 2026-10-19 09:09 | Not built (15 s today) |
 | F12 | Pre-roll runs on USB power by default, with a setting to keep it on at all times | Ryan, #gotchi 2026-10-19 09:09 | Not built |
 | F13 | Top button is for speaking only. While a reply plays, pressing it cancels or mutes the reply and returns to idle. It does not start a new recording | Ryan, #gotchi 2026-10-19 09:45 | Not built (PR #11 builds the older behaviour) |
-| F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. The bottom button no longer cancels a recording | Ryan, #gotchi 2026-10-19 09:15 and 09:45 | Not built (PR #11 builds the older behaviour) |
+| F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. The bottom button no longer cancels a recording. A short press during a recording takes a snapshot and attaches it to the turn in progress (Ryan, #gotchi 2026-10-19 09:47) | Ryan, #gotchi 2026-10-19 09:15 and 09:45 | Not built (PR #11 builds the older behaviour) |
 | F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Config exists (`voice_url`) |
 | F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
 | F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
@@ -85,7 +85,6 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 ## 6. Open items
 
 Questions for people:
-- **Bottom button while recording:** with cancel removed, should a press take a photo and attach it to the turn in progress? Recommendation: yes.
 - **Go Live (F19):** Mike approves or declines the metered model API, and chooses the default for `live_mode`.
 - **Where the off-LAN gateway runs** (T3.2). Mike's call.
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
