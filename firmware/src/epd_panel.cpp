@@ -26,7 +26,7 @@ EpdPanel::EpdPanel()
 
 void EpdPanel::begin() {
     SPI.begin(PIN_EPD_SCK, -1, PIN_EPD_MOSI, PIN_EPD_CS);
-    display_.init(115200, rtc_first_frame_pending, 2, false);
+    display_.init(0, rtc_first_frame_pending, 2, false);  // 0 = no GxEPD2 serial diagnostics (they would interleave with JSON-RPC replies)
     display_.setRotation(0);
 }
 
