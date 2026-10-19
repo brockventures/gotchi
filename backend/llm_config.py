@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import shlex
 from typing import Any, Dict, Mapping, Optional
 
 VALID_AUTH_MODES = ("mock", "api_key", "subscription")
@@ -30,6 +31,7 @@ VALID_PROVIDERS = (
     "custom",
 )
 VALID_DISCORD_BOTS = ("zero", "mirrormere", "custom")
+ALLOWED_SUBSCRIPTION_BINARIES = ("claude", "agy", "gemini", "codex")
 
 
 @dataclass
@@ -60,14 +62,25 @@ class LLMConfig:
             )
         if self.auth_mode == "api_key" and not self.api_key.strip():
             raise ValueError("auth_mode 'api_key' requires a non-empty api_key")
-        if self.auth_mode == "subscription" and not (
-            self.subscription_command.strip()
-            or self.subscription_url.strip()
-            or self.session_token.strip()
-        ):
-            raise ValueError(
-                "auth_mode 'subscription' requires subscription_command, subscription_url, or session_token"
-            )
+        if self.auth_mode == "subscription":
+            if not (
+                self.subscription_command.strip()
+                or self.subscription_url.strip()
+                or self.session_token.strip()
+            ):
+                raise ValueError(
+                    "auth_mode 'subscription' requires subscription_command, subscription_url, or session_token"
+                )
+            if self.subscription_command.strip():
+                argv = shlex.split(self.subscription_command.strip())
+                if not argv:
+                    raise ValueError("subscription_command cannot be empty when specified")
+                binary_name = Path(argv[0]).name
+                if binary_name not in ALLOWED_SUBSCRIPTION_BINARIES:
+                    raise ValueError(
+                        f"Unsupported subscription_command binary '{binary_name}'; "
+                        f"expected one of {ALLOWED_SUBSCRIPTION_BINARIES}"
+                    )
 
     def to_public_dict(self) -> Dict[str, Any]:
         """Returns safe, redacted dictionary representation (never leaks raw keys/tokens)."""

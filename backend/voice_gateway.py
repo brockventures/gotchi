@@ -7,9 +7,9 @@ Satisfies:
 - F17: Cold-start hotspot turn completion test harness.
 - F14 & F20: Multimodal single JPEG snapshot (`image`) and 5-frame burst (`image_0`..`image_4`).
 - T3.2: Per-device `BearerTokenVerifier` auth integration.
-- T3.3: Discord Voice (`DiscordVoiceSink`) and `ble_phone` audio routing modes.
-- T3.4: User-customizable LLM configuration (`GET/PUT/POST /api/config/llm`) supporting
-  both metered API keys (`api_key`) and personal subscription accounts (`subscription`).
+- T3.3: Discord Voice (`DiscordVoiceSink`) with default HTTP webhook POST and `ble_phone` audio routing modes.
+- T3.4: User-customizable LLM configuration (`GET/PUT/POST /api/config/llm`) requiring Bearer token
+  auth unconditionally and supporting `mock`, `api_key`, and `subscription` modes.
 """
 
 import asyncio
@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import time
+import urllib.request
 from typing import Any, AsyncGenerator, Callable, Dict, List, Mapping, Optional
 
 try:
@@ -59,10 +60,24 @@ def _read_part_bytes(val: Any) -> Optional[bytes]:
     return None
 
 
+def _default_webhook_poster(url: str, payload: Dict[str, Any]) -> None:
+    """Default HTTP JSON POST dispatcher for DiscordVoiceSink."""
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=5.0) as resp:
+        resp.read()
+
+
 class DiscordVoiceSink:
     """
     Configurable Discord Voice & BLE audio sink adapter for T3.3 (`audio_out_mode == "discord_voice"`).
-    Routes 24 kHz PCM chunks to the configured bot (`zero` | `mirrormere` | `custom`) or webhook bridge.
+    Routes 24 kHz PCM chunks to the configured bot (`zero` | `mirrormere` | `custom`) and POSTs to
+    `discord_voice_webhook_url` by default via `_default_webhook_poster`.
     """
 
     def __init__(
@@ -71,7 +86,7 @@ class DiscordVoiceSink:
         webhook_poster: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
         self.llm_config = llm_config or LLMConfig.from_env_or_file()
-        self.webhook_poster = webhook_poster
+        self.webhook_poster = webhook_poster or _default_webhook_poster
         self.dispatched_chunks: List[Dict[str, Any]] = []
 
     def dispatch(
@@ -92,13 +107,9 @@ class DiscordVoiceSink:
             "reply_text": reply_text,
         }
         self.dispatched_chunks.append(event)
-        if (
-            mode == "discord_voice"
-            and self.llm_config.discord_voice_webhook_url
-            and self.webhook_poster is not None
-        ):
+        if mode == "discord_voice" and self.llm_config.discord_voice_webhook_url.strip():
             self.webhook_poster(
-                self.llm_config.discord_voice_webhook_url,
+                self.llm_config.discord_voice_webhook_url.strip(),
                 {
                     **event,
                     "audio_b64": base64.b64encode(pcm_bytes).decode("ascii"),
@@ -135,6 +146,20 @@ class VoiceGatewayService:
         self.audio_sink_router = audio_sink_router
         self.routed_audio_events: List[Dict[str, Any]] = []
         self.interactions_count = 0
+
+    def verify_admin_or_device_auth(self, headers: Mapping[str, str], client_ip: str = "0.0.0.0"):
+        """Unconditionally enforces BearerTokenVerifier (rejects if no tokens are configured)."""
+        if not self.verifier.device_tokens:
+            return (
+                False,
+                401,
+                {
+                    "ok": False,
+                    "error": "unauthorized",
+                    "message": "Bearer token authentication is required for /api/config/llm",
+                },
+            )
+        return self.verifier.verify(dict(headers), client_ip=client_ip)
 
     def parse_multipart_data(
         self,
@@ -330,23 +355,19 @@ def create_app(
 
     @app.get("/api/config/llm")
     def get_llm_config(request: Request):
-        headers = dict(request.headers)
         client_ip = request.client.host if request.client else "0.0.0.0"
-        if srv.auth_required or srv.verifier.device_tokens:
-            ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
-            if not ok:
-                return JSONResponse(status_code=code, content=err)
+        ok, code, err = srv.verify_admin_or_device_auth(request.headers, client_ip=client_ip)
+        if not ok:
+            return JSONResponse(status_code=code, content=err)
         return {"ok": True, "llm_config": srv.llm_config.to_public_dict()}
 
     @app.put("/api/config/llm")
     @app.post("/api/config/llm")
     async def update_llm_config(request: Request):
-        headers = dict(request.headers)
         client_ip = request.client.host if request.client else "0.0.0.0"
-        if srv.auth_required or srv.verifier.device_tokens:
-            ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
-            if not ok:
-                return JSONResponse(status_code=code, content=err)
+        ok, code, err = srv.verify_admin_or_device_auth(request.headers, client_ip=client_ip)
+        if not ok:
+            return JSONResponse(status_code=code, content=err)
         try:
             body = await request.json()
             if not isinstance(body, dict):
