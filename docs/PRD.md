@@ -80,13 +80,13 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 - The double-tap shares the top button with tap-to-talk. A second tap within a short interval (proposed 400 ms, a setting) of the first release counts as a double-tap and discards the clip the first tap started. A later second tap still means "send now".
 - "Go Live" is matched on the transcript, and only when it is the whole utterance, so a sentence that merely contains the words does not start a session.
 - Proposed by Zero, not confirmed: a bottom-button press (single photo or five-photo burst) during a Live session sends those frames into the live session too.
-- Google's Gemini Live API is the known option. It bills per token, so it needs Mike's explicit approval before any key is used (house rule, #admin 2026-10-12).
+- Google's Gemini Live API is the known option. It bills per token. Mike approved a metered API for Go Live on 2026-10-19 14:02 PT (#gotchi), on one condition: the LLM configuration must be user-customizable, so a metered API key works and his own subscription account can be hooked up instead. The provider is therefore a setting on the gateway, never hard-coded; `live_mode` stays off by default.
 - Whether Claude offers an equivalent: a web search on 2026-10-19 found no official Anthropic realtime audio endpoint; the sources were low-quality third-party posts. Check Anthropic's own API docs before relying on this.
 
 ## 6. Open items
 
 Questions for people:
-- **Go Live (F19):** Mike approves or declines the metered model API, and chooses the default for `live_mode`.
+- **Go Live (F19):** Mike approved the metered model API on 2026-10-19 (user-configurable provider required). Still open: the default for `live_mode`.
 - **Where the off-LAN gateway runs** (T3.2). Mike's call.
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
 
