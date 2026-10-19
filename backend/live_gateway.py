@@ -466,7 +466,13 @@ class SubscriptionLiveProvider(UpstreamLiveProvider):
 
         url = self.config.subscription_url.strip()
         if url.startswith(("http://", "https://")):
-            resp = await asyncio.to_thread(self.http_poster, url, self._auth_headers(), payload)
+            if inspect.iscoroutinefunction(self.http_poster):
+                resp = await self.http_poster(url, self._auth_headers(), payload)
+            else:
+                loop = asyncio.get_running_loop()
+                resp = await loop.run_in_executor(
+                    None, self.http_poster, url, self._auth_headers(), payload
+                )
             for ev in parse_upstream_ws_message(resp, self.sample_rate):
                 await self._queue.put(ev)
             return

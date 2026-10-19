@@ -10,6 +10,7 @@
 #include <strings.h>
 #include "voice_client.h"
 #include "ble_transport.h"
+#include "log_buffer.h"
 
 namespace gotchi_voice {
 namespace {
@@ -23,6 +24,26 @@ constexpr uint32_t    DEFAULT_RATE_HZ    = 24000;
 
 static AbortPollFn    s_active_abort_poll = nullptr;
 static InteractResult s_active_abort_kind = InteractResult::DONE;
+static uint32_t       s_turn_start_ms     = 0;
+static int32_t        s_stt_ms            = -1;
+static int32_t        s_first_text_ms     = -1;
+static int32_t        s_first_audio_ms    = -1;
+
+static void resetTurnTimings() {
+    s_turn_start_ms  = millis();
+    s_stt_ms         = -1;
+    s_first_text_ms  = -1;
+    s_first_audio_ms = -1;
+}
+
+static void logTurnTimings() {
+    uint32_t total_ms = millis() - s_turn_start_ms;
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "turn_timing stt_ms=%ld first_text_ms=%ld first_audio_ms=%ld total_ms=%lu",
+             (long)s_stt_ms, (long)s_first_text_ms, (long)s_first_audio_ms, (unsigned long)total_ms);
+    gotchi_log::RingLogger.info("voice", msg);
+}
 
 bool checkAbortFlag() {
     if (s_active_abort_kind != InteractResult::DONE) return true;
@@ -220,6 +241,7 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
             if (cb) cb(ui);
         }
     } else if (strcmp(event, "transcript") == 0) {
+        if (s_stt_ms < 0) s_stt_ms = (int32_t)(millis() - s_turn_start_ms);
         const char* t = doc["transcript"] | "";
         if (!*t) t = doc["text"] | "";
         ui.transcript = t;
@@ -229,6 +251,7 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
         const char* s = doc["status"] | "";
         if (*s) ui.status_text = s;
     } else if (strcmp(event, "reply") == 0) {
+        if (s_first_text_ms < 0) s_first_text_ms = (int32_t)(millis() - s_turn_start_ms);
         ui.reply = doc["reply"] | "";
         if (cb) cb(ui);
     } else if (is_sentence || is_legacy) {
@@ -236,8 +259,9 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
             Serial.printf("voice: '%s' event without audio payload\n", event);
             return false;
         }
+        if (s_first_audio_ms < 0) s_first_audio_ms = (int32_t)(millis() - s_turn_start_ms);
         uint32_t rate = doc["sample_rate"] | DEFAULT_RATE_HZ;
-        size_t pad = (b64[b64_len - 1] == '=') + (b64_len >= 2 && b64[b64_len - 2] == '=');
+        size_t pad = (b64[b64_len - 1] == '=') + (b64[b64_len >= 2 ? b64_len - 2 : 0] == '=');
         ui.audio_bytes_received += (uint32_t)((b64_len / 4) * 3 - pad);
         ui.last_sample_rate = rate;
         if (ui.state != UiState::SPEAKING) {
@@ -260,6 +284,7 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
         if (*msg) ui.status_text = String(msg).substring(0, 22);
         if (cb) cb(ui);
     } else if (strcmp(event, "done") == 0) {
+        logTurnTimings();
         return true;
     }
     return false;
@@ -462,6 +487,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
               GotchiUIState& ui, StateCb cb, const String& bearer_token,
               const ImageAttachment* image, AbortPollFn abort_poll,
               InteractResult* out_result, const String& audio_out_mode) {
+    resetTurnTimings();
     s_active_abort_poll = abort_poll;
     s_active_abort_kind = InteractResult::DONE;
     if (out_result) *out_result = InteractResult::ERROR;

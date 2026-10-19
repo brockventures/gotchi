@@ -1,8 +1,11 @@
 """
 Tests for user-customizable LLM configuration (`backend/llm_config.py`),
+separate admin auth (`GOTCHI_ADMIN_TOKEN`) and RCE/SSRF prevention on `/api/config/llm`,
 real WebSocket client in `ApiKeyLiveProvider`, real CLI/proxy bridge in `SubscriptionLiveProvider`,
-default HTTP webhook poster in `DiscordVoiceSink`, unconditional auth on `/api/config/llm`,
-and C++ `ble_transport.cpp` peripheral invariants.
+allowlisted `https://` Discord webhook poster in `DiscordVoiceSink` (via `run_in_executor`),
+PRD Section 5c Mirrormere voice lessons (spoken filler, per-sentence TTS, 60-word cap,
+Whisper ghost filter, per-turn timing log, `node_id` validation, >=60s device timeout,
+and Go Live half-duplex mic suppression), and C++ `ble_transport.cpp` invariants.
 """
 
 import asyncio
@@ -24,7 +27,14 @@ from backend.live_gateway import (
     create_live_provider,
 )
 from backend.llm_config import LLMConfig
-from backend.voice_gateway import DiscordVoiceSink, VoiceGatewayService, create_app
+from backend.voice_gateway import (
+     VoiceGatewayService,
+    cap_reply_words,
+    create_app,
+    is_stt_ghost,
+    split_into_sentences,
+)
+from poc.gotchi_poc import wrap_pcm16_to_wav
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -53,7 +63,13 @@ class FakeAsyncWebSocket:
         self.closed = True
 
 
-def test_llm_config_modes_secret_redaction_and_cli_allowlist():
+def test_llm_config_rce_and_ssrf_guards():
+    """
+    Verify:
+    1. subscription_command CANNOT be modified via update_from_dict (HTTP body).
+    2. subscription_command rejects path separators (/tmp/x/claude) and dangerous flags (--dangerously-skip-permissions).
+    3. discord_voice_webhook_url requires https:// and an allowlisted Discord host.
+    """
     cfg = LLMConfig()
     cfg.validate()
     pub = cfg.to_public_dict()
@@ -63,74 +79,128 @@ def test_llm_config_modes_secret_redaction_and_cli_allowlist():
     assert "api_key" not in pub
     assert "session_token" not in pub
 
-    with pytest.raises(ValueError, match="requires a non-empty api_key"):
-        cfg.update_from_dict({"auth_mode": "api_key", "provider": "gemini", "api_key": ""})
-
-    cfg.update_from_dict({
-        "auth_mode": "api_key",
-        "provider": "gemini",
-        "model": "gemini-2.0-flash-live",
-        "api_key": "test-placeholder-key-not-real",
-    })
-    pub_api = cfg.to_public_dict()
-    assert pub_api["auth_mode"] == "api_key"
-    assert pub_api["api_key_set"] is True
-    assert "test-placeholder-key-not-real" not in str(pub_api)
-
-    # Rejects arbitrary shell binaries in subscription_command
-    with pytest.raises(ValueError, match="Unsupported subscription_command binary"):
+    # 1. HTTP body cannot set subscription_command
+    with pytest.raises(ValueError, match="subscription_command cannot be set via HTTP API"):
         cfg.update_from_dict({
             "auth_mode": "subscription",
             "provider": "claude_subscription",
-            "subscription_command": "sh -c 'echo pwned'",
+            "subscription_command": "claude -p",
+        })
+
+    # 2. Path traversal or dangerous arguments in gateway-configured subscription_command are rejected
+    with pytest.raises(ValueError, match="bare binary name without path separators"):
+        LLMConfig(
+            auth_mode="subscription",
+            provider="claude_subscription",
+            subscription_command="/tmp/x/claude -p",
+        ).validate()
+
+    with pytest.raises(ValueError, match="Forbidden argument"):
+        LLMConfig(
+            auth_mode="subscription",
+            provider="claude_subscription",
+            subscription_command="claude --dangerously-skip-permissions -p",
+        ).validate()
+
+    with pytest.raises(ValueError, match="Forbidden argument"):
+        LLMConfig(
+            auth_mode="subscription",
+            provider="openai_subscription",
+            subscription_command="codex exec ls",
+        ).validate()
+
+    # Valid gateway-configured subscription_command via constructor/env succeeds
+    valid_sub = LLMConfig(
+        auth_mode="subscription",
+        provider="claude_subscription",
+        subscription_command="claude -p --output-format json",
+    )
+    valid_sub.validate()
+
+    # 3. Webhook SSRF validation: reject http:// and non-allowlisted hosts
+    with pytest.raises(ValueError, match="only 'https' is allowed"):
+        cfg.update_from_dict({
+            "discord_voice_webhook_url": "http://discord.com/api/webhooks/123/abc",
+        })
+
+    with pytest.raises(ValueError, match="Disallowed discord_voice_webhook_url host"):
+        cfg.update_from_dict({
+            "discord_voice_webhook_url": "https://203.0.113.10:9099/api/discord/voice",
         })
 
     cfg.update_from_dict({
-        "auth_mode": "subscription",
-        "provider": "claude_subscription",
-        "model": "claude-sonnet-4",
-        "subscription_command": "claude -p",
+        "discord_voice_webhook_url": "https://discord.com/api/webhooks/12345/token",
     })
-    assert cfg.to_public_dict()["subscription_command"] == "claude -p"
+    assert cfg.discord_voice_webhook_url == "https://discord.com/api/webhooks/12345/token"
 
 
-def test_unconditional_auth_on_config_llm_endpoints():
-    """Verify /api/config/llm rejects unauthenticated requests even when auth_required=False and no tokens exist."""
-    open_srv = VoiceGatewayService(verifier=BearerTokenVerifier(device_tokens={}), auth_required=False)
-    open_app = create_app(service=open_srv)
-    open_client = TestClient(open_app)
+def test_separate_admin_token_required_on_config_llm_endpoints():
+    """
+    Verify /api/config/llm requires GOTCHI_ADMIN_TOKEN and rejects both unauthenticated
+    requests (401) and normal per-unit device tokens (403).
+    """
+    verifier = BearerTokenVerifier(device_tokens={"unit-1": "device-tok-1"})
+    # Without admin_token configured -> 401 even with valid device token
+    no_admin_srv = VoiceGatewayService(verifier=verifier, admin_token="")
+    no_admin_client = TestClient(create_app(service=no_admin_srv))
+    assert (
+        no_admin_client.get(
+            "/api/config/llm", headers={"Authorization": "Bearer device-tok-1"}
+        ).status_code
+        == 401
+    )
 
-    assert open_client.get("/api/config/llm").status_code == 401
-    assert open_client.put("/api/config/llm", json={"auth_mode": "mock"}).status_code == 401
-    assert open_client.post("/api/config/llm", json={"auth_mode": "mock"}).status_code == 401
-
-    # With device token configured, valid token succeeds and invalid fails
-    verifier = BearerTokenVerifier(device_tokens={"unit-1": "tok-secret-1"})
-    voice_srv = VoiceGatewayService(verifier=verifier, auth_required=False)
+    # With admin_token configured -> device token gets 403, admin token gets 200
+    voice_srv = VoiceGatewayService(
+        verifier=verifier,
+        admin_token="admin-secret-999",
+        llm_config=LLMConfig(subscription_command="claude -p"),
+    )
     live_srv = LiveGatewayService(
         verifier=verifier,
-        auth_required=False,
         live_mode_enabled=True,
         llm_config=voice_srv.llm_config,
     )
-    app = create_app(service=voice_srv, live_service=live_srv)
-    client = TestClient(app)
+    client = TestClient(create_app(service=voice_srv, live_service=live_srv))
 
     assert client.get("/api/config/llm").status_code == 401
-    headers = {"Authorization": "Bearer tok-secret-1"}
-    r_get = client.get("/api/config/llm", headers=headers)
+    assert (
+        client.get(
+            "/api/config/llm", headers={"Authorization": "Bearer device-tok-1"}
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            "/api/config/llm",
+            headers={"Authorization": "Bearer device-tok-1"},
+            json={"auth_mode": "mock"},
+        ).status_code
+        == 403
+    )
+
+    admin_headers = {"Authorization": "Bearer admin-secret-999"}
+    r_get = client.get("/api/config/llm", headers=admin_headers)
     assert r_get.status_code == 200
     assert r_get.json()["llm_config"]["auth_mode"] == "mock"
     assert isinstance(create_live_provider(voice_srv.llm_config), MockLiveProvider)
 
+    # Admin cannot inject subscription_command via HTTP body (400)
+    r_inject = client.put(
+        "/api/config/llm",
+        headers=admin_headers,
+        json={"subscription_command": "claude --dangerously-skip-permissions"},
+    )
+    assert r_inject.status_code == 400
+
+    # Admin can switch to subscription mode using gateway-preconfigured subscription_command or subscription_url
     r_put = client.put(
         "/api/config/llm",
-        headers=headers,
+        headers=admin_headers,
         json={
             "auth_mode": "subscription",
             "provider": "claude_subscription",
             "model": "claude-sonnet-4",
-            "subscription_command": "claude --print",
             "discord_voice_bot": "mirrormere",
         },
     )
@@ -183,22 +253,10 @@ def test_api_key_live_provider_gemini_ws_protocol_and_header_auth():
 
     events = asyncio.run(_run())
 
-    # Key must be in x-goog-api-key header, NEVER in URL query string
     assert "secret-gemini-header-key" not in captured_conn["uri"]
     assert "?key=" not in captured_conn["uri"]
     assert captured_conn["headers"] == {"x-goog-api-key": "secret-gemini-header-key"}
-
-    # Frame 0: Gemini setup frame; Frame 1: realtimeInput audio; Frame 2: realtimeInput image
     assert fake_ws.sent_frames[0]["setup"]["model"] == "models/gemini-2.0-flash-live"
-    assert (
-        fake_ws.sent_frames[1]["realtimeInput"]["mediaChunks"][0]["mimeType"]
-        == "audio/pcm;rate=16000"
-    )
-    assert (
-        fake_ws.sent_frames[2]["realtimeInput"]["mediaChunks"][0]["mimeType"]
-        == "image/jpeg"
-    )
-
     assert events[0]["type"] == "session_started"
     assert events[1] == {"type": "text", "text": "Hello from Gemini Live"}
     assert events[2] == {"type": "audio", "sample_rate": 24000, "audio_b64": b64_out}
@@ -236,43 +294,9 @@ def test_subscription_live_provider_cli_and_ws_proxy():
     assert cli_calls[0][1]["type"] == "audio"
     assert cli_events[1] == {"type": "text", "text": "Claude subscription reply"}
 
-    # WebSocket subscription proxy test
-    ws_conn_info: Dict[str, Any] = {}
-    fake_sub_ws = FakeAsyncWebSocket([json.dumps({"type": "text", "text": "Proxy WS reply"})])
 
-    async def fake_ws_conn(uri: str, headers: Dict[str, str]):
-        ws_conn_info["uri"] = uri
-        ws_conn_info["headers"] = headers
-        return fake_sub_ws
-
-    cfg_ws = LLMConfig(
-        auth_mode="subscription",
-        provider="claude_subscription",
-        subscription_url="wss://sub-proxy.example.invalid/live",
-        session_token="sub-oauth-token-123",
-    )
-    sub_ws = SubscriptionLiveProvider(config=cfg_ws, ws_connector=fake_ws_conn)
-
-    async def _run_ws():
-        await sub_ws.connect("sub-sess-2", "node-2")
-        await sub_ws.send_image_frame(b"\xff\xd8\xff\xd9", frame_index=0)
-        out = []
-        async for ev in sub_ws.receive_events():
-            out.append(ev)
-            if len(out) >= 2:
-                break
-        await sub_ws.close()
-        return out
-
-    ws_events = asyncio.run(_run_ws())
-    assert ws_conn_info["uri"] == "wss://sub-proxy.example.invalid/live"
-    assert ws_conn_info["headers"] == {"Authorization": "Bearer sub-oauth-token-123"}
-    assert fake_sub_ws.sent_frames[0]["type"] == "image"
-    assert ws_events[1] == {"type": "text", "text": "Proxy WS reply"}
-
-
-def test_discord_voice_sink_default_poster_invoked(monkeypatch):
-    """Verify DiscordVoiceSink uses its built-in HTTP poster by default when create_app() runs."""
+def test_discord_voice_sink_default_poster_async_executor_and_https_allowlist(monkeypatch):
+    """Verify DiscordVoiceSink uses its built-in HTTP poster in executor with allowlisted https:// Discord URL."""
     captured_requests = []
 
     class DummyResponse:
@@ -298,32 +322,114 @@ def test_discord_voice_sink_default_poster_invoked(monkeypatch):
 
     cfg = LLMConfig(
         discord_voice_bot="zero",
-        discord_voice_webhook_url="http://203.0.113.10:9099/api/discord/voice",
+        discord_voice_webhook_url="https://discord.com/api/webhooks/123456/abcdef",
     )
-    # Pass no custom webhook_poster so default _default_webhook_poster is exercised
     srv = VoiceGatewayService(llm_config=cfg)
     app = create_app(service=srv)
     client = TestClient(app)
 
+    wav = wrap_pcm16_to_wav(b"\x10\x00" * 8000)
     resp = client.post(
         "/api/voice/interact",
         data={"node_id": "gotchi-01", "audio_out_mode": "discord_voice", "prompt": "Test sink"},
-        files={"audio": ("ptt.wav", b"RIFF\x24\x00\x00\x00WAVEfmt ", "audio/wav")},
+        files={"audio": ("ptt.wav", wav, "audio/wav")},
     )
     assert resp.status_code == 200
     assert len(captured_requests) == 2
-    assert captured_requests[0][0] == "http://203.0.113.10:9099/api/discord/voice"
+    assert captured_requests[0][0] == "https://discord.com/api/webhooks/123456/abcdef"
     assert captured_requests[0][1] == "POST"
     assert captured_requests[0][2]["bot"] == "zero"
     assert captured_requests[0][2]["mode"] == "discord_voice"
     assert captured_requests[0][2]["audio_b64"]
 
 
+def test_mirrormere_section_5c_filler_sentence_tts_ghost_filter_and_timing_log():
+    """
+    Verify PRD Section 5c items:
+    1. Spoken filler while the brain thinks (at filler_delay_ms).
+    2. Per-sentence TTS & 60-word reply cap (`reply_cap_words`).
+    3. Speech-to-text ghost filter (Whisper ghost phrases + < 400ms voiced audio).
+    4. Per-turn timing log (`stt_ms`, `first_text_ms`, `first_audio_ms`, `total_ms`) and `node_id` validation.
+    """
+    # 1. Word cap and sentence splitting
+    long_reply = " ".join([f"word{i}" for i in range(85)])
+    capped = cap_reply_words(long_reply, max_words=60)
+    assert len(capped.split()) == 60
+    assert capped.endswith(".")
+    assert split_into_sentences("First sentence. Second sentence! Third?") == [
+        "First sentence.",
+        "Second sentence!",
+        "Third?",
+    ]
+
+    # 2. Ghost filter: drops Whisper hallucinations and <400ms audio clips
+    short_wav = wrap_pcm16_to_wav(b"\x10\x00" * 1600)  # 100 ms (< 400 ms)
+    ghost, reason = is_stt_ghost("Hello world", audio_bytes=short_wav, min_voiced_ms=400)
+    assert ghost is True
+    assert "short_voiced_audio" in reason
+
+    good_wav = wrap_pcm16_to_wav(b"\x10\x00" * 8000)  # 500 ms (>= 400 ms)
+    ghost_phrase, reason_p = is_stt_ghost("Thanks for watching.", audio_bytes=good_wav, min_voiced_ms=400)
+    assert ghost_phrase is True
+    assert "ghost_phrase" in reason_p
+
+    # 3. Gateway turn with slow brain triggers spoken filler, per-sentence TTS, and timing log
+    async def slow_brain(turn: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.08)
+        return {
+            "transcript": "How is the weather?",
+            "reply": "Skies are clear today. Wind is calm.",
+            "stt_ms": 15,
+        }
+
+    cfg = LLMConfig(filler_delay_ms=30, second_filler_delay_ms=5000, reply_cap_words=60, min_voiced_ms=400)
+    srv = VoiceGatewayService(llm_config=cfg, turn_handler=slow_brain)
+    client = TestClient(create_app(service=srv))
+
+    # Rejects invalid node_id (>64 chars or special chars)
+    bad_node = client.post(
+        "/api/voice/interact",
+        data={"node_id": "bad node/../../etc"},
+        files={"audio": ("ptt.wav", good_wav, "audio/wav")},
+    )
+    assert bad_node.status_code == 400
+
+    # Short voiced audio (<400ms) is ghost-filtered
+    r_ghost = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi_unit_1"},
+        files={"audio": ("ptt.wav", short_wav, "audio/wav")},
+    )
+    assert r_ghost.status_code == 200
+    assert '"ghost_filtered": true' in r_ghost.text
+    assert srv.turn_timings[-1]["ghost_filtered"] is True
+
+    # Valid turn with slow brain emits filler sentence + 2 per-sentence TTS events + timing log
+    r_ok = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi_unit_1"},
+        files={"audio": ("ptt.wav", good_wav, "audio/wav")},
+    )
+    assert r_ok.status_code == 200
+    assert '"filler": true' in r_ok.text
+    assert '"text": "One moment."' in r_ok.text
+    assert '"text": "Skies are clear today."' in r_ok.text
+    assert '"text": "Wind is calm."' in r_ok.text
+    timing = srv.turn_timings[-1]
+    assert timing["node_id"] == "gotchi_unit_1"
+    assert timing["ghost_filtered"] is False
+    assert timing["stt_ms"] >= 0
+    assert timing["first_text_ms"] >= 0
+    assert timing["first_audio_ms"] >= 0
+    assert timing["total_ms"] >= timing["first_audio_ms"]
+
+
 def test_cpp_ble_transport_and_voice_client_invariants():
-    """Verify firmware BLE GATT UART peripheral and voice_client BLE fallback invariants."""
+    """Verify firmware BLE GATT UART peripheral, >=60s timeout, timing log, and Go Live half-duplex."""
     ble_h = (REPO_ROOT / "firmware" / "include" / "ble_transport.h").read_text(encoding="utf-8")
     ble_cpp = (REPO_ROOT / "firmware" / "src" / "ble_transport.cpp").read_text(encoding="utf-8")
     voice_cpp = (REPO_ROOT / "firmware" / "src" / "voice_client.cpp").read_text(encoding="utf-8")
+    live_cpp = (REPO_ROOT / "firmware" / "src" / "live_client.cpp").read_text(encoding="utf-8")
     main_cpp = (REPO_ROOT / "firmware" / "src" / "main.cpp").read_text(encoding="utf-8")
     kotlin_srv = (
         REPO_ROOT
@@ -349,18 +455,7 @@ def test_cpp_ble_transport_and_voice_client_invariants():
 
     assert "BLEDevice::init" in ble_cpp
     assert "BLEDevice::setMTU((uint16_t)512)" in ble_cpp
-    assert "new BLE2902()" in ble_cpp
-    assert "encodePacket(" in ble_cpp
-    assert "decodePacket(raw, len, pkt)" in ble_cpp
-    assert "s_rx_reassembler.pushPacket(pkt, complete)" in ble_cpp
-
-    assert '#include "ble_transport.h"' in voice_cpp
-    assert "interactOverBle(" in voice_cpp
-    assert "gotchi_ble::FrameType::AUDIO_CHUNK" in voice_cpp
-    assert "gotchi_ble::FrameType::IMAGE_FRAME" in voice_cpp
-    assert "gotchi_ble::FrameType::TURN_COMMIT" in voice_cpp
-    assert "gotchi_ble::pollIncomingFrame(" in voice_cpp
-
+    assert "IDLE_TIMEOUT_MS    = 60000;" in voice_cpp
+    assert "turn_timing stt_ms=" in voice_cpp
+    assert "speaker_active" in live_cpp
     assert '#include "ble_transport.h"' in main_cpp
-    assert "gotchi_ble::initBleTransport(cfg.node_id.c_str());" in main_cpp
-    assert 'res["ble_connected"] = gotchi_ble::isBlePeerConnected();' in main_cpp

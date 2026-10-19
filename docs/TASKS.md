@@ -9,8 +9,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - Locked 7-item single-unit shopping list in [`docs/BOM.md`](BOM.md) (`$62.32` Seeed+Waveshare+Amazon / `$70.32` Seeed+Amazon / `$80.32` All-Amazon): `XIAO ESP32S3 Sense` (with included stock camera & PDM mic; `OV5640` AF optional) + `Waveshare 1.54" E-Paper Module V2` (`SKU 12955` / `B0728BJTZC` w/ direct 8-pin PH2.0 harness, replacing discontinued Seeed breakout) + `MAX98357A` I2S amp + `1W 8Ω` cavity speaker + `803040` 1000mAh LiPo + `6x6x5mm` tactile buttons + mini SPDT slide switch.
 - [x] **T1.2 — Audit Mirrormere Hub Voice Contract** (`Amos`)
   - Verified `POST /api/voice/interact` (`16 kHz` mono PCM WAV -> SSE stream) in `repos/mirrormere/api/openapi.yaml` and documented in [`docs/MIRRORMERE_VOICE_CLIENT.md`](MIRRORMERE_VOICE_CLIENT.md).
-- [ ] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
-  - Order 1-unit BOM cart from [`docs/BOM.md`](BOM.md).
+- [x] **T1.3 — Order V1 Bench Hardware Parts** (`Ryan`, `Mike`)
+  - Ordered 1-unit BOM cart from [`docs/BOM.md`](BOM.md) on Amazon (2026-10-19).
 
 ---
 

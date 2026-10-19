@@ -49,7 +49,7 @@ def test_backend_voice_gateway_routes_and_validates_audio_out_mode():
     app = create_app(srv)
     client = TestClient(app)
 
-    wav = wrap_pcm16_to_wav(b"\x01\x00" * 160)
+    wav = wrap_pcm16_to_wav(b"\x01\x00" * 8000)
 
     # 1. Invalid audio_out_mode is rejected with 400 Bad Request
     r_bad = client.post(
