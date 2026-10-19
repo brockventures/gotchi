@@ -23,6 +23,7 @@
 #include "audio_hal.h"
 #include "camera_hal.h"
 #include "onboarding_portal.h"
+#include "mirrormere_client.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -39,8 +40,12 @@ struct GotchiConfig {
 // PSRAM Audio Buffers (16 kHz 16-bit mono recording + 500ms circular pre-roll)
 static constexpr size_t SAMPLE_RATE_REC = 16000;
 static constexpr size_t PREROLL_BYTES   = SAMPLE_RATE_REC * sizeof(int16_t) / 2; // 16 KB (500ms)
-static constexpr size_t MAX_WAV_BYTES   = 44 + SAMPLE_RATE_REC * sizeof(int16_t) * 15; // 15s cap
-static uint8_t* psram_wav_buf = nullptr;
+
+// PTT state machine (T3.1)
+static constexpr uint32_t PTT_DEBOUNCE_MS = 30;
+static constexpr uint32_t PTT_MAX_MS      = 15000;
+// WavView::rms is normalized to [0,1]; this floor is in int16 LSB units (RMS 50 / 32768).
+static constexpr float    PTT_MIN_RMS_LSB = 50.0f;
 
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
@@ -136,26 +141,132 @@ void setup() {
     pinMode(PIN_BTN_BOT_MOD, INPUT_PULLUP);
     pinMode(PIN_EPD_BUSY, INPUT);
 
-    if (psramFound()) {
-        psram_wav_buf = (uint8_t*)ps_malloc(MAX_WAV_BYTES);
-    }
     loadConfig();
+    panel.begin();
 
-    gotchi_audio::init(MAX_WAV_BYTES);
+    gotchi_audio::init();
     gotchi_camera::init();
-    if (cfg.wifi_ssid.length() == 0) {
+
+    // Provisioned unit: join Home Wi-Fi (slot 0). Unprovisioned: Soft-AP portal.
+    bool wifi_failed = false;
+    if (cfg.wifi_ssid.length() > 0) {
+        WiFi.mode(WIFI_STA);
+        WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_psk.c_str());
+        uint32_t t0 = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+            delay(100);
+        }
+        wifi_failed = (WiFi.status() != WL_CONNECTED);
+    } else {
         gotchi_portal::startSoftApPortal(httpServer);
     }
 
-    panel.begin();
-    GotchiUIState idle_ui;
-    panel.draw(idle_ui);
+    GotchiUIState boot_ui;
+    if (wifi_failed) {
+        boot_ui.state = UiState::OFFLINE;
+        boot_ui.status_text = "WIFI OFFLINE";
+    }
+    panel.draw(boot_ui);
 
     httpServer.on("/api/rpc", HTTP_POST, []() {
         String resp = handleJsonRpc(httpServer.arg("plain"));
         httpServer.send(200, "application/json", resp);
     });
     httpServer.begin();
+}
+
+// ---------------------------------------------------------------------------
+// PTT flow: hold TOP button -> record -> release -> upload -> SSE -> playback
+// ---------------------------------------------------------------------------
+
+static bool     s_btn_raw_pressed    = false;
+static bool     s_btn_stable_pressed = false;
+static uint32_t s_btn_change_ms      = 0;
+static bool     s_recording          = false;
+static bool     s_wait_release       = false;  // set after the 15 s cap; ignore presses until released
+static uint32_t s_rec_start_ms       = 0;
+
+// Button is active-low. Returns the debounced pressed state.
+static bool pttPressedDebounced() {
+    bool raw = (digitalRead(PIN_BTN_TOP_PTT) == LOW);
+    if (raw != s_btn_raw_pressed) {
+        s_btn_raw_pressed = raw;
+        s_btn_change_ms = millis();
+    }
+    if (raw != s_btn_stable_pressed && millis() - s_btn_change_ms >= PTT_DEBOUNCE_MS) {
+        s_btn_stable_pressed = raw;
+    }
+    return s_btn_stable_pressed;
+}
+
+static void finishAndUpload() {
+    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
+    gotchi_audio::playChime("ptt_stop");
+
+    if (wav.length <= 44 || wav.rms * 32768.0f < PTT_MIN_RMS_LSB) {
+        GotchiUIState idle_ui;
+        panel.draw(idle_ui);
+        return;
+    }
+
+    GotchiUIState ui;
+    ui.state = UiState::TRANSCRIBING;
+    ui.status_text = "TRANSCRIBING";
+    panel.draw(ui);
+
+    // Redraw only when the visible state or status line changes (audio_chunk floods are skipped).
+    GotchiUIState drawn = ui;
+    gotchi_hub::InteractResult r = gotchi_hub::interact(
+        cfg.hub_url, cfg.node_id, wav, ui,
+        [&drawn](const GotchiUIState& s) {
+            if (s.state != drawn.state || s.status_text != drawn.status_text) {
+                panel.draw(s);
+                drawn = s;
+            }
+        });
+
+    gotchi_audio::muteSpeaker();
+    if (r == gotchi_hub::InteractResult::OK) {
+        delay(1500);
+    } else {
+        panel.draw(ui);  // error / busy / offline sprite set by interact()
+        delay(3000);
+    }
+    GotchiUIState idle_ui;
+    panel.draw(idle_ui);
+}
+
+static void servicePtt() {
+    bool pressed = pttPressedDebounced();
+
+    if (s_wait_release) {
+        if (!pressed) s_wait_release = false;
+        gotchi_audio::pumpPreroll();
+        return;
+    }
+
+    if (!s_recording) {
+        if (pressed && gotchi_audio::beginPttRecording()) {
+            s_recording = true;
+            s_rec_start_ms = millis();
+            gotchi_audio::playChime("ptt_start");
+            GotchiUIState listening;
+            listening.state = UiState::LISTENING;
+            listening.status_text = "LISTENING";
+            panel.draw(listening);
+        } else {
+            gotchi_audio::pumpPreroll();  // idle: keep the 500 ms pre-roll ring fresh
+        }
+        return;
+    }
+
+    gotchi_audio::pollPttRecording();
+    bool capped = (millis() - s_rec_start_ms >= PTT_MAX_MS);
+    if (pressed && !capped) return;
+
+    s_recording = false;
+    s_wait_release = capped && pressed;
+    finishAndUpload();
 }
 
 void loop() {
@@ -167,5 +278,6 @@ void loop() {
             Serial.println(handleJsonRpc(line));
         }
     }
+    servicePtt();
     delay(5);
 }
