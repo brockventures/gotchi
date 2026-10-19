@@ -31,6 +31,7 @@
 #include "log_buffer.h"
 #include "live_client.h"
 #include "ble_framing.h"
+#include "ble_transport.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -243,6 +244,7 @@ String handleJsonRpc(const String& jsonLine) {
         res["live_silence_ms"] = cfg.live_silence_ms;
         res["default_image_prompt"] = cfg.default_image_prompt;
         res["usb_host_connected"] = isUsbDataHostConnected();
+        res["ble_connected"] = gotchi_ble::isBlePeerConnected();
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
     } else if (cmd == "set_config") {
@@ -810,6 +812,7 @@ void setup() {
     gotchi_audio::init();
     applyPrerollPolicy();
     gotchi_camera::init();
+    gotchi_ble::initBleTransport(cfg.node_id.c_str());
     if (!wifi_configured) {
         gotchi_portal::startSoftApPortal(httpServer);
     }
@@ -817,7 +820,7 @@ void setup() {
     panel.begin();
     GotchiUIState boot_ui;
     boot_ui.skin = cfg.skin;
-    if (wifi_configured && !wifi_up) {
+    if (wifi_configured && !wifi_up && !gotchi_ble::isBlePeerConnected()) {
         boot_ui.state = UiState::OFFLINE;
         boot_ui.status_text = "NO WIFI";
     }

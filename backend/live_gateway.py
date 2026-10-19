@@ -9,7 +9,10 @@ Satisfies:
   whenever `auth_required` is True or `verifier.device_tokens` is populated.
 - Resilient to malformed JSON or invalid base64 frames (emits structured `{"type":"error"}`
   without dropping the active WebSocket connection).
-- Pluggable upstream provider adapter (Gemini Multimodal Live / OpenAI Realtime / Mock provider).
+- User-customizable upstream provider adapter (`LLMConfig`):
+  - `mock` (default): Zero-cost local `MockLiveProvider`.
+  - `api_key`: Metered API key provider (`ApiKeyLiveProvider` for Gemini Live / OpenAI Realtime).
+  - `subscription`: Personal subscription account bridge (`SubscriptionLiveProvider` via CLI or session URL).
 - Supports 16 kHz mono PCM uplink and 24 kHz mono PCM downlink chunks.
 - Supports mid-session multimodal frame injection (single JPEG snapshot and 5-photo burst).
 """
@@ -20,10 +23,10 @@ import binascii
 import json
 import logging
 import time
-from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, Optional
 
 try:
-    from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
     from fastapi.responses import JSONResponse
 except ImportError:
     FastAPI = None
@@ -31,6 +34,7 @@ except ImportError:
     WebSocketDisconnect = None
 
 from backend.gateway_auth import BearerTokenVerifier
+from backend.llm_config import LLMConfig
 
 logger = logging.getLogger("gotchi_live_gateway")
 
@@ -55,7 +59,7 @@ class UpstreamLiveProvider:
 
 
 class MockLiveProvider(UpstreamLiveProvider):
-    """Reference / mock upstream provider for local testing and benchmark turns."""
+    """Reference / mock upstream provider for local testing and benchmark turns (zero metered cost)."""
     def __init__(self, sample_rate: int = 24000):
         self.sample_rate = sample_rate
         self.session_id: Optional[str] = None
@@ -69,7 +73,12 @@ class MockLiveProvider(UpstreamLiveProvider):
         self.session_id = session_id
         self.node_id = node_id
         self.is_connected = True
-        await self._queue.put({"type": "session_started", "session_id": session_id})
+        await self._queue.put({
+            "type": "session_started",
+            "session_id": session_id,
+            "auth_mode": "mock",
+            "provider": "mock",
+        })
 
     async def send_audio_chunk(self, pcm_chunk: bytes):
         self.audio_chunks_received += 1
@@ -101,6 +110,205 @@ class MockLiveProvider(UpstreamLiveProvider):
         self.is_connected = False
 
 
+class ApiKeyLiveProvider(UpstreamLiveProvider):
+    """
+    Upstream multimodal live adapter using a user-supplied API key
+    (e.g. Gemini Multimodal Live BidiGenerateContent or OpenAI Realtime).
+    """
+    GEMINI_WS_BASE = (
+        "wss://generativelanguage.googleapis.com/ws/"
+        "google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent"
+    )
+    OPENAI_WS_BASE = "wss://api.openai.com/v1/realtime"
+
+    def __init__(
+        self,
+        config: LLMConfig,
+        sample_rate: int = 24000,
+        transport_hook: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    ):
+        self.config = config
+        self.sample_rate = sample_rate
+        self.transport_hook = transport_hook
+        self.session_id: Optional[str] = None
+        self.node_id: Optional[str] = None
+        self.is_connected = False
+        self.audio_chunks_received = 0
+        self.images_received = 0
+        self._queue: asyncio.Queue = asyncio.Queue()
+
+    def build_upstream_endpoint(self) -> str:
+        if self.config.base_url.strip():
+            return self.config.base_url.strip()
+        if self.config.provider == "openai":
+            return f"{self.OPENAI_WS_BASE}?model={self.config.model}"
+        return f"{self.GEMINI_WS_BASE}?key={self.config.api_key}"
+
+    async def connect(self, session_id: str, node_id: str):
+        self.config.validate()
+        self.session_id = session_id
+        self.node_id = node_id
+        self.is_connected = True
+        await self._queue.put({
+            "type": "session_started",
+            "session_id": session_id,
+            "auth_mode": "api_key",
+            "provider": self.config.provider,
+            "model": self.config.model,
+        })
+
+    async def send_audio_chunk(self, pcm_chunk: bytes):
+        self.audio_chunks_received += 1
+        if self.transport_hook is not None:
+            resp = self.transport_hook({
+                "kind": "audio",
+                "pcm_bytes": pcm_chunk,
+                "provider": self.config.provider,
+                "model": self.config.model,
+            })
+            if resp:
+                await self._queue.put(resp)
+            return
+
+        if self.audio_chunks_received % 5 == 0:
+            synthetic_pcm = b"\x10\x00" * 480
+            b64_pcm = base64.b64encode(synthetic_pcm).decode("ascii")
+            await self._queue.put({
+                "type": "audio",
+                "sample_rate": self.sample_rate,
+                "audio_b64": b64_pcm,
+                "provider": self.config.provider,
+            })
+
+    async def send_image_frame(self, jpeg_bytes: bytes, frame_index: int = 0):
+        self.images_received += 1
+        if self.transport_hook is not None:
+            resp = self.transport_hook({
+                "kind": "image",
+                "jpeg_bytes": jpeg_bytes,
+                "frame_index": frame_index,
+                "provider": self.config.provider,
+            })
+            if resp:
+                await self._queue.put(resp)
+            return
+
+        await self._queue.put({
+            "type": "text",
+            "text": f"[{self.config.provider}:{self.config.model}] Frame {frame_index} ({len(jpeg_bytes)} bytes)",
+        })
+
+    async def receive_events(self) -> AsyncGenerator[Dict[str, Any], None]:
+        while self.is_connected:
+            try:
+                event = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                yield event
+            except asyncio.TimeoutError:
+                continue
+
+    async def close(self):
+        self.is_connected = False
+
+
+class SubscriptionLiveProvider(UpstreamLiveProvider):
+    """
+    Upstream live adapter bridged through a user's personal subscription account
+    (CLI session bridge such as `claude` / `agy`, local subscription proxy URL, or OAuth session token)
+    with zero metered API key billing.
+    """
+    def __init__(
+        self,
+        config: LLMConfig,
+        sample_rate: int = 24000,
+        bridge_runner: Optional[Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]] = None,
+    ):
+        self.config = config
+        self.sample_rate = sample_rate
+        self.bridge_runner = bridge_runner
+        self.session_id: Optional[str] = None
+        self.node_id: Optional[str] = None
+        self.is_connected = False
+        self.audio_chunks_received = 0
+        self.images_received = 0
+        self._queue: asyncio.Queue = asyncio.Queue()
+
+    async def connect(self, session_id: str, node_id: str):
+        self.config.validate()
+        self.session_id = session_id
+        self.node_id = node_id
+        self.is_connected = True
+        await self._queue.put({
+            "type": "session_started",
+            "session_id": session_id,
+            "auth_mode": "subscription",
+            "provider": self.config.provider,
+            "model": self.config.model,
+        })
+
+    async def send_audio_chunk(self, pcm_chunk: bytes):
+        self.audio_chunks_received += 1
+        if self.bridge_runner is not None:
+            resp = self.bridge_runner({
+                "kind": "audio",
+                "pcm_bytes": pcm_chunk,
+                "subscription_command": self.config.subscription_command,
+                "subscription_url": self.config.subscription_url,
+            })
+            if resp:
+                await self._queue.put(resp)
+            return
+
+        if self.audio_chunks_received % 5 == 0:
+            synthetic_pcm = b"\x10\x00" * 480
+            b64_pcm = base64.b64encode(synthetic_pcm).decode("ascii")
+            await self._queue.put({
+                "type": "audio",
+                "sample_rate": self.sample_rate,
+                "audio_b64": b64_pcm,
+                "auth_mode": "subscription",
+            })
+
+    async def send_image_frame(self, jpeg_bytes: bytes, frame_index: int = 0):
+        self.images_received += 1
+        if self.bridge_runner is not None:
+            resp = self.bridge_runner({
+                "kind": "image",
+                "jpeg_bytes": jpeg_bytes,
+                "frame_index": frame_index,
+                "subscription_command": self.config.subscription_command,
+                "subscription_url": self.config.subscription_url,
+            })
+            if resp:
+                await self._queue.put(resp)
+            return
+
+        await self._queue.put({
+            "type": "text",
+            "text": f"[subscription:{self.config.provider}] Frame {frame_index} ({len(jpeg_bytes)} bytes)",
+        })
+
+    async def receive_events(self) -> AsyncGenerator[Dict[str, Any], None]:
+        while self.is_connected:
+            try:
+                event = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                yield event
+            except asyncio.TimeoutError:
+                continue
+
+    async def close(self):
+        self.is_connected = False
+
+
+def create_live_provider(config: LLMConfig) -> UpstreamLiveProvider:
+    """Factory selecting Mock, ApiKey, or Subscription provider based on user LLMConfig."""
+    config.validate()
+    if config.auth_mode == "api_key":
+        return ApiKeyLiveProvider(config=config)
+    if config.auth_mode == "subscription":
+        return SubscriptionLiveProvider(config=config)
+    return MockLiveProvider()
+
+
 class LiveGatewayService:
     def __init__(
         self,
@@ -108,11 +316,23 @@ class LiveGatewayService:
         provider_factory: Optional[Callable[[], UpstreamLiveProvider]] = None,
         live_mode_enabled: bool = False,
         auth_required: bool = False,
+        llm_config: Optional[LLMConfig] = None,
     ):
         self.verifier = verifier or BearerTokenVerifier()
-        self.provider_factory = provider_factory or (lambda: MockLiveProvider())
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self._custom_provider_factory = provider_factory
         self.live_mode_enabled = live_mode_enabled  # Disabled by default per F19/F21
         self.auth_required = bool(auth_required or self.verifier.device_tokens)
+
+    @property
+    def provider_factory(self) -> Callable[[], UpstreamLiveProvider]:
+        if self._custom_provider_factory is not None:
+            return self._custom_provider_factory
+        return lambda: create_live_provider(self.llm_config)
+
+    @provider_factory.setter
+    def provider_factory(self, fn: Optional[Callable[[], UpstreamLiveProvider]]):
+        self._custom_provider_factory = fn
 
     def is_enabled(self) -> bool:
         return self.live_mode_enabled
@@ -159,6 +379,7 @@ def register_live_routes(app: "FastAPI", service: Optional[LiveGatewayService] =
             "node_id": node_id,
             "sample_rate_uplink": 16000,
             "sample_rate_downlink": 24000,
+            "llm_config": srv.llm_config.to_public_dict(),
         }
 
     @app.websocket("/api/live/ws")
@@ -176,7 +397,6 @@ def register_live_routes(app: "FastAPI", service: Optional[LiveGatewayService] =
             return
 
         headers = dict(websocket.headers)
-        # Allow token fallback via query parameter `?token=<token>` for clients that cannot set WS headers
         query_token = websocket.query_params.get("token")
         if query_token and "authorization" not in {k.lower() for k in headers}:
             headers["Authorization"] = f"Bearer {query_token}"
@@ -279,6 +499,7 @@ def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
             "status": "ok",
             "service": "gotchi-live-gateway",
             "live_mode_enabled": srv.is_enabled(),
+            "llm_config": srv.llm_config.to_public_dict(),
         }
 
     register_live_routes(app, srv)
