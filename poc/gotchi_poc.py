@@ -145,6 +145,7 @@ class GotchiUIState:
     audio_bytes_received: int = 0
     last_sample_rate: int = 24000
     error_code: str = ""
+    skin: str = "gotchi"  # "gotchi" | "zero"
 
 
 def parse_sse_stream(
@@ -243,6 +244,24 @@ def render_sprite_200x200(ui: GotchiUIState, refresh_mode: str = "partial") -> I
         f_hdr = ImageFont.load_default()
         f_txt = f_hdr
         f_big = f_hdr
+
+    if getattr(ui, "skin", "gotchi") == "zero":
+        asset_dir = os.path.join(os.path.dirname(__file__), "assets", "zero_skin")
+        st_name = ui.state if ui.state in VALID_STATES else "idle"
+        prebaked = os.path.join(asset_dir, f"zero_{st_name}_200x200_1bit.png")
+        if os.path.exists(prebaked):
+            im = Image.open(prebaked).convert("L")
+            d = ImageDraw.Draw(im)
+            d.rectangle([0, 0, 199, 20], fill=0)
+            d.text((5, 4), f"ZERO // {st_name.upper()}", fill=255, font=f_hdr)
+            badge = "FULL" if refresh_mode == "full" else "PART"
+            d.text((164, 4), badge, fill=255, font=f_hdr)
+            d.rectangle([2, 156, 197, 197], fill=255)
+            line1 = (ui.reply or ui.transcript or ui.status_text or "READY")[:26]
+            line2 = (ui.reply[26:52] if ui.reply else (ui.transcript[26:52] if ui.transcript else f"SR:{ui.last_sample_rate//1000}k B:{ui.audio_bytes_received}"))
+            d.text((6, 160), line1, fill=0, font=f_big)
+            d.text((6, 178), line2[:28], fill=0, font=f_txt)
+            return im.point(lambda px: 255 if px > 128 else 0, mode="1")
 
     # Top status bar (y = 0..20)
     d.rectangle([0, 0, 199, 20], fill=0)

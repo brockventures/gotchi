@@ -84,3 +84,12 @@ def test_parse_sse_stream_and_render_sprite():
     im = render_sprite_200x200(ui, refresh_mode="partial")
     assert im.size == (200, 200)
     assert im.mode == "1"
+
+
+def test_render_zero_skin_all_9_states():
+    from poc.gotchi_poc import VALID_STATES
+    for st in VALID_STATES:
+        ui = GotchiUIState(state=st, skin="zero", status_text=f"TEST {st.upper()}")
+        im = render_sprite_200x200(ui, refresh_mode="partial")
+        assert im.size == (200, 200)
+        assert im.mode == "1"
