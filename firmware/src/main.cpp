@@ -29,6 +29,7 @@
 #include "onboarding_portal.h"
 #include "voice_client.h"
 #include "log_buffer.h"
+#include "live_client.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -395,44 +396,54 @@ static bool captureIntoSlot(size_t slot_idx) {
     return true;
 }
 
-// Runs a Go Live continuous session (PRD F19).
-// Stays open until `BTN_TOP` is pressed or `cfg.live_silence_ms` (default 15s) of silence elapses.
+static size_t captureBurstFrames() {
+    const uint32_t interval_ms = BURST_TOTAL_DURATION_MS / (BURST_FRAME_COUNT - 1);
+    uint32_t burst_start = millis();
+    size_t captured = 0;
+    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+        uint32_t target_ts = burst_start + (uint32_t)(i * interval_ms);
+        while ((int32_t)(target_ts - millis()) > 0) {
+            httpServer.handleClient();
+            delay(5);
+        }
+        if (captureIntoSlot(captured)) {
+            gotchi_audio::playChime("snap");
+            captured++;
+        }
+    }
+    return captured;
+}
+
+// Runs a Go Live continuous session (PRD F19 / F21 / Section 5b).
+// Stays open until `BTN_TOP` is pressed or `cfg.live_silence_ms` of silence elapses.
 static void runLiveSession() {
-    waitForButtonRelease(PIN_BTN_TOP_PTT);
     GotchiUIState ui;
     ui.skin = cfg.skin;
 
     if (!cfg.live_mode) {
+        gotchi_log::RingLogger.info("live", "Go Live ignored: live_mode is off");
         showIdle();
         return;
     }
 
-    gotchi_audio::playChime("ptt_start");
-    ui.state = UiState::LISTENING;
-    ui.status_text = "LIVE SESSION";
-    panel.draw(ui);
+    gotchi_live::LiveSessionConfig lcfg;
+    lcfg.voice_url = cfg.voice_url;
+    lcfg.node_id = cfg.node_id;
+    lcfg.bearer_token = cfg.bearer_token;
+    lcfg.audio_out_mode = cfg.audio_out_mode;
+    lcfg.live_silence_ms = cfg.live_silence_ms;
+    lcfg.vad_rms_lsb = cfg.vad_rms_lsb;
+    lcfg.cam_long_press_ms = cfg.cam_long_press_ms;
+    lcfg.enabled = cfg.live_mode;
 
-    const float vad_thresh = (float)cfg.vad_rms_lsb / 32768.0f;
-    uint32_t last_speech_ts = millis();
+    gotchi_live::runSession(
+        lcfg,
+        ui,
+        onVoiceState,
+        [](size_t slot) -> bool { return captureIntoSlot(slot); },
+        []() -> size_t { return captureBurstFrames(); }
+    );
 
-    while (true) {
-        httpServer.handleClient();
-        // Pressing BTN_TOP during a Live session ends it immediately (F19)
-        if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
-            waitForButtonRelease(PIN_BTN_TOP_PTT);
-            break;
-        }
-        gotchi_audio::pumpPreroll();
-        float recent_rms = gotchi_audio::getRecentRms(1600);
-        if (recent_rms >= vad_thresh) {
-            last_speech_ts = millis();
-        } else if (millis() - last_speech_ts >= cfg.live_silence_ms) {
-            break; // 15s (configurable live_silence_ms) of silence ends Live session
-        }
-        delay(10);
-    }
-
-    gotchi_audio::playChime("ptt_stop");
     showIdle();
 }
 
@@ -558,20 +569,7 @@ static void handleCameraButtonIdle() {
     }
 
     // Long press: capture burst of 5 photos over 3 seconds (F20: 0ms, 750ms, 1500ms, 2250ms, 3000ms)
-    const uint32_t interval_ms = BURST_TOTAL_DURATION_MS / (BURST_FRAME_COUNT - 1);
-    uint32_t burst_start = millis();
-    size_t captured = 0;
-    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
-        uint32_t target_ts = burst_start + (uint32_t)(i * interval_ms);
-        while ((int32_t)(target_ts - millis()) > 0) {
-            httpServer.handleClient();
-            delay(5);
-        }
-        if (captureIntoSlot(captured)) {
-            gotchi_audio::playChime("snap");
-            captured++;
-        }
-    }
+    size_t captured = captureBurstFrames();
     waitForButtonRelease(PIN_BTN_BOT_MOD);
 
     if (captured == 0) {
