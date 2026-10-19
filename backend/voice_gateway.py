@@ -243,17 +243,30 @@ class VoiceGatewayService:
         yield build_sse_event("done", {"duration_ms": duration_ms})
 
 
-def create_app(service: Optional[VoiceGatewayService] = None) -> "FastAPI":
-    """Factory to create FastAPI instance with /api/voice/interact endpoint."""
+def create_app(
+    service: Optional[VoiceGatewayService] = None,
+    live_service: Optional[Any] = None,
+) -> "FastAPI":
+    """Factory to create FastAPI instance with /api/voice/interact and /api/live/ws endpoints."""
     if FastAPI is None:
         raise RuntimeError("FastAPI is not installed")
 
+    from backend.live_gateway import LiveGatewayService, register_live_routes
+
     app = FastAPI(title="Gotchi Reference Voice Gateway")
     srv = service or VoiceGatewayService()
+    live_srv = live_service or LiveGatewayService(
+        verifier=srv.verifier,
+        auth_required=srv.auth_required,
+    )
 
     @app.get("/health")
     def health():
-        return {"status": "ok", "service": "gotchi-voice-gateway"}
+        return {
+            "status": "ok",
+            "service": "gotchi-voice-gateway",
+            "live_mode_enabled": live_srv.is_enabled(),
+        }
 
     @app.post("/api/voice/interact")
     async def voice_interact(
@@ -287,4 +300,5 @@ def create_app(service: Optional[VoiceGatewayService] = None) -> "FastAPI":
             },
         )
 
+    register_live_routes(app, live_srv)
     return app

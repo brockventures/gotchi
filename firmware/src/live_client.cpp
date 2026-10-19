@@ -391,7 +391,7 @@ SessionEndReason runSession(
 ) {
     if (!config.enabled) {
         gotchi_log::RingLogger.info("live", "Go Live session rejected: live_mode is disabled");
-        return SessionEndReason::DISABLED;
+        return SessionEndReason::LIVE_DISABLED;
     }
 
     if (WiFi.status() != WL_CONNECTED) {

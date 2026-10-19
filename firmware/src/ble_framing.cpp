@@ -3,6 +3,9 @@
 // ============================================================================
 
 #include "ble_framing.h"
+#include "log_buffer.h"
+#include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -47,7 +50,8 @@ size_t encodePacket(
     const uint8_t* payload,
     size_t payload_len,
     uint8_t* out_buf,
-    size_t out_cap
+    size_t out_cap,
+    uint8_t frame_index
 ) {
     size_t total_needed = BLE_HEADER_SIZE + payload_len + BLE_TRAILER_SIZE;
     if (!out_buf || out_cap < total_needed) {
@@ -58,12 +62,14 @@ size_t encodePacket(
     hdr.magic = BLE_MAGIC;
     hdr.frame_type = static_cast<uint8_t>(type);
     hdr.flags = static_cast<uint8_t>(flags);
+    hdr.frame_index = frame_index;
+    hdr.reserved = 0;
     hdr.seq_num = seq_num;
     hdr.chunk_idx = chunk_idx;
     hdr.total_chunks = total_chunks;
     hdr.payload_len = static_cast<uint16_t>(payload_len);
-    // Header CRC16 covers first 12 bytes (excluding header_crc16 field itself)
-    hdr.header_crc16 = calcCrc16(reinterpret_cast<const uint8_t*>(&hdr), 12);
+    // Header CRC16 covers first 14 bytes (excluding header_crc16 field itself)
+    hdr.header_crc16 = calcCrc16(reinterpret_cast<const uint8_t*>(&hdr), 14);
 
     memcpy(out_buf, &hdr, BLE_HEADER_SIZE);
 
@@ -97,7 +103,7 @@ bool decodePacket(
         return false;
     }
 
-    uint16_t computed_crc16 = calcCrc16(in_buf, 12);
+    uint16_t computed_crc16 = calcCrc16(in_buf, 14);
     if (computed_crc16 != hdr.header_crc16) {
         return false;
     }
@@ -128,7 +134,23 @@ bool decodePacket(
 
 PacketReassembler::PacketReassembler(size_t max_payload_size)
     : max_size_(max_payload_size) {
-    buffer_ = static_cast<uint8_t*>(malloc(max_size_));
+    if (psramFound()) {
+        buffer_ = static_cast<uint8_t*>(ps_malloc(max_size_));
+        if (buffer_) {
+            in_psram_ = true;
+        }
+    }
+    if (!buffer_) {
+        // Fallback to smaller internal SRAM buffer only if PSRAM is absent
+        size_t fallback_size = max_size_ > 16384 ? 16384 : max_size_;
+        buffer_ = static_cast<uint8_t*>(malloc(fallback_size));
+        if (buffer_) {
+            max_size_ = fallback_size;
+            in_psram_ = false;
+        } else {
+            gotchi_log::RingLogger.error("ble", "PacketReassembler buffer allocation failed");
+        }
+    }
 }
 
 PacketReassembler::~PacketReassembler() {
@@ -145,17 +167,45 @@ void PacketReassembler::reset() {
     in_progress_ = false;
 }
 
+void PacketReassembler::resetSequenceTracking() {
+    reset();
+    has_last_seq_ = false;
+    last_seq_num_ = 0;
+}
+
 bool PacketReassembler::pushPacket(const Packet& packet, bool& is_complete) {
     is_complete = false;
-    if (!buffer_) return false;
+    if (!buffer_) {
+        gotchi_log::RingLogger.error("ble", "pushPacket rejected: reassembler has no buffer");
+        return false;
+    }
 
     const PacketHeader& hdr = packet.header;
+
+    // Enforce monotonic link sequence number continuity across packets
+    if (has_last_seq_) {
+        uint16_t expected_seq = static_cast<uint16_t>(last_seq_num_ + 1);
+        if (hdr.seq_num != expected_seq) {
+            gotchi_log::RingLogger.warn("ble", "BLE packet sequence gap detected; resetting reassembler");
+            reset();
+            has_last_seq_ = false;
+            return false;
+        }
+    }
+
     bool is_first = (hdr.flags & static_cast<uint8_t>(FrameFlags::FIRST_CHUNK)) || (hdr.chunk_idx == 0);
     bool is_last = (hdr.flags & static_cast<uint8_t>(FrameFlags::LAST_CHUNK)) || (hdr.chunk_idx + 1 == hdr.total_chunks);
 
     if (is_first) {
+        if (in_progress_) {
+            // Unfinished previous multi-chunk frame was interrupted by a new FIRST_CHUNK
+            gotchi_log::RingLogger.warn("ble", "Incomplete BLE frame interrupted by new FIRST_CHUNK");
+            reset();
+            return false;
+        }
         reset();
         current_type_ = static_cast<FrameType>(hdr.frame_type);
+        current_frame_index_ = hdr.frame_index;
         total_chunks_ = hdr.total_chunks;
         expected_chunk_ = 0;
         in_progress_ = true;
@@ -170,8 +220,8 @@ bool PacketReassembler::pushPacket(const Packet& packet, bool& is_complete) {
         return false;
     }
 
-    // Type mismatch during reassembly
-    if (static_cast<FrameType>(hdr.frame_type) != current_type_) {
+    // Verify frame type and burst frame_index match across all chunks of the frame
+    if (static_cast<FrameType>(hdr.frame_type) != current_type_ || hdr.frame_index != current_frame_index_) {
         reset();
         return false;
     }
@@ -188,6 +238,7 @@ bool PacketReassembler::pushPacket(const Packet& packet, bool& is_complete) {
     }
 
     last_seq_num_ = hdr.seq_num;
+    has_last_seq_ = true;
     expected_chunk_++;
 
     if (is_last || (total_chunks_ > 0 && expected_chunk_ >= total_chunks_)) {

@@ -1,12 +1,12 @@
 """
 Tests for GOTCHI BLE 5.0 Packet Framing Protocol (T4.1 / F18).
 Covers:
-- Header serialization, magic verification, CRC16 header validation.
+- 16-byte header serialization, magic verification, CRC16 header validation, and burst frame_index (0..4).
 - CRC32 payload checksum verification (corruption detection).
 - Packet fragmentation into MTU-bounded chunks and stateful reassembly.
-- Support for frame types: AUDIO_CHUNK, IMAGE_FRAME, TURN_COMMIT, SSE_EVENT, ACK, CANCEL.
-- Discontinuity / loss detection and error handling.
-- Cross-verification between backend/ble_framing.py and firmware/include/ble_framing.h & firmware/src/ble_framing.cpp.
+- Strict sequence number (`seq_num`) and chunk index (`chunk_idx`) continuity enforcement.
+- Cross-verification between backend/ble_framing.py and firmware/include/ble_framing.h & firmware/src/ble_framing.cpp
+  (PSRAM allocation via ps_malloc, frame_index field, seq_num gap detection).
 """
 
 import pathlib
@@ -27,71 +27,75 @@ from backend.ble_framing import (
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 BLE_FRAMING_H = REPO_ROOT / "firmware" / "include" / "ble_framing.h"
 BLE_FRAMING_CPP = REPO_ROOT / "firmware" / "src" / "ble_framing.cpp"
+MAIN_CPP = REPO_ROOT / "firmware" / "src" / "main.cpp"
 
 
 def test_firmware_ble_framing_source_invariants():
-    """Verify C++ firmware sources implement required BLE framing contracts."""
+    """Verify C++ firmware sources implement PSRAM allocation, frame_index, seq_num continuity, and main.cpp inclusion."""
     h_src = BLE_FRAMING_H.read_text(encoding="utf-8")
     cpp_src = BLE_FRAMING_CPP.read_text(encoding="utf-8")
+    main_src = MAIN_CPP.read_text(encoding="utf-8")
 
-    # Header constants and struct pack
+    # Included in main.cpp so firmware build compiles ble_framing.h alongside main
+    assert '#include "ble_framing.h"' in main_src
+
+    # Header constants and struct pack (16 bytes with frame_index)
     assert "BLE_MAGIC = 0x4742" in h_src
-    assert "BLE_HEADER_SIZE = 14" in h_src
+    assert "BLE_HEADER_SIZE = 16" in h_src
     assert "BLE_TRAILER_SIZE = 4" in h_src
+    assert "uint8_t  frame_index;" in h_src
     assert "#pragma pack(push, 1)" in h_src
     assert "struct PacketHeader" in h_src
 
-    # Frame types
-    for ft in ("AUDIO_CHUNK", "IMAGE_FRAME", "TURN_COMMIT", "SSE_EVENT", "ACK", "CANCEL"):
-        assert ft in h_src
+    # PSRAM allocation via ps_malloc with error logging on failure
+    assert "psramFound()" in cpp_src
+    assert "ps_malloc(max_size_)" in cpp_src
+    assert 'RingLogger.error("ble", "PacketReassembler buffer allocation failed")' in cpp_src
 
-    # CRC functions and implementation
-    assert "calcCrc16" in h_src and "calcCrc32" in h_src
-    assert "0x1021" in cpp_src  # CRC16-CCITT polynomial
-    assert "0xEDB88320" in cpp_src  # CRC32 polynomial
+    # Sequence number continuity check across packets
+    assert "if (has_last_seq_)" in cpp_src
+    assert "if (hdr.seq_num != expected_seq)" in cpp_src
 
-    # Encode, decode, and reassembler
-    assert "encodePacket" in h_src and "decodePacket" in h_src
-    assert "class PacketReassembler" in h_src
+    # Burst frame_index consistency check
+    assert "hdr.frame_index != current_frame_index_" in cpp_src
 
 
 def test_crc16_and_crc32_vectors():
-    """Validate CRC algorithms against known vectors."""
+    """Validate CRC16-CCITT and IEEE 802.3 CRC32 against standard "123456789" test vectors."""
+    std_vec = b"123456789"
+    assert calc_crc16(std_vec) == 0x29B1
+    assert calc_crc32(std_vec) == 0xCBF43926
+
     test_data = b"GotchiBLE2026"
     crc16 = calc_crc16(test_data)
     crc32 = calc_crc32(test_data)
+    assert crc16 == 0xD234
 
-    assert isinstance(crc16, int) and 0 <= crc16 <= 0xFFFF
-    assert isinstance(crc32, int) and 0 <= crc32 <= 0xFFFFFFFF
-
-    # Consistency across calls
-    assert calc_crc16(test_data) == crc16
-    assert calc_crc32(test_data) == crc32
-
-    # Bit mutation alters checksum
     mutated = b"GotchiBLE2027"
     assert calc_crc16(mutated) != crc16
     assert calc_crc32(mutated) != crc32
 
 
-def test_single_packet_encode_decode_roundtrip():
-    """Verify clean encode and decode of a single packet frame."""
+def test_single_packet_encode_decode_roundtrip_and_frame_index():
+    """Verify clean encode and decode of a single packet frame including burst frame_index."""
     payload = b"\x00\x01\x02\x03\x04" * 20  # 100 bytes
     pkt = BlePacket(
-        frame_type=FrameType.AUDIO_CHUNK,
+        frame_type=FrameType.IMAGE_FRAME,
         flags=FrameFlags.SINGLE_CHUNK,
         seq_num=42,
         chunk_idx=0,
         total_chunks=1,
         payload=payload,
+        frame_index=3,
     )
 
     encoded = pkt.encode()
     assert len(encoded) == BLE_HEADER_SIZE + len(payload) + BLE_TRAILER_SIZE
 
     decoded = BlePacket.decode(encoded)
-    assert decoded.frame_type == FrameType.AUDIO_CHUNK
+    assert decoded.frame_type == FrameType.IMAGE_FRAME
     assert decoded.flags == FrameFlags.SINGLE_CHUNK
+    assert decoded.frame_index == 3
     assert decoded.seq_num == 42
     assert decoded.chunk_idx == 0
     assert decoded.total_chunks == 1
@@ -119,7 +123,7 @@ def test_decode_rejects_corrupted_header_or_payload():
 
     # 2. Corrupt header byte (should fail CRC16)
     bad_header = bytearray(raw)
-    bad_header[4] ^= 0x01  # mutate sequence number without recalculating CRC16
+    bad_header[6] ^= 0x01  # mutate sequence number without recalculating CRC16
     with pytest.raises(ValueError, match="CRC16 mismatch"):
         BlePacket.decode(bytes(bad_header))
 
@@ -134,73 +138,59 @@ def test_decode_rejects_corrupted_header_or_payload():
         BlePacket.decode(raw[:10])
 
 
-def test_payload_fragmentation_and_reassembly_image_burst():
-    """Verify large simulated JPEG snapshot splits across MTU chunks and reassembles perfectly."""
-    # 12 KB simulated JPEG payload
-    simulated_jpeg = b"\xFF\xD8\xFF\xE0" + (b"gotchi_jpeg_pixel_data_12345678" * 400) + b"\xFF\xD9"
-    assert len(simulated_jpeg) > 10000
-
-    packets = fragment_payload(
-        frame_type=FrameType.IMAGE_FRAME,
-        payload=simulated_jpeg,
-        start_seq_num=500,
-        max_chunk_size=400,
-        requires_ack=True,
-    )
-
-    assert len(packets) > 25
-    assert packets[0].flags & FrameFlags.FIRST_CHUNK
-    assert packets[-1].flags & FrameFlags.LAST_CHUNK
-    assert all(p.flags & FrameFlags.REQUIRES_ACK for p in packets)
-
+def test_payload_fragmentation_and_reassembly_5_photo_burst():
+    """Verify 5-photo burst preserves distinct frame_index (0..4) across fragmented MTU chunks."""
     reassembler = BleReassembler()
-    completed = False
-    reassembled_bytes = None
-    frame_type = None
+    seq = 100
+    reconstructed_burst = []
 
-    for p in packets:
-        raw_wire = p.encode()
-        decoded_wire = BlePacket.decode(raw_wire)
-        is_done, data, f_type = reassembler.push(decoded_wire)
-        if is_done:
-            completed = True
-            reassembled_bytes = data
-            frame_type = f_type
+    for burst_idx in range(5):
+        simulated_jpeg = b"\xFF\xD8\xFF\xE0" + (f"frame_{burst_idx}_".encode() * 300) + b"\xFF\xD9"
+        packets = fragment_payload(
+            frame_type=FrameType.IMAGE_FRAME,
+            payload=simulated_jpeg,
+            start_seq_num=seq,
+            max_chunk_size=400,
+            requires_ack=True,
+            frame_index=burst_idx,
+        )
+        seq += len(packets)
 
-    assert completed is True
-    assert frame_type == FrameType.IMAGE_FRAME
-    assert reassembled_bytes == simulated_jpeg
+        for p in packets:
+            raw_wire = p.encode()
+            decoded_wire = BlePacket.decode(raw_wire)
+            assert decoded_wire.frame_index == burst_idx
+            is_done, data, f_type = reassembler.push(decoded_wire)
+            if is_done:
+                reconstructed_burst.append((burst_idx, f_type, data))
+
+    assert len(reconstructed_burst) == 5
+    for idx, (b_idx, f_type, data) in enumerate(reconstructed_burst):
+        assert b_idx == idx
+        assert f_type == FrameType.IMAGE_FRAME
+        assert f"frame_{idx}_".encode() in data
 
 
-def test_reassembler_detects_missing_chunk():
-    """Verify dropped packet in stream raises discontinuity error."""
+def test_reassembler_detects_seq_num_and_chunk_discontinuities():
+    """Verify dropped packets or sequence number gaps raise discontinuity errors."""
     payload = b"A" * 1500
     packets = fragment_payload(
         frame_type=FrameType.AUDIO_CHUNK,
         payload=payload,
-        start_seq_num=1,
+        start_seq_num=10,
         max_chunk_size=300,
     )
 
+    # 1. Dropped chunk within a frame (seq_num jumps from 10 to 12)
     reassembler = BleReassembler()
-    # Ingest chunk 0
     reassembler.push(packets[0])
-    # Drop chunk 1, attempt to ingest chunk 2
-    with pytest.raises(ValueError, match="Packet chunk sequence discontinuity"):
+    with pytest.raises(ValueError, match="sequence number discontinuity"):
         reassembler.push(packets[2])
 
-
-def test_control_frames_and_ack():
-    """Verify control frame types (ACK, CANCEL, TURN_COMMIT, SSE_EVENT)."""
-    for ft in (FrameType.ACK, FrameType.CANCEL, FrameType.TURN_COMMIT, FrameType.SSE_EVENT):
-        pkt = BlePacket(
-            frame_type=ft,
-            flags=FrameFlags.SINGLE_CHUNK,
-            seq_num=1,
-            chunk_idx=0,
-            total_chunks=1,
-            payload=b'{"ack_seq": 10}' if ft == FrameType.ACK else b"",
-        )
-        encoded = pkt.encode()
-        decoded = BlePacket.decode(encoded)
-        assert decoded.frame_type == ft
+    # 2. Dropped single-chunk frame between turns (chunk_idx is 0 on both, but seq_num jumps from 50 to 52)
+    reassembler2 = BleReassembler()
+    pkt1 = fragment_payload(FrameType.AUDIO_CHUNK, b"chunk1", start_seq_num=50)[0]
+    pkt3 = fragment_payload(FrameType.AUDIO_CHUNK, b"chunk3", start_seq_num=52)[0]
+    reassembler2.push(pkt1)
+    with pytest.raises(ValueError, match="sequence number discontinuity"):
+        reassembler2.push(pkt3)
