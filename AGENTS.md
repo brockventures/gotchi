@@ -20,12 +20,12 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 
 ## 2. Hardware Pinout Invariants (Do Not Violate in Firmware)
 
-When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** stacked on the **Seeed ePaper Breakout Board**:
-1. **ePaper SPI Pins (Hardwired by Breakout):**
+When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** wired to the **Waveshare 1.54" E-Paper Module V2 (8-Pin PH2.0 Harness)**:
+1. **ePaper SPI Pins (Direct 8-Pin Harness Mapping):**
    - `RST` = `D0` (`GPIO1`), `CS` = `D1` (`GPIO2`), `DC` = `D3` (`GPIO4`), `BUSY` = `D5` (`GPIO6`), `SCK` = `D8` (`GPIO7`), `MOSI` = `D10` (`GPIO9`).
 2. **MAX98357A I2S Audio Output Pins:**
    - `BCLK` = `D7` (`GPIO44` — silent `UART0_RX` at boot to prevent speaker pop), `LRCLK` = `D6` (`GPIO43`), `DIN` = `D9` (`GPIO8`).
-   - *Crucial:* Never assign I2S to `D5` (`GPIO6`), as `D5` is hardwired to the ePaper `BUSY` line on the Seeed breakout.
+   - *Crucial:* Never assign I2S to `D5` (`GPIO6`), as `D5` is assigned to the ePaper `BUSY` line.
 3. **Tactile Buttons & Reserved V2 Wake Pin:**
    - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake) = `D2` (`GPIO3` / `RTC_GPIO3`, active-low with internal pull-up).
    - `BTN_BOT` (Secondary / Mode / Snap) = `D4` (`GPIO5` / `RTC_GPIO5`, avoiding `GPIO0` boot-strapping).

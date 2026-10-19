@@ -8,7 +8,7 @@ This document contains the complete physical wiring instructions, GPIO pin multi
 
 The **XIAO ESP32S3 Sense** uses internal GPIOs (`GPIO10–18`, `38–42`, `47–48`) for its B2B camera and PDM microphone daughterboard, leaving **11 perimeter pins (`D0–D10`)** exposed on the main headers.
 
-When plugged into the **Seeed ePaper Breakout Board**, 6 pins are routed to the 24-pin e-paper FPC connector, leaving **5 perimeter pins (`D2`, `D4`, `D6`, `D7`, `D9`)** free for audio, buttons, and V2 expansion.
+When plugged into the **Waveshare 1.54" E-Paper Module V2 (8-pin PH2.0 harness)**, 6 pins are routed to the 24-pin e-paper FPC connector, leaving **5 perimeter pins (`D2`, `D4`, `D6`, `D7`, `D9`)** free for audio, buttons, and V2 expansion.
 
 ### Complete Pin Allocation Table
 
@@ -53,13 +53,13 @@ When plugged into the **Seeed ePaper Breakout Board**, 6 pins are routed to the 
 3. Solder the **black (`-`) lead** of the `803040` LiPo battery directly to the **`BAT-`** pad.
 4. Solder the **red (`+`) lead** of the LiPo battery to the **center pin (common)** of the **SPDT Mini Slide Switch**.
 5. Solder a short 30 AWG red wire from **one outer pin** of the slide switch to the XIAO **`BAT+`** pad. (Sliding the switch toward that outer pin turns the unit ON and enables USB-C charging; sliding it away completely isolates the battery).
-6. Apply a strip of **Kapton tape** over the bottom of the XIAO board so the battery pads cannot short against the Seeed ePaper Breakout Board underneath.
+6. Apply a strip of **Kapton tape** over the bottom of the XIAO board so the battery pads cannot short against the Waveshare 1.54" E-Paper Module V2 (8-pin PH2.0 harness) underneath.
 
 ### Step 3: Stacking XIAO + Sense Board + Seeed ePaper Breakout
 1. Solder the two 7-pin male header strips onto the main XIAO ESP32-S3 (pins pointing **down** into the Seeed ePaper Breakout socket).
 2. Snap the **Sense Camera/Mic expansion board** firmly onto the top B2B connector of the XIAO.
 3. Snap the included **U.FL Wi-Fi/BLE flex antenna** onto the coaxial receptacle on the XIAO and route the adhesive antenna patch along the inner wall of the 3D-printed shell (keep it away from the metal speaker magnet).
-4. Plug the XIAO assembly into the female headers on the **Seeed ePaper Breakout Board**, matching the USB-C port orientation marked on the silkscreen.
+4. Plug the XIAO assembly into the female headers on the **Waveshare 1.54" E-Paper Module V2 (8-pin PH2.0 harness)**, matching the USB-C port orientation marked on the silkscreen.
 5. Unlock the 24-pin FPC connector on the Seeed ePaper Breakout, slide in the **1.54" 200x200 E-Paper ribbon cable**, and lock the latch.
 
 ### Step 4: Wiring the `MAX98357A` I2S Audio Amplifier
