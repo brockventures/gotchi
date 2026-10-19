@@ -173,6 +173,12 @@ InteractResult interact(const String& hub_url, const String& node_id, const gotc
 
     // 4. Stream the SSE reply until `done`, stream end, or 60 s of silence.
     WiFiClient* stream = http.getStreamPtr();
+    if (!stream) {  // 200 but the connection is already closed: getStreamPtr() returns nullptr
+        http.end();
+        ui.state = UiState::ERROR;
+        ui.error_code = "network";
+        return InteractResult::NETWORK_ERROR;
+    }
     SseParser parser;
     AudioSink sink = defaultAudioSink();
     bool done = false;
