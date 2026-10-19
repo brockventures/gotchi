@@ -20,6 +20,9 @@
 #include "pins.h"
 #include "epd_panel.h"
 #include "ui_state.h"
+#include "audio_hal.h"
+#include "camera_hal.h"
+#include "onboarding_portal.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -137,6 +140,12 @@ void setup() {
         psram_wav_buf = (uint8_t*)ps_malloc(MAX_WAV_BYTES);
     }
     loadConfig();
+
+    gotchi_audio::init(MAX_WAV_BYTES);
+    gotchi_camera::init();
+    if (cfg.wifi_ssid.length() == 0) {
+        gotchi_portal::startSoftApPortal(httpServer);
+    }
 
     panel.begin();
     GotchiUIState idle_ui;

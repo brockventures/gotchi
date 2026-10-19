@@ -1,0 +1,228 @@
+#include "audio_hal.h"
+#include "pins.h"
+#include <driver/i2s.h>
+#include <mbedtls/base64.h>
+#include <math.h>
+#include <string.h>
+
+namespace gotchi_audio {
+
+static constexpr i2s_port_t PORT_PDM_RX = I2S_NUM_0;
+static constexpr i2s_port_t PORT_I2S_TX = I2S_NUM_1;
+
+static constexpr uint32_t REC_SAMPLE_RATE = 16000;
+static constexpr size_t   PREROLL_SAMPLES = REC_SAMPLE_RATE / 2; // 500 ms = 8,000 samples (16 KB)
+static constexpr size_t   MAX_REC_SAMPLES = REC_SAMPLE_RATE * 15; // 15s max = 240,000 samples (480 KB)
+static constexpr size_t   WAV_HEADER_SIZE = 44;
+
+static int16_t* s_preroll_ring = nullptr;
+static size_t   s_preroll_head = 0;
+static bool     s_preroll_full = false;
+
+static uint8_t* s_wav_buf      = nullptr;
+static size_t   s_rec_samples  = 0;
+static uint32_t s_cur_tx_rate  = 24000;
+
+static void writeWavHeader(uint8_t* dst, uint32_t pcm_bytes, uint32_t sample_rate) {
+    uint32_t riff_size  = 36 + pcm_bytes;
+    uint32_t byte_rate  = sample_rate * 2;
+    uint16_t block_align = 2;
+    uint16_t bits       = 16;
+    uint16_t fmt_pcm    = 1;
+    uint16_t channels   = 1;
+    uint32_t fmt_len    = 16;
+
+    memcpy(dst + 0,  "RIFF", 4);
+    memcpy(dst + 4,  &riff_size, 4);
+    memcpy(dst + 8,  "WAVEfmt ", 8);
+    memcpy(dst + 16, &fmt_len, 4);
+    memcpy(dst + 20, &fmt_pcm, 2);
+    memcpy(dst + 22, &channels, 2);
+    memcpy(dst + 24, &sample_rate, 4);
+    memcpy(dst + 28, &byte_rate, 4);
+    memcpy(dst + 32, &block_align, 2);
+    memcpy(dst + 34, &bits, 2);
+    memcpy(dst + 36, "data", 4);
+    memcpy(dst + 40, &pcm_bytes, 4);
+}
+
+bool init() {
+    if (!s_preroll_ring) {
+        s_preroll_ring = (int16_t*)(psramFound()
+            ? ps_malloc(PREROLL_SAMPLES * sizeof(int16_t))
+            : malloc(PREROLL_SAMPLES * sizeof(int16_t)));
+    }
+    if (!s_wav_buf) {
+        s_wav_buf = (uint8_t*)(psramFound()
+            ? ps_malloc(WAV_HEADER_SIZE + MAX_REC_SAMPLES * sizeof(int16_t))
+            : malloc(WAV_HEADER_SIZE + 32000 * sizeof(int16_t)));
+    }
+
+    // 1. Configure I2S0 for Onboard PDM Microphone RX (CLK=GPIO42, DATA=GPIO41)
+    i2s_config_t rx_cfg = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),
+        .sample_rate = REC_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 6,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0,
+    };
+    i2s_pin_config_t rx_pins = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = I2S_PIN_NO_CHANGE,
+        .ws_io_num = PIN_PDM_CLK,     // GPIO 42 (PDM CLK)
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = PIN_PDM_DATA,  // GPIO 41 (PDM DATA)
+    };
+    if (i2s_driver_install(PORT_PDM_RX, &rx_cfg, 0, nullptr) != ESP_OK) return false;
+    if (i2s_set_pin(PORT_PDM_RX, &rx_pins) != ESP_OK) return false;
+
+    // 2. Configure I2S1 for MAX98357A Speaker TX (BCLK=GPIO44 silent at boot, LRCLK=GPIO43, DIN=GPIO8)
+    i2s_config_t tx_cfg = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = s_cur_tx_rate,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 6,
+        .dma_buf_len = 256,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+        .fixed_mclk = 0,
+    };
+    i2s_pin_config_t tx_pins = {
+        .mck_io_num = I2S_PIN_NO_CHANGE,
+        .bck_io_num = PIN_I2S_BCLK,   // GPIO 44 (D7)
+        .ws_io_num = PIN_I2S_LRCLK,   // GPIO 43 (D6)
+        .data_out_num = PIN_I2S_DIN,  // GPIO 8  (D9)
+        .data_in_num = I2S_PIN_NO_CHANGE,
+    };
+    if (i2s_driver_install(PORT_I2S_TX, &tx_cfg, 0, nullptr) != ESP_OK) return false;
+    if (i2s_set_pin(PORT_I2S_TX, &tx_pins) != ESP_OK) return false;
+    i2s_stop(PORT_I2S_TX); // Keep BCLK idle (<1 uA MAX98357A shutdown) until playback
+
+    return (s_preroll_ring != nullptr && s_wav_buf != nullptr);
+}
+
+void pumpPreroll() {
+    if (!s_preroll_ring) return;
+    int16_t chunk[128];
+    size_t bytes_read = 0;
+    if (i2s_read(PORT_PDM_RX, chunk, sizeof(chunk), &bytes_read, 0) == ESP_OK && bytes_read > 0) {
+        size_t n = bytes_read / sizeof(int16_t);
+        for (size_t i = 0; i < n; ++i) {
+            s_preroll_ring[s_preroll_head] = chunk[i];
+            s_preroll_head = (s_preroll_head + 1) % PREROLL_SAMPLES;
+            if (s_preroll_head == 0) s_preroll_full = true;
+        }
+    }
+}
+
+bool beginPttRecording() {
+    if (!s_wav_buf || !s_preroll_ring) return false;
+    int16_t* dst = reinterpret_cast<int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
+    s_rec_samples = 0;
+
+    // Copy 500ms circular pre-roll into start of WAV buffer so first syllable is never clipped
+    if (s_preroll_full) {
+        size_t tail_len = PREROLL_SAMPLES - s_preroll_head;
+        memcpy(dst, s_preroll_ring + s_preroll_head, tail_len * sizeof(int16_t));
+        memcpy(dst + tail_len, s_preroll_ring, s_preroll_head * sizeof(int16_t));
+        s_rec_samples = PREROLL_SAMPLES;
+    } else if (s_preroll_head > 0) {
+        memcpy(dst, s_preroll_ring, s_preroll_head * sizeof(int16_t));
+        s_rec_samples = s_preroll_head;
+    }
+    return true;
+}
+
+size_t pollPttRecording() {
+    if (!s_wav_buf || s_rec_samples >= MAX_REC_SAMPLES) return s_rec_samples;
+    int16_t* dst = reinterpret_cast<int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
+    size_t room_bytes = (MAX_REC_SAMPLES - s_rec_samples) * sizeof(int16_t);
+    size_t to_read = room_bytes < 1024 ? room_bytes : 1024;
+    size_t bytes_read = 0;
+    if (i2s_read(PORT_PDM_RX, dst + s_rec_samples, to_read, &bytes_read, pdMS_TO_TICKS(10)) == ESP_OK) {
+        s_rec_samples += bytes_read / sizeof(int16_t);
+    }
+    return s_rec_samples;
+}
+
+WavView finishPttRecording() {
+    uint32_t pcm_bytes = s_rec_samples * sizeof(int16_t);
+    writeWavHeader(s_wav_buf, pcm_bytes, REC_SAMPLE_RATE);
+
+    const int16_t* pcm = reinterpret_cast<const int16_t*>(s_wav_buf + WAV_HEADER_SIZE);
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < s_rec_samples; ++i) {
+        double v = pcm[i] / 32768.0;
+        sum_sq += v * v;
+    }
+    float rms = s_rec_samples > 0 ? sqrtf((float)(sum_sq / s_rec_samples)) : 0.0f;
+    return WavView{s_wav_buf, WAV_HEADER_SIZE + pcm_bytes, rms};
+}
+
+bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_rate) {
+    if (!samples || sample_count == 0) return true;
+    if (sample_rate != s_cur_tx_rate && sample_rate >= 8000 && sample_rate <= 48000) {
+        s_cur_tx_rate = sample_rate;
+        i2s_set_clk(PORT_I2S_TX, s_cur_tx_rate, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO);
+    }
+    i2s_start(PORT_I2S_TX);
+    size_t bytes_written = 0;
+    esp_err_t err = i2s_write(
+        PORT_I2S_TX,
+        samples,
+        sample_count * sizeof(int16_t),
+        &bytes_written,
+        pdMS_TO_TICKS(2000)
+    );
+    return (err == ESP_OK);
+}
+
+bool playBase64PcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate) {
+    if (!b64_data || b64_len == 0) return true;
+    size_t max_out = (b64_len * 3) / 4 + 4;
+    uint8_t* decoded = (uint8_t*)(psramFound() ? ps_malloc(max_out) : malloc(max_out));
+    if (!decoded) return false;
+
+    size_t out_len = 0;
+    int rc = mbedtls_base64_decode(decoded, max_out, &out_len, (const unsigned char*)b64_data, b64_len);
+    bool ok = false;
+    if (rc == 0 && out_len >= 2) {
+        ok = playPcmChunk(reinterpret_cast<const int16_t*>(decoded), out_len / sizeof(int16_t), sample_rate);
+    }
+    free(decoded);
+    return ok;
+}
+
+void playChime(const char* kind) {
+    const uint32_t sr = 24000;
+    const size_t n = sr / 12; // 83 ms per note
+    int16_t buf[2000];
+    float f1 = 880.0f, f2 = 1320.0f;
+    if (strcmp(kind, "ptt_stop") == 0) { f1 = 1320.0f; f2 = 880.0f; }
+    else if (strcmp(kind, "error") == 0) { f1 = 330.0f; f2 = 220.0f; }
+
+    for (float freq : {f1, f2}) {
+        for (size_t i = 0; i < n; ++i) {
+            float env = 1.0f - ((float)i / (float)n);
+            buf[i] = (int16_t)(sinf(2.0f * 3.14159265f * freq * ((float)i / sr)) * 4800.0f * env);
+        }
+        playPcmChunk(buf, n, sr);
+    }
+    muteSpeaker();
+}
+
+void muteSpeaker() {
+    i2s_zero_dma_buffer(PORT_I2S_TX);
+    i2s_stop(PORT_I2S_TX);
+}
+
+} // namespace gotchi_audio
