@@ -48,6 +48,10 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [x] **T3.3 — Discord Voice / Headphone Audio Routing Mode** (`Zero`, `Amos`)
   - [x] Support `audio_out_mode: "speaker" | "discord_voice" | "ble_phone"` so Mike and Ryan can receive voice replies straight in AirPods/Pixel Buds when desired (F8 / Issue #19).
   - [x] NVS persistence, JSON-RPC validation, multipart metadata inclusion, and synchronized muted on-screen `SPEAKING` sprite animation.
+- [x] **T3.4 — Go Live Bidirectional Streaming Client & Gateway Relay** (`Zero`)
+  - [x] Implement `firmware/include/live_client.h` and `firmware/src/live_client.cpp` streaming 16 kHz uplink / 24 kHz downlink with `live_mode` off by default (F19, F21 / Issue #20).
+  - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst injection, BTN_TOP single-press exit, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
+  - [x] Implement `backend/live_gateway.py` with pluggable upstream provider adapter, session auth, and unit tests (`tests/test_live_gateway.py`).
 
 ---
 
