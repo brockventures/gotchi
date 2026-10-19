@@ -36,6 +36,7 @@ struct LiveSessionConfig {
     uint32_t vad_rms_lsb = 150;
     uint32_t cam_long_press_ms = 700;
     bool enabled = false;
+    bool live_barge_in = false;
 };
 
 struct CapturedFrameView {

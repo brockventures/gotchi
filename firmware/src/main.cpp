@@ -60,6 +60,7 @@ struct GotchiConfig {
     uint32_t snap_window_ms = 3000;   // 3.0s debounce window to attach snapshot to next voice prompt
     uint32_t cam_long_press_ms = 700; // Holding BTN_BOT >= 700ms triggers 5-photo burst over 3s (F20)
     bool     live_mode = false;       // F19: Go Live mode off by default (configurable via set_config)
+    bool     live_barge_in = false;   // T6.1: Go Live full-duplex AEC + speech barge-in off by default until bench delay calibration
     uint32_t live_silence_ms = 15000; // F19: 15s silence ends Go Live session
     String default_image_prompt = "Describe what you see in this snapshot briefly.";
 } cfg;
@@ -168,6 +169,7 @@ void loadConfig() {
     cfg.snap_window_ms       = prefs.getUInt("snap_win_ms", cfg.snap_window_ms);
     cfg.cam_long_press_ms    = prefs.getUInt("cam_long_ms", cfg.cam_long_press_ms);
     cfg.live_mode            = prefs.getBool("live_mode", cfg.live_mode);
+    cfg.live_barge_in        = prefs.getBool("live_barge_in", cfg.live_barge_in);
     cfg.live_silence_ms      = prefs.getUInt("live_sil_ms", cfg.live_silence_ms);
     cfg.default_image_prompt = prefs.getString("img_prompt", cfg.default_image_prompt);
     prefs.end();
@@ -199,6 +201,7 @@ void saveConfig() {
     prefs.putUInt("snap_win_ms", cfg.snap_window_ms);
     prefs.putUInt("cam_long_ms", cfg.cam_long_press_ms);
     prefs.putBool("live_mode", cfg.live_mode);
+    prefs.putBool("live_barge_in", cfg.live_barge_in);
     prefs.putUInt("live_sil_ms", cfg.live_silence_ms);
     prefs.putString("img_prompt", cfg.default_image_prompt);
     prefs.end();
@@ -241,6 +244,7 @@ String handleJsonRpc(const String& jsonLine) {
         res["snap_window_ms"] = cfg.snap_window_ms;
         res["cam_long_press_ms"] = cfg.cam_long_press_ms;
         res["live_mode"] = cfg.live_mode;
+        res["live_barge_in"] = cfg.live_barge_in;
         res["live_silence_ms"] = cfg.live_silence_ms;
         res["default_image_prompt"] = cfg.default_image_prompt;
         res["usb_host_connected"] = isUsbDataHostConnected();
@@ -298,6 +302,7 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["snap_window_ms"].is<uint32_t>()) cfg.snap_window_ms = req["snap_window_ms"].as<uint32_t>();
         if (req["cam_long_press_ms"].is<uint32_t>()) cfg.cam_long_press_ms = req["cam_long_press_ms"].as<uint32_t>();
         if (req["live_mode"].is<bool>()) cfg.live_mode = req["live_mode"].as<bool>();
+        if (req["live_barge_in"].is<bool>()) cfg.live_barge_in = req["live_barge_in"].as<bool>();
         if (req["live_silence_ms"].is<uint32_t>()) cfg.live_silence_ms = req["live_silence_ms"].as<uint32_t>();
         if (req["default_image_prompt"].is<const char*>()) {
             cfg.default_image_prompt = req["default_image_prompt"].as<String>();
@@ -476,6 +481,7 @@ static void runLiveSession() {
     lcfg.vad_rms_lsb = cfg.vad_rms_lsb;
     lcfg.cam_long_press_ms = cfg.cam_long_press_ms;
     lcfg.enabled = cfg.live_mode;
+    lcfg.live_barge_in = cfg.live_barge_in;
 
     gotchi_live::runSession(
         lcfg,
