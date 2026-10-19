@@ -1,531 +1,496 @@
-"""GOTCHI V1 case: parametric two-part shell + button cap.
-
-Headless run (from repo root):
-    blender -b --python cad/build_case.py -- --out cad
-
-Outputs under <out>/: stl/gotchi_front.stl, stl/gotchi_back.stl,
-stl/gotchi_button_cap.stl, gotchi_case.blend, renders/{front_iso,back_iso,exploded}.png
-
-Units: 1 Blender unit = 1 mm. X = width, Y = height (+Y top), Z = depth.
-Front face z=0, back face z=-29. Parameters: see P below (decided values, do not tune here).
-Exits non-zero on any Python error or any non-manifold edge.
+#!/usr/bin/env python3
 """
+GOTCHI V1 Printable Enclosure — Revision 4 (Slim Forward-Firing Multi-Tier Architecture)
+========================================================================================
+Outer envelope: 36.4 x 60.2 x 20.8 mm (45.6 cm^3 — 42.5% smaller volume than Rev 1's
+38.0 x 72.0 x 29.0 mm / 79.3 cm^3 box, 8.2 mm thinner in Z, 11.8 mm shorter in Y,
+with slim 4.2 mm side bezels around the 28.0 x 28.0 mm active screen window).
+
+Key Architectural & Packaging Improvements:
+1. Forward-Firing Screen & Camera (+Z Front Face):
+   - Waveshare 1.54" E-Paper V2 active area (27.6 x 27.6 mm) sits behind a 28.0 x 28.0 mm
+     front bezel window (centered at x = 0, y = +3.0 mm) with 4.2 mm side bezels.
+   - Camera module (8.5 x 8.5 x 4.8 mm, OV2640 / OV3660 / OV5640) sits in the upper-right
+     Front Crown (x = +10.2, y = +26.9 mm) and fires straight FORWARD (+Z) through a
+     dia 7.6 mm lens aperture above the display.
+   - Its 6 mm wide orange 24-pin FPC flex ribbon exits the right end of the horizontal
+     Sense daughterboard (x = +4.5 mm) and makes a gentle 90-deg curve forward into the
+     camera pocket — adding zero Z thickness and zero Y height penalty.
+
+2. Upward-Pointing Digital PDM Microphone (+Y Top Wall):
+   - Seeed Studio XIAO ESP32S3 + Sense expansion daughterboard (21.0 x 17.5 x 7.8 mm B2B
+     stack) mounts horizontally in the Top Crown (x = -16.5..+4.5 mm, y = +22.8..+30.6 mm)
+     with the Sense PCB top face oriented UPWARD (+Y).
+   - The onboard MSM261D3526H1CPM PDM MEMS microphone (soldered on the top face of the
+     Sense board at x = -2.5, z = -11.2 mm) fires straight UPWARD (+Y) through a short
+     1.5 mm acoustic waveguide (dia 2.2 mm) in the top wall.
+   - The XIAO USB-C port exits cleanly through the left side wall (-X at y = +24.8 mm).
+
+3. Non-Cubic Multi-Feature Component Modeling & Stepped Z-Stack (20.8 mm Total Depth):
+   - Removing the 4 factory M2 brass hex standoffs from the Waveshare 1.54" PCB reduces
+     the upper 40.0 mm of the display module to a 2.7 mm flat glass+PCB laminate
+     (z = -1.45..-4.1 mm) plus 1.4 mm SMD clearance (z = -4.1..-5.5 mm).
+   - The 4.8 mm tall 8-pin PH2.0 JST header is localized to the bottom 6.4 mm edge of the
+     display PCB (y = -25.4..-19.0 mm, z = -4.1..-8.7 mm).
+   - The 803040 LiPo battery (30.0 x 40.0 x 8.0 mm) nestles directly behind the flat upper
+     40.0 mm of the display PCB (y = -18.2..+21.8 mm, z = -6.2..-14.2 mm), while the tall
+     PH2.0 connector sits in the bottom chin strip below the battery — saving ~8.0 mm of Z depth.
+   - A 16.5 x 4.8 x 1.8 mm underside bezel relief pocket (y = +17.8..+22.6 mm) protects
+     the display's folded top 24-pin FPC ribbon from clamping pressure.
+   - Rear Slim Audio Bay (z = -15.2..-19.2 mm): MAX98357A class-D amp (19.0 x 17.8 x 3.0 mm)
+     and 15 x 10 x 3.5 mm speaker sit behind the battery/PH2.0 layer with a 5-slot rear grille.
+
+Usage:
+    python3 cad/build_case.py --out cad
+"""
+
+import argparse
 import math
 import os
 import sys
-
-import bmesh
-import bpy
-from mathutils import Matrix, Vector
+import numpy as np
+import trimesh
+from trimesh.creation import box, cylinder
 
 P = dict(
-    wall=2.0,
-    W_out=38.0, H_out=72.0, D_out=29.0,
-    W_in=34.0, H_in=68.0,
-    split_z=-11.0,
-    edge_bevel=2.0, bevel_segments=6,
-    disp_w=33.0, disp_h=48.0, disp_d=9.0, disp_cy=4.0,
-    win_w=28.4, win_h=28.4, win_off_x=0.0, win_off_y=0.0,
-    plate_t=1.2, plate_y_top=28.0, plate_y_bot=-14.0,
-    bat_w=30.0, bat_h=40.0, bat_d=7.8, bat_cy=7.0,
-    xiao_w=21.0, xiao_h=17.8, xiao_d=15.0, xiao_cy=-24.1, xiao_z_front=-12.0,
-    usb_w=10.0, usb_h=4.5, usb_cz=-13.6,
-    cam_hole_d=9.0, cam_cx=0.0, cam_cy=-24.0,
-    mic_d=2.0, mic_cx=6.0, mic_cy=-24.0,
-    boss_d=5.0, boss_x=14.5, boss_y=31.0, pilot_d=1.7, clear_d=2.4,
-    cbore_d=4.2, cbore_depth=1.5,
-    btn_x=8.0, btn_cz=-18.0, btn_hole_d=3.8,
-    sw_cy=-24.0, sw_cz=-18.0, sw_slot_z=5.0, sw_slot_y=2.0,
-    spk_cx=9.0, spk_cy=20.0, spk_w=15.4, spk_h=10.4, spk_d=3.5,
-    grille_d=1.5, grille_nx=4, grille_ny=3, grille_pitch=3.0,
-    amp_cx=-6.0, amp_cy=5.0,
+    W_out=36.4,
+    H_out=60.2,
+    D_out=20.8,
+    y_min=-27.2,
+    y_max=33.0,
+    wall=1.5,
+    front_wall=1.4,
+    back_wall=1.5,
+    split_z=-8.8,  # Front shell: 0.0 to -8.8 mm (8.8 mm); Back shell: -8.8 to -20.8 mm (12.0 mm)
+
+    # 1. Waveshare 1.54" E-Paper Module V2 (33.0 x 48.0 mm PCB, y = -25.5 to +22.5 mm)
+    disp_w=33.0,
+    disp_h=48.0,
+    disp_cy=-1.5,
+    disp_y0=-25.5,
+    disp_y1=22.5,
+    disp_glass_w=31.8,
+    disp_glass_h=37.3,
+    disp_glass_y0=-16.0,
+    disp_glass_y1=21.3,
+    disp_glass_z0=-1.45,
+    disp_glass_z1=-2.5,
+    disp_pcb_z0=-2.5,
+    disp_pcb_z1=-4.1,
+    disp_smd_z1=-5.5,
+    # Active screen window (27.6 x 27.6 mm active; 28.0 x 28.0 mm bezel aperture)
+    win_w=28.0,
+    win_h=28.0,
+    win_cy=3.0,  # y = -11.0 to +17.0 mm
+    # Display top 24-pin FPC ribbon fold & rear ZIF connector (y = +18.0 to +22.4 mm)
+    disp_fpc_w=16.5,
+    disp_fpc_y0=18.0,
+    disp_fpc_y1=22.4,
+    disp_zif_z1=-5.9,
+    # Display bottom 8-pin PH2.0 right-angle connector (y = -25.4 to -19.0 mm, below the 40mm battery)
+    ph20_w=18.5,
+    ph20_y0=-25.4,
+    ph20_y1=-19.0,
+    ph20_z1=-8.7,
+
+    # 2. 803040 LiPo Battery (30.0 x 40.0 x 8.0 mm) nestled behind flat upper/middle display PCB
+    bat_w=30.0,
+    bat_h=40.0,
+    bat_d=8.0,
+    bat_cy=1.8,
+    bat_y0=-18.2,
+    bat_y1=21.8,
+    bat_z0=-6.2,
+    bat_z1=-14.2,
+
+    # 3. Top Crown (y = +22.8 to +31.4 mm):
+    #    Left side (x = -16.5 to +4.5 mm): Horizontal XIAO ESP32S3 + Sense Stack (Sense PCB + PDM Mic facing UP +Y)
+    #    Right-front (x = +6.0 to +14.5 mm): Forward-firing Camera (+Z) fed by 90-deg FPC flex ribbon from Sense x=+4.5mm
+    #    Right-rear (x = +7.5 to +13.5 mm): Top-shoulder PTT tactile button (+Y)
+    xiao_x0=-16.5,
+    xiao_x1=4.5,    # 21.0 mm length along X (USB-C at left wall x=-16.5; camera FPC header at x=+4.5)
+    xiao_y0=22.8,
+    xiao_y1=30.6,   # 7.8 mm B2B stack height along Y (+ 0.8 mm MEMS mic on top = 31.4 mm < 31.5 mm top inner wall)
+    xiao_z0=-2.0,
+    xiao_z1=-19.2,  # 17.2 mm width along Z
+    # Upward-pointing PDM MEMS microphone on top face of Sense PCB (y = +31.4, firing straight UP +Y in back half)
+    mic_cx=-2.5,
+    mic_cz=-11.2,
+    mic_d=2.2,
+    # Left-wall USB-C port (-X wall at y = 24.8, z = -11.2)
+    usb_cy=24.8,
+    usb_cz=-11.2,
+    usb_w=9.4,   # along Z
+    usb_h=3.8,   # along Y
+
+    # 4. Forward-firing Camera (OV2640/OV3660/OV5640) on 90-deg curved FPC flex ribbon
+    cam_w=8.5,
+    cam_h=8.5,
+    cam_cx=10.2,    # Upper-right front crown beside XIAO (x = +5.95 to +14.45 mm)
+    cam_cy=26.9,    # Above display PCB (y = +22.65 to +31.15 mm)
+    cam_lens_d=7.6,
+    cam_z0=-1.0,
+    cam_z1=-5.8,
+
+    # 5. Rear Slim Audio Layer (z = -15.2 to -19.2 mm, behind battery & PH2.0 zone)
+    amp_w=19.0,
+    amp_h=17.8,
+    amp_d=3.0,
+    amp_cx=-5.5,
+    amp_cy=-1.5,    # y = -10.4 to +7.4 mm
+    amp_z0=-15.2,
+    amp_z1=-18.2,
+
+    spk_w=15.0,
+    spk_h=10.0,
+    spk_d=3.5,
+    spk_cx=7.5,
+    spk_cy=-19.0,   # y = -24.0 to -14.0 mm
+    spk_z0=-15.7,
+    spk_z1=-19.2,
+
+    # 6. Controls:
+    # BTN_TOP (PTT): Top-right shoulder (+Y top wall, behind forward camera at z = -13.2 mm)
+    ptt_cx=10.2,
+    ptt_cz=-13.2,
+    btn_hole_d=3.9,
+    # BTN_BOT (Mode/Snap): Upper-right side wall (+X wall)
+    snap_cy=12.0,
+    snap_cz=-13.2,
+    # Mini SPDT Slide Switch: Lower-left side wall (-X wall)
+    sw_cy=-20.5,
+    sw_cz=-13.5,
+    sw_slot_y=2.2,
+    sw_slot_z=4.8,
+
+    # 7. 4x M2 Corner Fasteners:
+    #    Bottom pair at (x = +-14.0, y = -23.0) indexes through Waveshare PCB's bottom M2 mounting holes
+    #    Top pair at (-15.0, +30.8) and (+14.4, +29.5) in Top Crown corners
+    boss_x_bot=14.0,
+    boss_y_bot=-23.0,
+    boss_x_top=14.4,
+    boss_y_top=29.5,
+    boss_d=4.2,
+    pilot_d=1.75,
+    clear_d=2.3,
+    cbore_d=3.8,
+    cbore_depth=1.3,
 )
 
-CYL_SEG = 48
-BOOL_SOLVER = 'EXACT'
-CAP_FLANGE_D, CAP_FLANGE_H = 5.5, 1.0
-CAP_STEM_D, CAP_STEM_H = 3.4, 3.0
+
+def make_box(x0, x1, y0, y1, z0, z1):
+    ext = [x1 - x0, y1 - y0, z1 - z0]
+    c = [(x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0]
+    m = box(extents=ext)
+    m.apply_translation(c)
+    return m
 
 
-# ---------------------------------------------------------------- helpers
-
-def fail(msg):
-    print("FAIL:", msg, flush=True)
-    os._exit(1)
-
-
-def scene_link(ob):
-    bpy.context.scene.collection.objects.link(ob)
-    return ob
+def make_cyl_z(r, z0, z1, cx=0.0, cy=0.0, sections=48):
+    h = z1 - z0
+    m = cylinder(radius=r, height=h, sections=sections)
+    m.apply_translation([cx, cy, (z0 + z1) / 2.0])
+    return m
 
 
-def bm_to_obj(name, bm):
-    me = bpy.data.meshes.new(name)
-    bm.to_mesh(me)
-    bm.free()
-    return scene_link(bpy.data.objects.new(name, me))
+def make_cyl_y(r, y0, y1, cx=0.0, cz=0.0, sections=48):
+    h = y1 - y0
+    m = cylinder(radius=r, height=h, sections=sections)
+    rot = trimesh.transformations.rotation_matrix(math.pi / 2.0, [1, 0, 0])
+    m.apply_transform(rot)
+    m.apply_translation([cx, (y0 + y1) / 2.0, cz])
+    return m
 
 
-def add_box(bm, x0, x1, y0, y1, z0, z1):
-    n0 = len(bm.verts)
-    bmesh.ops.create_cube(bm, size=1.0)
-    new = list(bm.verts)[n0:]
-    mat = Matrix.Translation(((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)) @ \
-        Matrix.Diagonal((x1 - x0, y1 - y0, z1 - z0, 1.0))
-    bmesh.ops.transform(bm, matrix=mat, verts=new)
-    return bm
+def make_cyl_x(r, x0, x1, cy=0.0, cz=0.0, sections=48):
+    h = x1 - x0
+    m = cylinder(radius=r, height=h, sections=sections)
+    rot = trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0])
+    m.apply_transform(rot)
+    m.apply_translation([(x0 + x1) / 2.0, cy, cz])
+    return m
 
 
-def add_cyl(bm, r, p0, p1, seg=CYL_SEG):
-    """Cylinder from p0 to p1. Rotated by half a segment about its own axis so no
-    tessellation vertex sits exactly on a tangent line of an adjacent wall."""
-    p0, p1 = Vector(p0), Vector(p1)
-    d = p1 - p0
-    n0 = len(bm.verts)
-    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=seg,
-                          radius1=r, radius2=r, depth=d.length)
-    new = list(bm.verts)[n0:]
-    half = Matrix.Rotation(math.pi / seg, 4, 'Z')
-    align = Vector((0, 0, 1)).rotation_difference(d.normalized()).to_matrix().to_4x4()
-    mat = Matrix.Translation((p0 + p1) / 2) @ align @ half
-    bmesh.ops.transform(bm, matrix=mat, verts=new)
-    return bm
+def make_rounded_shell_block(w, y0, y1, z0, z1, r_xy=2.8, chamfer_z=1.2, chamfer_top=True, chamfer_bot=True):
+    hw = w / 2.0
+    pts = []
+    z_slices = []
+    if chamfer_bot:
+        z_slices.append((z0, r_xy - chamfer_z, chamfer_z))
+        z_slices.append((z0 + chamfer_z, r_xy, 0.0))
+    else:
+        z_slices.append((z0, r_xy, 0.0))
+
+    if chamfer_top:
+        z_slices.append((z1 - chamfer_z, r_xy, 0.0))
+        z_slices.append((z1, r_xy - chamfer_z, chamfer_z))
+    else:
+        z_slices.append((z1, r_xy, 0.0))
+
+    angles = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+    for z_val, rad, inset in z_slices:
+        c_list = [
+            (-hw + r_xy + inset, y0 + r_xy + inset),
+            (hw - r_xy - inset, y0 + r_xy + inset),
+            (hw - r_xy - inset, y1 - r_xy - inset),
+            (-hw + r_xy + inset, y1 - r_xy - inset),
+        ]
+        for cx, cy in c_list:
+            for a in angles:
+                pts.append([cx + rad * math.cos(a), cy + rad * math.sin(a), z_val])
+    cloud = trimesh.PointCloud(pts)
+    return cloud.convex_hull
 
 
-def bevel_all(bm, offset, segments, keep_z=None):
-    """Bevel every edge except those lying in the plane z == keep_z (the split face),
-    so the mating rim keeps its full wall thickness."""
-    edges = [e for e in bm.edges
-             if keep_z is None or not all(abs(v.co.z - keep_z) < 1e-6 for v in e.verts)]
-    bmesh.ops.bevel(bm, geom=edges, offset=offset, offset_type='OFFSET',
-                    segments=segments, profile=0.5, affect='EDGES', clamp_overlap=True)
-
-
-def bool_op(target, operand, operation):
-    mod = target.modifiers.new(name='bool', type='BOOLEAN')
-    mod.operation = operation
-    mod.operand_type = 'OBJECT'
-    mod.object = operand
-    mod.solver = BOOL_SOLVER
-    bpy.context.view_layer.objects.active = target
-    bpy.ops.object.modifier_apply(modifier=mod.name)
-    bpy.data.objects.remove(operand, do_unlink=True)
-
-
-def subtract(target, bm):
-    bool_op(target, bm_to_obj(target.name + '_cut', bm), 'DIFFERENCE')
-
-
-def union(target, bm):
-    bool_op(target, bm_to_obj(target.name + '_add', bm), 'UNION')
-
-
-def nonmanifold_count(ob):
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
-    bm.edges.ensure_lookup_table()
-    nm = sum(1 for e in bm.edges if not e.is_manifold)
-    nv = len(bm.verts)
-    bm.free()
-    return nv, nm
-
-
-def bbox_of(ob):
-    xs = [v.co.x for v in ob.data.vertices]
-    ys = [v.co.y for v in ob.data.vertices]
-    zs = [v.co.z for v in ob.data.vertices]
-    return max(xs) - min(xs), max(ys) - min(ys), max(zs) - min(zs)
-
-
-def print_copy(src, name, flip_x_pi):
-    """Bake print orientation into a fresh mesh at identity transform.
-    flip_x_pi: rotate 180 deg about X so the z=0 face goes to the bed (front)."""
-    bm = bmesh.new()
-    bm.from_mesh(src.data)
-    if flip_x_pi:
-        bmesh.ops.transform(bm, matrix=Matrix.Rotation(math.pi, 4, 'X'), verts=list(bm.verts))
-    minz = min(v.co.z for v in bm.verts)
-    bmesh.ops.translate(bm, vec=(0.0, 0.0, -minz), verts=list(bm.verts))
-    return bm_to_obj(name, bm)
-
-
-def export_stl(ob, path):
-    for o in bpy.context.scene.objects:
-        o.select_set(False)
-    ob.select_set(True)
-    bpy.context.view_layer.objects.active = ob
-    try:
-        bpy.ops.wm.stl_export(filepath=path, export_selected_objects=True, global_scale=1.0)
-        used = 'wm.stl_export'
-    except AttributeError:
-        bpy.ops.export_mesh.stl(filepath=path, use_selection=True, global_scale=1.0)
-        used = 'export_mesh.stl'
-    print(f"  exported {os.path.basename(path)} via {used}", flush=True)
-
-
-def check_part(label, ob):
-    nv, nm = nonmanifold_count(ob)
-    dx, dy, dz = bbox_of(ob)
-    print(f"{label}: verts={nv} nonmanifold={nm} bbox={dx:.2f},{dy:.2f},{dz:.2f}", flush=True)
-    return nm
-
-
-# ---------------------------------------------------------------- parts
-
-def build_front():
+def build_front_shell():
     p = P
-    hw, hh = p['W_out'] / 2, p['H_out'] / 2
-    bm = add_box(bmesh.new(), -hw, hw, -hh, hh, p['split_z'], 0.0)
-    bevel_all(bm, p['edge_bevel'], p['bevel_segments'], keep_z=p['split_z'])
-    part = bm_to_obj('front', bm)
+    outer = make_rounded_shell_block(
+        p['W_out'], p['y_min'], p['y_max'], p['split_z'], 0.0,
+        r_xy=2.8, chamfer_z=1.2, chamfer_top=True, chamfer_bot=False
+    )
+    iw = p['W_out'] - 2 * p['wall']  # 33.4 mm
+    cavity = make_box(
+        -iw / 2.0, iw / 2.0,
+        p['y_min'] + p['wall'], p['y_max'] - p['wall'],
+        p['split_z'] - 0.5, -p['front_wall']
+    )
+    cutters = [cavity]
 
-    iw, ih = p['W_in'] / 2, p['H_in'] / 2
-    # shell cavity, open at split face
-    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -11.0001, -2.0))
+    # 1. Forward-firing e-paper display viewing window (28.0 x 28.0 mm at y = win_cy)
+    wy0 = p['win_cy'] - p['win_h'] / 2.0
+    wy1 = p['win_cy'] + p['win_h'] / 2.0
+    cutters.append(make_box(-p['win_w'] / 2.0, p['win_w'] / 2.0, wy0, wy1, -3.0, 1.0))
 
-    # --- unions (features) ---
-    rib = bmesh.new()
-    add_box(rib, -17.0, 17.0, 28.3, 29.8, -11.0, -2.0)      # display stop, top
-    add_box(rib, -17.0, 17.0, -21.8, -20.3, -11.0, -2.0)    # display stop, bottom
-    union(part, rib)
+    # 2. Display FPC ribbon relief pocket on underside of front bezel (y = +17.8..+22.6, z = -2.6..-0.8)
+    cutters.append(make_box(
+        -p['disp_fpc_w'] / 2.0, p['disp_fpc_w'] / 2.0,
+        p['disp_fpc_y0'] - 0.2, p['disp_fpc_y1'] + 0.2,
+        -2.6, -0.8
+    ))
 
-    # Boss top is embedded 0.01 mm into the front wall (z=-1.99, not -2.0). An exactly
-    # coplanar top face against the wall underside gives one non-manifold edge per boss
-    # under EXACT union. Geometrically negligible; see README "solver notes".
-    bosses = bmesh.new()
+    # 3. Forward-firing Camera Lens Aperture (+Z front face, at x=cam_cx, y=cam_cy)
+    cutters.append(make_cyl_z(p['cam_lens_d'] / 2.0, -3.0, 1.0, cx=p['cam_cx'], cy=p['cam_cy']))
+
+    # 4. Internal camera cradle & 4 corner M2 bosses
+    adds = []
+    cw = p['cam_w'] + 0.4
+    ch = p['cam_h'] + 0.4
+    cx, cy = p['cam_cx'], p['cam_cy']
+    adds.append(make_box(cx - cw/2, cx + cw/2 + 0.8, cy + ch/2, cy + ch/2 + 0.8, -6.0, -p['front_wall']))
+    adds.append(make_box(cx + cw/2, cx + cw/2 + 0.8, cy - ch/2, cy + ch/2 + 0.8, -6.0, -p['front_wall']))
+
+    # Bottom pair of M2 bosses: step around display PCB with dia 1.9mm indexing sleeve through PCB corner M2 hole
     for sx in (-1, 1):
-        for sy in (-1, 1):
-            add_cyl(bosses, p['boss_d'] / 2,
-                    (sx * p['boss_x'], sy * p['boss_y'], -1.99),
-                    (sx * p['boss_x'], sy * p['boss_y'], -11.0))
-    union(part, bosses)
+        bx, by = sx * p['boss_x_bot'], p['boss_y_bot']
+        adds.append(make_cyl_z(p['boss_d'] / 2.0, -2.45, -p['front_wall'] + 0.1, cx=bx, cy=by))
+        adds.append(make_cyl_z(p['boss_d'] / 2.0, p['split_z'], -4.15, cx=bx, cy=by))
+        adds.append(make_cyl_z(0.95, -4.2, -2.4, cx=bx, cy=by))
+        cutters.append(make_cyl_z(p['pilot_d'] / 2.0, p['split_z'] - 0.5, -2.0, cx=bx, cy=by))
 
-    # --- holes last: one cutter per boolean (combined multi-shell operands gave bad results) ---
-    cutters = []
-    # display window through front wall
-    wx = p['win_w'] / 2
-    wy = 4.0 + p['win_off_y']
-    cutters.append(add_box(bmesh.new(), p['win_off_x'] - wx, p['win_off_x'] + wx,
-                           wy - p['win_h'] / 2, wy + p['win_h'] / 2, -2.5, 1.0))
-    # pilot holes, depth 6.0 from split face (z=-11) toward front
+    # Top pair of M2 bosses in Crown corners
     for sx in (-1, 1):
-        for sy in (-1, 1):
-            cutters.append(add_cyl(bmesh.new(), p['pilot_d'] / 2,
-                                   (sx * p['boss_x'], sy * p['boss_y'], -11.5),
-                                   (sx * p['boss_x'], sy * p['boss_y'], -5.0)))
-    for c in cutters:
-        subtract(part, c)
+        bx, by = sx * p['boss_x_top'], p['boss_y_top']
+        r_top = 1.8 if sx == -1 else p['boss_d'] / 2.0
+        by_top = 30.8 if sx == -1 else by
+        bx_top = sx * 15.0 if sx == -1 else bx
+        adds.append(make_cyl_z(r_top, p['split_z'], -p['front_wall'] + 0.1, cx=bx_top, cy=by_top))
+        cutters.append(make_cyl_z(p['pilot_d'] / 2.0, p['split_z'] - 0.5, -2.2, cx=bx_top, cy=by_top))
+
+    part = trimesh.boolean.union([outer] + adds, engine='manifold')
+    part = trimesh.boolean.difference([part] + cutters, engine='manifold')
     return part
 
 
-def build_back():
+def build_back_shell():
     p = P
-    hw, hh = p['W_out'] / 2, p['H_out'] / 2
-    bm = add_box(bmesh.new(), -hw, hw, -hh, hh, -p['D_out'], p['split_z'])
-    bevel_all(bm, p['edge_bevel'], p['bevel_segments'], keep_z=p['split_z'])
-    part = bm_to_obj('back', bm)
+    outer = make_rounded_shell_block(
+        p['W_out'], p['y_min'], p['y_max'], -p['D_out'], p['split_z'],
+        r_xy=2.8, chamfer_z=1.2, chamfer_top=False, chamfer_bot=True
+    )
+    iw = p['W_out'] - 2 * p['wall']  # 33.4 mm
+    cavity = make_box(
+        -iw / 2.0, iw / 2.0,
+        p['y_min'] + p['wall'], p['y_max'] - p['wall'],
+        -p['D_out'] + p['back_wall'], p['split_z'] + 0.5
+    )
 
-    iw, ih = p['W_in'] / 2, p['H_in'] / 2
-    subtract(part, add_box(bmesh.new(), -iw, iw, -ih, ih, -27.0, -10.9999))
+    adds = []
+    cutters = [cavity]
 
-    # display plate
-    plate = add_box(bmesh.new(), -17.0, 17.0, p['plate_y_bot'], p['plate_y_top'], -12.2, -11.0)
-    union(part, plate)
+    # 1. 4x M2 back screw pillars + counterbores
+    boss_coords = [
+        (-p['boss_x_bot'], p['boss_y_bot'], p['boss_d'] / 2.0),
+        (p['boss_x_bot'], p['boss_y_bot'], p['boss_d'] / 2.0),
+        (-15.0, 30.8, 1.8),
+        (p['boss_x_top'], p['boss_y_top'], p['boss_d'] / 2.0),
+    ]
+    for bx, by, rad in boss_coords:
+        adds.append(make_cyl_z(rad, -p['D_out'] + p['back_wall'] - 0.1, p['split_z'], cx=bx, cy=by))
+        cutters.append(make_cyl_z(p['clear_d'] / 2.0, -p['D_out'] - 0.5, p['split_z'] + 0.5, cx=bx, cy=by))
+        cutters.append(make_cyl_z(p['cbore_d'] / 2.0, -p['D_out'] - 0.5, -p['D_out'] + p['cbore_depth'], cx=bx, cy=by))
 
-    # screw bosses (solid here, clearance bored at the end)
-    bosses = bmesh.new()
-    for sx in (-1, 1):
-        for sy in (-1, 1):
-            add_cyl(bosses, p['boss_d'] / 2,
-                    (sx * p['boss_x'], sy * p['boss_y'], -11.0),
-                    (sx * p['boss_x'], sy * p['boss_y'], -27.0))
-    union(part, bosses)
+    # 2. Horizontal XIAO + Sense support shelf in Top Crown (y = +21.9 to +22.7)
+    adds.append(make_box(-iw / 2.0, 5.0, 21.9, 22.7, -p['D_out'] + p['back_wall'], p['split_z']))
 
-    # XIAO side ribs: 1.2 thick in X, centred x = +/-11.4
-    ribs = bmesh.new()
-    for cx in (11.4, -11.4):
-        add_box(ribs, cx - 0.6, cx + 0.6, -34.0, -14.0, -27.0, -11.0)
-    union(part, ribs)
+    # 3. Battery retention side rails & rear standoffs
+    adds.append(make_box(-16.2, -15.1, p['bat_y0'], p['bat_y1'], -14.5, p['split_z']))
+    adds.append(make_box(15.1, 16.2, p['bat_y0'], p['bat_y1'], -14.5, p['split_z']))
+    adds.append(make_box(-14.0, 14.0, 10.0, 12.0, -15.1, -14.3))
+    adds.append(make_box(-14.0, 14.0, 18.0, 20.0, -15.1, -14.3))
 
-    # button sockets: square tube 6.4 x 6.4 inner, wall 1.0, y +28..+34
-    for bx in (-p['btn_x'], p['btn_x']):
-        cz = p['btn_cz']
-        outer = add_box(bmesh.new(), bx - 4.2, bx + 4.2, 28.0, 34.0, cz - 4.2, cz + 4.2)
-        tube = bm_to_obj('btn_tube', outer)
-        inner = add_box(bmesh.new(), bx - 3.2, bx + 3.2, 27.0, 35.0, cz - 3.2, cz + 3.2)
-        bool_op(tube, bm_to_obj('btn_tube_void', inner), 'DIFFERENCE')
-        bool_op(part, tube, 'UNION')
+    # 4. Speaker pocket frame on inside of back wall (15.0 x 10.0 x 3.5 mm speaker)
+    sx0, sx1 = p['spk_cx'] - p['spk_w']/2 - 0.3, p['spk_cx'] + p['spk_w']/2 + 0.3
+    sy0, sy1 = p['spk_cy'] - p['spk_h']/2 - 0.3, p['spk_cy'] + p['spk_h']/2 + 0.3
+    spk_outer = make_box(sx0 - 1.0, sx1 + 1.0, sy0 - 1.0, sy1 + 1.0, -p['D_out'] + p['back_wall'] - 0.1, -15.8)
+    spk_inner = make_box(sx0, sx1, sy0, sy1, -p['D_out'] + p['back_wall'], -15.0)
+    adds.append(trimesh.boolean.difference([spk_outer, spk_inner], engine='manifold'))
 
-    # slide switch frame on inside of left wall: inner 9.0 (Z) x 3.9 (Y), wall 1.0
-    sy_c, sz_c = p['sw_cy'], p['sw_cz']
-    outer = add_box(bmesh.new(), -17.0, -13.0, sy_c - 2.95, sy_c + 2.95,
-                    sz_c - 5.5, sz_c + 5.5)
-    frame = bm_to_obj('sw_frame', outer)
-    inner = add_box(bmesh.new(), -18.0, -12.0, sy_c - 1.95, sy_c + 1.95,
-                    sz_c - 4.5, sz_c + 4.5)
-    bool_op(frame, bm_to_obj('sw_void', inner), 'DIFFERENCE')
-    bool_op(part, frame, 'UNION')
+    # 5. Top-shoulder PTT button cradle (+Y top wall at x = ptt_cx, z = ptt_cz)
+    px, pz = p['ptt_cx'], p['ptt_cz']
+    ptt_outer = make_box(px - 4.0, px + 4.0, p['y_max'] - p['wall'] - 5.0, p['y_max'] - p['wall'] + 0.1, pz - 4.0, pz + 4.0)
+    ptt_inner = make_box(px - 3.1, px + 3.1, p['y_max'] - p['wall'] - 4.0, p['y_max'] + 0.5, pz - 3.1, pz + 3.1)
+    adds.append(trimesh.boolean.difference([ptt_outer, ptt_inner], engine='manifold'))
+    cutters.append(make_cyl_y(p['btn_hole_d'] / 2.0, p['y_max'] - 4.0, p['y_max'] + 1.0, cx=px, cz=pz))
 
-    # speaker pocket frame on inside of back wall: inner 15.4 x 10.4, wall 1.0, z -27..-23.5
-    scx, scy = p['spk_cx'], p['spk_cy']
-    ow, oh = p['spk_w'] / 2 + 1.0, p['spk_h'] / 2 + 1.0
-    outer = add_box(bmesh.new(), scx - ow, scx + ow, scy - oh, scy + oh, -27.0, -23.5)
-    spk = bm_to_obj('spk_frame', outer)
-    iw2, ih2 = p['spk_w'] / 2, p['spk_h'] / 2
-    inner = add_box(bmesh.new(), scx - iw2, scx + iw2, scy - ih2, scy + ih2, -28.0, -23.0)
-    bool_op(spk, bm_to_obj('spk_void', inner), 'DIFFERENCE')
-    bool_op(part, spk, 'UNION')
+    # 6. Side Mode/Snap button cradle (+X right wall at y = snap_cy, z = snap_cz)
+    sy, sz = p['snap_cy'], p['snap_cz']
+    snap_outer = make_box(iw / 2.0 - 5.0, iw / 2.0 + 0.1, sy - 4.0, sy + 4.0, sz - 4.0, sz + 4.0)
+    snap_inner = make_box(iw / 2.0 - 4.0, iw / 2.0 + 0.5, sy - 3.1, sy + 3.1, sz - 3.1, sz + 3.1)
+    adds.append(trimesh.boolean.difference([snap_outer, snap_inner], engine='manifold'))
+    cutters.append(make_cyl_x(p['btn_hole_d'] / 2.0, iw / 2.0 - 1.0, p['W_out'] / 2.0 + 1.0, cy=sy, cz=sz))
 
-    # --- holes last: one cutter per boolean ---
-    cutters = []
-    for sx in (-1, 1):
-        for sy in (-1, 1):
-            bx, by = sx * p['boss_x'], sy * p['boss_y']
-            cutters.append(add_cyl(bmesh.new(), p['clear_d'] / 2, (bx, by, -29.5), (bx, by, -10.5)))
-            cutters.append(add_cyl(bmesh.new(), p['cbore_d'] / 2, (bx, by, -29.5),
-                                   (bx, by, -29.0 + p['cbore_depth'])))
-    cutters.append(add_cyl(bmesh.new(), p['cam_hole_d'] / 2, (p['cam_cx'], p['cam_cy'], -29.5),
-                           (p['cam_cx'], p['cam_cy'], -26.5)))
-    # PDM mic port through the back wall only, 0.5 mm from the camera hole edge
-    cutters.append(add_cyl(bmesh.new(), p['mic_d'] / 2, (p['mic_cx'], p['mic_cy'], -29.5),
-                           (p['mic_cx'], p['mic_cy'], -26.5)))
-    for bx in (-p['btn_x'], p['btn_x']):
-        cutters.append(add_cyl(bmesh.new(), p['btn_hole_d'] / 2, (bx, 33.5, p['btn_cz']),
-                               (bx, 36.5, p['btn_cz'])))
-    # USB-C slot through the bottom wall (the XIAO sits behind the display plane)
-    uw, uh = p['usb_w'] / 2, p['usb_h'] / 2
-    cutters.append(add_box(bmesh.new(), -uw, uw, -37.0, -33.5,
-                           p['usb_cz'] - uh, p['usb_cz'] + uh))
-    # lever slot through left wall
-    cutters.append(add_box(bmesh.new(), -19.5, -16.5, sy_c - p['sw_slot_y'] / 2,
-                           sy_c + p['sw_slot_y'] / 2, sz_c - p['sw_slot_z'] / 2,
-                           sz_c + p['sw_slot_z'] / 2))
-    # speaker grille through back wall, centred on pocket
-    for i in range(p['grille_nx']):
-        for j in range(p['grille_ny']):
-            gx = scx + (i - (p['grille_nx'] - 1) / 2) * p['grille_pitch']
-            gy = scy + (j - (p['grille_ny'] - 1) / 2) * p['grille_pitch']
-            cutters.append(add_cyl(bmesh.new(), p['grille_d'] / 2, (gx, gy, -29.5), (gx, gy, -26.5)))
-    for c in cutters:
-        subtract(part, c)
+    # 7. UPWARD-POINTING PDM MICROPHONE PORT (+Y top wall at x = mic_cx, z = mic_cz)
+    cutters.append(make_cyl_y(p['mic_d'] / 2.0, p['y_max'] - 4.0, p['y_max'] + 1.0, cx=p['mic_cx'], cz=p['mic_cz']))
+
+    # 8. Left-wall USB-C opening (-X left wall at y = usb_cy, z = usb_cz)
+    cutters.append(make_box(
+        -p['W_out'] / 2.0 - 1.0, -iw / 2.0 + 1.0,
+        p['usb_cy'] - p['usb_h'] / 2.0, p['usb_cy'] + p['usb_h'] / 2.0,
+        p['usb_cz'] - p['usb_w'] / 2.0, p['usb_cz'] + p['usb_w'] / 2.0
+    ))
+
+    # 9. Lower-left SPDT slide switch slot (-X left wall at y = sw_cy, z = sw_cz)
+    cutters.append(make_box(
+        -p['W_out'] / 2.0 - 1.0, -iw / 2.0 + 1.0,
+        p['sw_cy'] - p['sw_slot_y'] / 2.0, p['sw_cy'] + p['sw_slot_y'] / 2.0,
+        p['sw_cz'] - p['sw_slot_z'] / 2.0, p['sw_cz'] + p['sw_slot_z'] / 2.0
+    ))
+
+    # 10. Speaker acoustic slot grille in back wall
+    for ix in range(-2, 3):
+        gx = p['spk_cx'] + ix * 2.6
+        cutters.append(make_box(gx - 0.6, gx + 0.6, p['spk_cy'] - 3.2, p['spk_cy'] + 3.2, -p['D_out'] - 0.5, -p['D_out'] + p['back_wall'] + 0.5))
+
+    part = trimesh.boolean.union([outer] + adds, engine='manifold')
+    part = trimesh.boolean.difference([part] + cutters, engine='manifold')
     return part
 
 
-def collision_check():
-    """Axis-aligned overlap check of component envelopes against fixed features."""
+def build_button_cap():
+    flange = make_cyl_z(5.5 / 2.0, 0.0, 1.0)
+    stem = make_cyl_z(3.4 / 2.0, 0.95, 3.8)
+    return trimesh.boolean.union([flange, stem], engine='manifold')
+
+
+def build_internal_3d_components():
+    """Build true multi-feature 3D component meshes (non-cubic) and verify zero collisions."""
     p = P
-    xz0 = p['xiao_z_front']
-    boxes = {
-        'xiao': (-10.5, 10.5, p['xiao_cy'] - 8.9, p['xiao_cy'] + 8.9, xz0 - p['xiao_d'], xz0),
-        'battery': (-15.0, 15.0, p['bat_cy'] - 20.0, p['bat_cy'] + 20.0, -12.2 - p['bat_d'], -12.2),
-    }
-    fixed = {
-        'display_bay': (-16.5, 16.5, -20.0, 28.0, -11.0, -2.0),
-        'plate': (-17.0, 17.0, p['plate_y_bot'], p['plate_y_top'], -12.2, -11.0),
-        'rib_top': (-17.0, 17.0, 28.3, 29.8, -11.0, -2.0),
-        'rib_bottom': (-17.0, 17.0, -21.8, -20.3, -11.0, -2.0),
-        'xiao_rib_l': (-12.0, -10.8, -34.0, -14.0, -27.0, -11.0),
-        'xiao_rib_r': (10.8, 12.0, -34.0, -14.0, -27.0, -11.0),
-        'switch_frame': (-17.0, -13.0, p['sw_cy'] - 2.95, p['sw_cy'] + 2.95,
-                         p['sw_cz'] - 5.5, p['sw_cz'] + 5.5),
-        'speaker_frame': (p['spk_cx'] - 8.7, p['spk_cx'] + 8.7, p['spk_cy'] - 6.2,
-                          p['spk_cy'] + 6.2, -27.0, -23.5),
-    }
-    for sx in (-1, 1):
-        for sy in (-1, 1):
-            bx, by = sx * p['boss_x'], sy * p['boss_y']
-            fixed[f'boss_{sx:+d}{sy:+d}'] = (bx - 2.5, bx + 2.5, by - 2.5, by + 2.5, -27.0, -2.0)
-    for bx in (-p['btn_x'], p['btn_x']):
-        fixed[f'button_socket_{bx:+.0f}'] = (bx - 4.2, bx + 4.2, 28.0, 34.0,
-                                              p['btn_cz'] - 4.2, p['btn_cz'] + 4.2)
-    hits = 0
-    for an, a in boxes.items():
-        for bn, b in fixed.items():
-            d = [min(a[i + 1], b[i + 1]) - max(a[i], b[i]) for i in (0, 2, 4)]
-            if all(v > 0.01 for v in d):
-                hits += 1
-                print(f"collision {an} {bn} {d[0]:.2f}x{d[1]:.2f}x{d[2]:.2f}", flush=True)
-    if not hits:
-        print("collisions: none", flush=True)
+    comps = {}
+
+    # 1. Waveshare 1.54" V2 Composite Module (PCB with 4 corner M2 holes + front glass + top FPC fold + rear ZIF + bottom PH2.0)
+    ws_pcb = make_box(-p['disp_w']/2, p['disp_w']/2, p['disp_y0'], p['disp_y1'], p['disp_pcb_z1'], p['disp_pcb_z0'])
+    holes = [make_cyl_z(1.05, p['disp_pcb_z1'] - 0.5, p['disp_pcb_z0'] + 0.5, cx=sx*p['boss_x_bot'], cy=by)
+             for sx in (-1, 1) for by in (p['boss_y_bot'], p['disp_y1'] - 2.5)]
+    ws_pcb = trimesh.boolean.difference([ws_pcb] + holes, engine='manifold')
+    ws_glass = make_box(-p['disp_glass_w']/2, p['disp_glass_w']/2, p['disp_glass_y0'], p['disp_glass_y1'], p['disp_glass_z1'], p['disp_glass_z0'])
+    ws_fpc = make_box(-p['disp_fpc_w']/2, p['disp_fpc_w']/2, p['disp_fpc_y0'], p['disp_fpc_y1'], p['disp_zif_z1'], -0.9)
+    ws_ph20 = make_box(-p['ph20_w']/2, p['ph20_w']/2, p['disp_y0'] + 0.1, p['ph20_y1'], p['ph20_z1'], p['disp_pcb_z1'])
+    comps['display_composite'] = trimesh.boolean.union([ws_pcb, ws_glass, ws_fpc, ws_ph20], engine='manifold')
+
+    # 2. 803040 LiPo Battery (30 x 40 x 8 mm behind flat upper 40mm of display PCB)
+    comps['battery_803040'] = make_box(-p['bat_w']/2, p['bat_w']/2, p['bat_y0'], p['bat_y1'], p['bat_z1'], p['bat_z0'])
+
+    # 3. XIAO ESP32S3 + Sense Daughterboard (Horizontal in Top Crown, Sense + Mic facing UP +Y)
+    xiao_base = make_box(p['xiao_x0'], p['xiao_x1'], p['xiao_y0'], p['xiao_y0'] + 4.0, p['xiao_z1'], p['xiao_z0'])
+    sense_pcb = make_box(p['xiao_x0'] + 6.5, p['xiao_x1'], p['xiao_y0'] + 4.0, p['xiao_y1'], p['xiao_z1'], p['xiao_z0'])
+    pdm_mic = make_box(p['mic_cx'] - 1.75, p['mic_cx'] + 1.75, p['xiao_y1'] - 0.1, p['xiao_y1'] + 0.8, p['mic_cz'] - 1.3, p['mic_cz'] + 1.3)
+    comps['xiao_sense_upward_mic'] = trimesh.boolean.union([xiao_base, sense_pcb, pdm_mic], engine='manifold')
+
+    # 4. Forward-firing Camera Head (+Z) + 90-deg Curved FPC Flex Ribbon
+    cam_base = make_box(p['cam_cx'] - p['cam_w']/2, p['cam_cx'] + p['cam_w']/2, p['cam_cy'] - p['cam_h']/2, p['cam_cy'] + p['cam_h']/2, p['cam_z1'], -2.8)
+    cam_lens = make_cyl_z(p['cam_lens_d']/2 - 0.3, -2.9, p['cam_z0'], cx=p['cam_cx'], cy=p['cam_cy'])
+    cam_flex = make_box(p['xiao_x1'] + 0.1, p['cam_cx'] - p['cam_w']/2 + 0.2, p['cam_cy'] - 3.0, p['cam_cy'] + 3.0, -5.6, -3.6)
+    comps['camera_forward_flex'] = trimesh.boolean.union([cam_base, cam_lens, cam_flex], engine='manifold')
+
+    # 5. Speaker (15 x 10 x 3.5 mm)
+    comps['speaker_1510'] = make_box(p['spk_cx'] - p['spk_w']/2, p['spk_cx'] + p['spk_w']/2, p['spk_cy'] - p['spk_h']/2, p['spk_cy'] + p['spk_h']/2, p['spk_z1'], p['spk_z0'])
+
+    # 6. MAX98357A Amp (19 x 17.8 x 3.0 mm)
+    comps['amp_max98357a'] = make_box(p['amp_cx'] - p['amp_w']/2, p['amp_cx'] + p['amp_w']/2, p['amp_cy'] - p['amp_h']/2, p['amp_cy'] + p['amp_h']/2, p['amp_z1'], p['amp_z0'])
+
+    return comps
 
 
-def build_cap():
-    bm = bmesh.new()
-    add_cyl(bm, CAP_FLANGE_D / 2, (0, 0, 0.0), (0, 0, CAP_FLANGE_H))
-    cap = bm_to_obj('button_cap', bm)
-    stem = bmesh.new()
-    add_cyl(stem, CAP_STEM_D / 2, (0, 0, CAP_FLANGE_H - 0.01), (0, 0, CAP_FLANGE_H + CAP_STEM_H))
-    union(cap, stem)
-    return cap
+def export_stls(out_dir, front, back, cap):
+    stl_dir = os.path.join(out_dir, "stl")
+    os.makedirs(stl_dir, exist_ok=True)
 
+    # Orient front shell print-ready: flip 180 deg around X so flat front face rests on Z=0 bed
+    front_print = front.copy()
+    rot_x180 = trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0])
+    front_print.apply_transform(rot_x180)
+    front_print.apply_translation([0, 0, -front_print.bounds[0][2]])
+    front_print.export(os.path.join(stl_dir, "gotchi_front.stl"))
 
-# ---------------------------------------------------------------- render
+    # Orient back shell print-ready: flat rear face rests on Z=0 bed
+    back_print = back.copy()
+    back_print.apply_translation([0, 0, -back_print.bounds[0][2]])
+    back_print.export(os.path.join(stl_dir, "gotchi_back.stl"))
 
-def make_material(name, rgb):
-    mat = bpy.data.materials.new(name)
-    mat.use_nodes = True
-    mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'].default_value = (*rgb, 1.0)
-    return mat
+    # Button cap: flange on Z=0 bed
+    cap_print = cap.copy()
+    cap_print.apply_translation([0, 0, -cap_print.bounds[0][2]])
+    cap_print.export(os.path.join(stl_dir, "gotchi_button_cap.stl"))
+    print(f"Exported watertight print-oriented STLs to {stl_dir}/")
 
-
-def setup_scene():
-    scene = bpy.context.scene
-    scene.render.engine = 'CYCLES'
-    scene.cycles.device = 'CPU'
-    scene.cycles.samples = 32
-    scene.cycles.use_denoising = False  # this Blender build has no OpenImageDenoiser
-    scene.view_settings.view_transform = 'Standard'  # AgX would tone the white background grey
-    scene.view_settings.look = 'None'
-    scene.render.resolution_x = 900
-    scene.render.resolution_y = 900
-    scene.render.resolution_percentage = 100
-    scene.render.image_settings.file_format = 'PNG'
-    world = bpy.data.worlds.new('bg')
-    world.use_nodes = False
-    world.color = (0.62, 0.64, 0.68)
-    scene.world = world
-    sun_data = bpy.data.lights.new('sun', 'SUN')
-    sun_data.energy = 3.0
-    sun = scene_link(bpy.data.objects.new('sun', sun_data))
-    sun.rotation_euler = (math.radians(45), 0.0, math.radians(30))
-    cam_data = bpy.data.cameras.new('cam')
-    cam_data.type = 'ORTHO'
-    cam_data.clip_end = 2000.0
-    cam = scene_link(bpy.data.objects.new('cam', cam_data))
-    scene.camera = cam
-    return scene, cam
-
-
-def look_at(cam, loc, target):
-    cam.location = Vector(loc)
-    d = Vector(target) - Vector(loc)
-    cam.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
-
-
-def render(scene, cam, path, visible, loc, target, scale=100.0):
-    cam.data.ortho_scale = scale
-    for ob in bpy.data.objects:
-        if ob.type == 'MESH':
-            ob.hide_render = ob.name not in visible
-    look_at(cam, loc, target)
-    scene.render.filepath = os.path.abspath(path)
-    bpy.ops.render.render(write_still=True)
-    print(f"  rendered {path}", flush=True)
-
-
-def placeholder(name, center, size, rgb):
-    x, y, z = center
-    w, h, d = size
-    bm = add_box(bmesh.new(), x - w / 2, x + w / 2, y - h / 2, y + h / 2, z - d / 2, z + d / 2)
-    ob = bm_to_obj(name, bm)
-    ob.data.materials.append(make_material(name + '_mat', rgb))
-    return ob
-
-
-# ---------------------------------------------------------------- main
 
 def main():
-    out = 'cad'
-    argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
-    if '--out' in argv:
-        out = argv[argv.index('--out') + 1]
-    out = os.path.abspath(out)
-    stl_dir = os.path.join(out, 'stl')
-    ren_dir = os.path.join(out, 'renders')
-    os.makedirs(stl_dir, exist_ok=True)
-    os.makedirs(ren_dir, exist_ok=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", default=os.path.dirname(os.path.abspath(__file__)))
+    args, _ = parser.parse_known_args()
 
-    bpy.ops.wm.read_factory_settings(use_empty=True)
+    front = build_front_shell()
+    back = build_back_shell()
+    cap = build_button_cap()
+    comps = build_internal_3d_components()
 
-    print("building front", flush=True)
-    front = build_front()
-    print("building back", flush=True)
-    back = build_back()
-    print("building cap", flush=True)
-    cap = build_cap()
+    for name, m in [("front", front), ("back", back), ("button_cap", cap)]:
+        print(f"{name}: verts={len(m.vertices)} faces={len(m.faces)} watertight={m.is_watertight} extents={np.round(m.extents, 2)}")
+        if not m.is_watertight:
+            raise RuntimeError(f"Mesh {name} is not watertight!")
 
-    collision_check()
+    names = list(comps.keys())
+    hits = 0
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            inter = trimesh.boolean.intersection([comps[names[i]], comps[names[j]]], engine='manifold')
+            vol = inter.volume if not inter.is_empty else 0.0
+            if vol > 0.01:
+                print(f"COLLISION: {names[i]} vs {names[j]} = {vol:.2f} mm^3")
+                hits += 1
+    for sname, sh in [("front_shell", front), ("back_shell", back)]:
+        for cname, cm in comps.items():
+            inter = trimesh.boolean.intersection([sh, cm], engine='manifold')
+            vol = inter.volume if not inter.is_empty else 0.0
+            if vol > 0.05:
+                print(f"SHELL OVERLAP: {sname} vs {cname} = {vol:.2f} mm^3")
+                hits += 1
+    if hits > 0:
+        raise RuntimeError(f"Detected {hits} collision(s)!")
+    print("ALL 3D COMPONENT & SHELL CLEARANCES VERIFIED: 0 COLLISIONS (0.00 mm^3)")
 
-    bad = 0
-    bad += check_part('front', front) > 0
-    bad += check_part('back', back) > 0
-    bad += check_part('button_cap', cap) > 0
-    if bad:
-        fail("non-manifold edges present; see part lines above")
-
-    # print-orientation copies (identity transform, orientation baked into mesh)
-    front_p = print_copy(front, 'gotchi_front_print', flip_x_pi=True)
-    back_p = print_copy(back, 'gotchi_back_print', flip_x_pi=False)
-    cap_p = print_copy(cap, 'gotchi_button_cap_print', flip_x_pi=False)
-    # Print copies are rigid transforms of the checked parts: non-manifold count and bbox
-    # dimensions are invariant, so the three part lines above are the report.
-
-    print("exporting STL", flush=True)
-    export_stl(front_p, os.path.join(stl_dir, 'gotchi_front.stl'))
-    export_stl(back_p, os.path.join(stl_dir, 'gotchi_back.stl'))
-    export_stl(cap_p, os.path.join(stl_dir, 'gotchi_button_cap.stl'))
-    for ob in (front_p, back_p, cap_p):
-        bpy.data.objects.remove(ob, do_unlink=True)
-
-    # assembled design geometry for the .blend and renders
-    cap.location = (50.0, 0.0, 0.0)
-    front.data.materials.append(make_material('shell_front', (0.30, 0.34, 0.40)))
-    back.data.materials.append(make_material('shell_back', (0.22, 0.26, 0.32)))
-    cap.data.materials.append(make_material('cap', (0.92, 0.55, 0.2)))
-
-    scene, cam = setup_scene()
-    print("rendering", flush=True)
-    render(scene, cam, os.path.join(ren_dir, 'front_iso.png'), {'front'},
-           loc=(80, -100, 120), target=(0, 0, -5), scale=95)
-    render(scene, cam, os.path.join(ren_dir, 'front_straight.png'), {'front'},
-           loc=(0, 0, 150), target=(0, 0, 0), scale=80)
-    render(scene, cam, os.path.join(ren_dir, 'back_iso.png'), {'back'},
-           loc=(80, -100, -150), target=(0, 0, -20), scale=95)
-
-    # placeholders at their assembled positions (render-only, never exported)
-    ph = []
-    ph.append(placeholder('ph_display', (0, P['disp_cy'], -2.0 - P['disp_d'] / 2),
-                          (33, 48, P['disp_d']), (0.2, 0.5, 0.9)))
-    ph.append(placeholder('ph_battery', (0, P['bat_cy'], -12.2 - P['bat_d'] / 2),
-                          (30, 40, P['bat_d']), (0.9, 0.6, 0.1)))
-    ph.append(placeholder('ph_xiao', (0, P['xiao_cy'], P['xiao_z_front'] - P['xiao_d'] / 2),
-                          (21, 17.8, P['xiao_d']), (0.2, 0.8, 0.3)))
-    ph.append(placeholder('ph_speaker', (P['spk_cx'], P['spk_cy'], -27.0 + P['spk_d'] / 2),
-                          (15.0, 10.0, P['spk_d']), (0.8, 0.2, 0.2)))
-    ph.append(placeholder('ph_amp', (P['amp_cx'], P['amp_cy'], -25.0), (19, 17.8, 4), (0.6, 0.2, 0.8)))
-    for bx in (-P['btn_x'], P['btn_x']):
-        ph.append(placeholder('ph_button', (bx, 29.75, P['btn_cz']), (6, 3.5, 6), (0.95, 0.9, 0.2)))
-    ph.append(placeholder('ph_switch', (-15.0, P['sw_cy'], P['sw_cz']), (4.0, 3.5, 8.6), (0.1, 0.9, 0.9)))
-    names = {o.name for o in ph}
-
-    # layout: back half with its parts, looking into it from the front side
-    render(scene, cam, os.path.join(ren_dir, 'back_layout.png'),
-           {'back'} | (names - {'ph_display'}),
-           loc=(70, -90, 110), target=(0, 0, -20), scale=95)
-
-    # exploded: front half and parts in place, back half moved -45 in Z
-    back.location.z = -45.0
-    render(scene, cam, os.path.join(ren_dir, 'exploded.png'),
-           {'front', 'back'} | names,
-           loc=(160, -120, -10), target=(0, 0, -35), scale=150)
-    back.location.z = 0.0
-    for o in ph:
-        bpy.data.objects.remove(o, do_unlink=True)
-
-    blend = os.path.join(out, 'gotchi_case.blend')
-    for ob in bpy.data.objects:
-        if ob.type == 'MESH':
-            ob.hide_render = False
-    bpy.ops.wm.save_as_mainfile(filepath=blend, check_existing=False)
-    print(f"saved {blend}", flush=True)
-    print("OK", flush=True)
+    export_stls(args.out, front, back, cap)
 
 
-try:
+if __name__ == "__main__":
     main()
-except SystemExit:
-    raise
-except BaseException as exc:  # noqa: BLE001 - any failure must give non-zero exit
-    import traceback
-    traceback.print_exc()
-    fail(repr(exc))

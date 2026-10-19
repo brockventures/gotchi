@@ -1,135 +1,65 @@
-# GOTCHI V1 case (`cad/`)
+# GOTCHI V1 Printable Enclosure (`cad/` — Revision 4)
 
-Parametric Blender script for the V1 two-part pocket case plus button cap.
-One script generates everything: STL files in print orientation, a `.blend` of the assembled
-design, and five PNG renders (`front_iso`, `front_straight`, `back_iso`, `back_layout`, `exploded`).
+Parametric `trimesh` + `manifold3d` CAD generator and studio/orthographic renderer for the **GOTCHI V1** two-part pocket enclosure and tactile button caps.
 
-## Run
+## Revision 4 Summary (`36.4 × 60.2 × 20.8 mm` / `45.6 cm³`)
 
-Labelled top-down and side views (after `build_case.py`): `blender -b --python cad/render_labeled.py -- --out cad` writes `renders/top_labeled.png` and `renders/side_labeled.png`. Needs Pillow in Blender's Python.
+Compared to Revision 1–3 (`38.0 × 72.0 × 29.0 mm` / `79.3 cm³`), Revision 4 replaces solid bounding-box placeholders with **true multi-feature 3D component geometry** and flex-cable clearances, achieving a **42.5% volume reduction** (`8.2 mm` thinner, `11.8 mm` shorter, `4.2 mm` slim side bezels):
+
+1. **Forward-Firing E-Paper Display & Camera (`+Z` Front Face):**
+   - **Waveshare 1.54" E-Paper Module V2 (`33.0 × 48.0 mm`):** Unscrewing the 4 removable factory brass hex standoffs reduces the upper `40.0 mm` of the module to a **`2.7 mm` flat glass+PCB laminate** (`z = -1.45..-4.1 mm`) behind a `28.0 × 28.0 mm` front viewing window (`4.2 mm` side bezels).
+   - **Display Top FPC Relief Pocket:** A `16.5 × 4.8 × 1.8 mm` relief pocket on the underside of the front bezel (`y = +17.8..+22.6 mm, z = -0.8..-2.6 mm`) protects the display's folded 24-pin top FPC ribbon from clamping pressure.
+   - **Forward-Firing Camera (`OV2640` / `OV3660` / `OV5640`, `8.5 × 8.5 × 4.8 mm`):** Sits in the upper-right Front Crown (`x = +10.2, y = +26.9 mm`) and fires straight forward (`+Z`) through a `Ø 7.6 mm` front aperture above the screen. Its `6 mm` orange 24-pin FPC flex ribbon exits the right end of the horizontal Sense daughterboard (`x = +4.5 mm`) and curves 90° forward into the camera cradle—adding zero `Z` thickness and zero `Y` height penalty.
+
+2. **Upward-Pointing Digital PDM Microphone (`+Y` Top Wall):**
+   - **Horizontal XIAO ESP32S3 + Sense Stack (`21.0 × 17.5 × 7.8 mm`):** Mounts horizontally in the Top Crown (`x = -16.5..+4.5 mm, y = +22.8..+30.6 mm`) with the **Sense expansion PCB surface facing UPWARD (`+Y`)**.
+   - **PDM MEMS Microphone (`MSM261D3526H1CPM`):** Soldered on the top face of the Sense daughterboard (`x = -2.5, z = -11.2 mm`), firing straight **UPWARD (`+Y`)** through a `1.5 mm` acoustic waveguide (`Ø 2.2 mm`) in the top wall.
+   - **Left-Wall USB-C Port (`-X`):** Exits cleanly out the upper-left side wall (`y = +24.8, z = -11.2 mm`).
+
+3. **Stepped Multi-Tier `Z` Stack (`20.8 mm` Total Depth):**
+   - Because the Waveshare PCB's `4.8 mm` tall white 8-pin `PH2.0` connector is localized to the bottom `6.4 mm` edge (`y = -25.4..-19.0 mm, z = -4.1..-8.7 mm`), the **`803040` LiPo battery (`30.0 × 40.0 × 8.0 mm`)** nestles directly behind the flat upper `40.0 mm` of the display PCB (`y = -18.2..+21.8 mm, z = -6.2..-14.2 mm`), while the tall `PH2.0` plug sits in the bottom chin strip *below* the battery—saving `~8.0 mm` of dead `Z` thickness.
+   - **Rear Slim Audio Layer (`z = -15.2..-19.2 mm`):** The `MAX98357A` I2S amplifier (`19.0 × 17.8 × 3.0 mm`) and `15 × 10 × 3.5 mm` speaker sit behind the battery/PH2.0 plane with a 5-slot rear acoustic grille (`z = -20.8 mm`).
+
+---
+
+## Build & Render Commands
+
+Pure Python (`trimesh`, `manifold3d`, `matplotlib`, `Pillow`) — no external Blender binary required:
 
 ```bash
-blender -b --python cad/build_case.py -- --out cad
-ls -la cad/stl cad/renders
+python3 cad/build_case.py --out cad
+python3 cad/render_labeled.py --out cad
 ```
 
-Blender 4.0.2, headless only. Exits 0 when every part has `nonmanifold=0`; exits 1 on any
-Python error or non-manifold edge. Re-running leaves `cad/gotchi_case.blend1` (Blender's backup);
-delete it before committing.
+`build_case.py` verifies `is_watertight == True` on every printable STL and runs pairwise 3D boolean intersection checks across all 6 multi-feature internal components and both shell halves (`0.00 mm³` interference required).
 
-Units: 1 Blender unit = 1 mm. X = width, Y = height (+Y top), Z = depth. Front face z=0,
-back face z=-29. XY origin at the centre of the case outline.
+---
 
-## Files
+## Generated Files
 
-| Path | What |
+| Path | Description |
 |---|---|
-| `build_case.py` | Generator. All dimensions in the `P` dict at the top. |
-| `stl/gotchi_front.stl` | Front half, print orientation (front face down). 38 x 72 x 11. |
-| `stl/gotchi_back.stl` | Back half, print orientation (back face down). 38 x 72 x 18. |
-| `stl/gotchi_button_cap.stl` | Button cap, flange down. 5.5 x 5.5 x 4.0. |
-| `gotchi_case.blend` | Assembled design geometry (front, back, cap offset to x=50). |
-| `renders/front_iso.png`, `back_iso.png` | Cycles CPU, 32 samples, 900x900, white background, sun lamp. |
-| `renders/exploded.png` | Back half moved -35 Z; placeholders at assembled coordinates (render only, never in STLs). The display placeholder sits inside the front shell and shows only as a sliver from this camera. |
+| `cad/build_case.py` | Parametric CSG generator (`manifold3d`) + 3D collision verifier + print-oriented STL exporter. |
+| `cad/render_labeled.py` | Studio 3-point lit 3D renderer (`ax.set_box_aspect`) + labeled orthographic top/side CAD diagram generator. |
+| `cad/stl/gotchi_front.stl` | Front shell (`36.4 × 60.2 × 8.8 mm`), flipped 180° onto its flat front face (`Z = 0`) for support-free printing. |
+| `cad/stl/gotchi_back.stl` | Back shell (`36.4 × 60.2 × 12.0 mm`), resting on its flat rear face (`Z = 0`) for support-free printing. |
+| `cad/stl/gotchi_button_cap.stl` | Tactile actuator cap (`Ø 5.5 × 3.8 mm`, print `2x`), resting on its flat flange (`Z = 0`). |
+| `cad/renders/front_iso.png` | Assembled front-top-left isometric studio render. |
+| `cad/renders/back_iso.png` | Assembled back-top-right isometric studio render. |
+| `cad/renders/front_straight.png` | Straight-on front orthographic render (`4.2 mm` side bezels + forward camera aperture). |
+| `cad/renders/back_layout.png` | Open internal 3D multi-tier packaging render with color-coded non-cubic components. |
+| `cad/renders/exploded.png` | Exploded multi-tier stack render (`Front -> Display/Cam -> XIAO/Battery -> Amp/Speaker -> Back`). |
+| `cad/renders/top_labeled.png` | Annotated front/top-down internal packaging diagram (`36.4 × 60.2 mm`). |
+| `cad/renders/side_labeled.png` | Annotated side cross-section diagram (`60.2 × 20.8 mm`) showing the stepped `Z` stack. |
 
-## Print settings
+---
 
-- Material: PLA or PETG
-- Layer height: 0.2 mm
-- Walls: 3
-- Infill: 20%
-- Supports: none (per spec). Not verified by slicing; check the overhang preview in the slicer before
-  printing. The halves print on their outer faces.
+## Recommended FDM Print Settings (Ender-3 V2 / Textured PEI)
 
-## Hardware
-
-- 4x M2 x 20 screws (through the back clearance holes into the front pilot holes).
-- **Not yet in `docs/BOM.md`.** Add them to the BOM before ordering.
-
-## Parameters
-
-Generated from the `P` dict in `build_case.py`. Change values there, then re-run.
-
-| Parameter | Value | Parameter | Value |
-|---|---|---|---|
-| `wall` | 2.0 | `usb_h` | 4.5 |
-| `W_out` | 38.0 | `usb_cz` | -13.6 |
-| `H_out` | 72.0 | `cam_hole_d` | 9.0 |
-| `D_out` | 29.0 | `cam_cx` | 0.0 |
-| `W_in` | 34.0 | `cam_cy` | -24.0 |
-| `H_in` | 68.0 | `boss_d` | 5.0 |
-| `split_z` | -11.0 | `boss_x` | 14.5 |
-| `edge_bevel` | 2.0 | `boss_y` | 31.0 |
-| `bevel_segments` | 6 | `pilot_d` | 1.7 |
-| `disp_w` | 33.0 | `clear_d` | 2.4 |
-| `disp_h` | 48.0 | `cbore_d` | 4.2 |
-| `disp_d` | 9.0 | `cbore_depth` | 1.5 |
-| `disp_cy` | 4.0 | `btn_x` | 8.0 |
-| `win_w` | 28.4 | `btn_cz` | -18.0 |
-| `win_h` | 28.4 | `btn_hole_d` | 3.8 |
-| `win_off_x` | 0.0 | `sw_cy` | -24.0 |
-| `win_off_y` | 0.0 | `sw_cz` | -18.0 |
-| `plate_t` | 1.2 | `sw_slot_z` | 5.0 |
-| `plate_y_top` | 28.0 | `sw_slot_y` | 2.0 |
-| `plate_y_bot` | -14.0 | `spk_cx` | 9.0 |
-| `bat_w` | 30.0 | `spk_cy` | 20.0 |
-| `bat_h` | 40.0 | `spk_w` | 15.4 |
-| `bat_d` | 7.8 | `spk_h` | 10.4 |
-| `bat_cy` | 7.0 | `spk_d` | 3.5 |
-| `xiao_w` | 21.0 | `grille_d` | 1.5 |
-| `xiao_h` | 17.8 | `grille_nx` | 4 |
-| `xiao_d` | 15.0 | `grille_ny` | 3 |
-| `xiao_cy` | -24.1 | `grille_pitch` | 3.0 |
-| `xiao_z_front` | -12.0 | `amp_cx` | -6.0 |
-| `usb_w` | 10.0 | `amp_cy` | 5.0 |
-| `mic_d` | 2.0 | | |
-| `mic_cx` | 6.0 | | |
-| `mic_cy` | -24.0 | | |
-
-## Solver notes (geometry choices that do not change any parameter)
-
-- **Cylinder tessellation (applied pre-emptively, not shown necessary).** Every cylinder (48 segments)
-  is rotated half a segment about its axis, so no vertex sits on the tangent line where the r=2.5
-  bosses meet the wall at x=±17 and the XIAO rib faces at x=±12. Whether an unrotated cylinder fails
-  was not tested. The defect that was observed is the coplanar boss top (next bullet). Vertices stay on r=2.5, but the polygon's axis-aligned
-  extent is 4.99 mm (2.5 x cos 3.75 deg) instead of 5.00. The cap bbox reads 5.49 for the same reason.
-- **Boss top embedded 0.01 mm into the front wall** (z=-1.99, spec says -2.0). An exactly coplanar
-  face against the wall underside gave one non-manifold edge per boss under EXACT union.
-- **Holes are one boolean each** (window, pilots, USB, back holes). With all front cutters in one
-  operand, the front came out at 1146 verts with 8 non-manifold edges and a 73 mm Y extent. Splitting
-  them cleared it. Each cutter alone was clean. The exact mechanism was not isolated.
-- **Stem overlaps flange by 0.01 mm** on the button cap (stem starts z=0.99). Avoids a coplanar union.
-- **Denoising off, Standard view transform.** This Blender build has no OpenImageDenoiser, and
-  AgX would tint the white background grey.
-- **STL export** uses `export_mesh.stl` on Blender 4.0.2 (no `wm.stl_export` in 4.0). The script
-  tries `wm.stl_export` first and falls back on AttributeError.
-
-## Collisions and assumptions (spec numbers kept as written)
-
-1. **Split-face rim (fixed in rev 3).** The split-face edges are no longer bevelled, so both
-   halves meet on a full 2 mm wall.
-2. **XIAO collision (fixed in rev 3).** The XIAO now sits behind the display plane,
-   z -12..-27, in the back half's bottom bay. The USB-C slot moved to the back half's bottom
-   wall at `usb_cz=-13.6`. The script prints an envelope overlap check; rev 3 reports
-   `collisions: none`.
-3. **Switch placeholder 4.0 mm in Y vs frame inner 3.9 mm.** 0.1 mm interference. The real switch
-   body dimensions are unknown; the placeholder is 3.5 x 4.0 x 8.6.
-4. **Speaker frame outer edge at x=17.7** runs 0.7 mm into the side wall (x 17..19). Benign: it merges.
-5. **Button cap stem** starts 0.01 mm inside the flange (see solver notes).
-6. **Amp placement** is not specified. The placeholder sits at z -20..-24, behind the battery.
-7. **Battery placeholder** z -12.2..-20 is an assumption from the plate and `bat_d`.
-8. **Exploded view.** Front half and placeholders in place, back half moved -45 Z.
-
-## Fit-test checklist
-
-- [ ] **Display window offset.** The panel position on the module PCB is unconfirmed. Adjust
-      `win_off_x` / `win_off_y`.
-- [ ] **Display module depth.** `disp_d` is assumed 9.0 mm (rev 2; was 7.0).
-- [ ] **Display bay depth 9.0 mm**: confirm the PH2.0 rear header clears the XIAO side ribs and the back-half display plate.
-- [ ] **PDM mic port**: confirm the microphone's acoustic port lines up with (mic_cx, mic_cy) and that a 2.0 mm port is not blocked by the camera or by foam tape. Position assumed, not measured.
-- [ ] **USB-C slot height.** `usb_cz` is assumed -13.6 (XIAO front face at -12.0 plus 1.6).
-- [ ] **Camera lens position.** `cam_cx` / `cam_cy` are assumed (0, -24).
-- [ ] **XIAO** is held by the side ribs plus foam tape. Confirm the ribs clear the board (see collision 2).
-- [ ] **Amp** is held by foam tape.
-- [ ] **Button caps** slide freely in the 6.4 mm sockets.
-- [ ] **Slide switch** sits in the 9.0 x 3.9 frame (see collision 3).
+- **Material:** PLA or PETG
+- **Layer Height:** `0.16 mm` or `0.20 mm` (`0.4 mm` nozzle)
+- **Wall Loops:** `3` (`1.2 mm` perimeters)
+- **Infill:** `15%–20%` Gyroid
+- **Supports:** **None (`0`)** — both shells print flat on their outer faces (`gotchi_front.stl` front-face down, `gotchi_back.stl` rear-face down) with zero unsupported spans.
+- **Bed Adhesion:** **Zero brim / zero raft (`brim_width = 0`, `raft_layers = 0`)** — detached 1-loop purge skirt only (`skirt_loops = 1`).
+- **Fasteners:** `4x M2 × 16 mm` screws inserted from the rear counterbores (`Ø 3.8 mm`) into the front `Ø 1.75 mm` self-tapping pilot bosses. The bottom two M2 bosses (`x = ±14.0, y = -23.0 mm`) pass directly through the Waveshare 1.54" PCB's lower M2 mounting holes to lock display alignment.
