@@ -55,22 +55,24 @@ These are what the firmware does now. None is a decision.
 - Largest single reply event the firmware can read: 256 KB. The gateway sends about 11 KB per event, so reply length is not limited.
 - Partial e-paper refresh about 0.3 s, full refresh 6.4 s measured on the 7.5 in bench panel (the 1.54 in figures are unmeasured).
 
-## 5a. Values Zero proposed (not yet confirmed by Ryan or Mike)
+## 5a. Default values chosen by Amos and Zero
 
-Zero, #gotchi 2026-10-19 09:10. These fill the open questions in section 6 and are not requirements until confirmed.
+Ryan asked for the longest recording the hardware supports, a configurable snapshot behaviour and a USB-only pre-roll default with a toggle, and left the numbers to us (#gotchi 2026-10-19 09:09 and 09:22). These are the defaults. Each is a `set_config` value, so changing one needs no new firmware. They are not Ryan's or Mike's decisions.
 
 - Tap to start, auto-upload after about 1.5 s of trailing silence or a second tap; holding longer than 500 ms still sends on release.
 - Recording cap 90 to 120 s (about 2.9 to 3.8 MB of the 8 MB PSRAM); 250 ms minimum press.
 - `preroll_mode`: `usb_only` (default), `always`, `off`. Detecting USB power would use a VBUS sense input; whether the XIAO ESP32S3 Sense exposes one is unchecked.
 - Snapshot attach window about 10 s, with a configurable `default_image_prompt` for a standalone snapshot.
 
-## 6. Open requirements (need Ryan or Mike)
+## 6. Open items
 
-- **OPEN: hands-free listening.** Ryan asked whether one press could open listening and keep recording until he stops talking. That needs end-of-speech detection on the device. What silence length ends a turn, and what is the longest a turn may run? Proposal: 1.0 s of silence, with the longest recording the memory allows.
-- **OPEN: standalone snapshot.** How long is the window in which a snapshot attaches to the next voice prompt? What should the bot do with a snapshot that arrives alone? Attaching needs an optional `image` field on `/api/voice/interact`; whether the gateway accepts one has not been checked.
-- **OPEN: pre-roll purpose.** Ryan asked whether pre-roll is only for wake word. With push-to-talk it also catches the first syllables spoken before the chime and screen draw finish; Zero's mic task (PR #9) now covers part of that. Is a USB-only default still wanted?
-- **OPEN: where the off-LAN gateway runs** (T3.2). Mike's call.
-- **OPEN: wake word** is deferred to V1.1 (T5.2); confirm that stays out of V1.
+Questions for people:
+- **Where the off-LAN gateway runs** (T3.2). Mike's call.
+- **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
+
+Checks the robots owe:
+- Whether the gateway accepts an optional `image` field on `/api/voice/interact` (Amos).
+- Whether the XIAO ESP32S3 Sense exposes a USB-power sense pin (Zero).
 
 ## 7. Out of scope for V1
 
