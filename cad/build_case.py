@@ -28,8 +28,8 @@ P = dict(
     win_w=28.4, win_h=28.4, win_off_x=0.0, win_off_y=0.0,
     plate_t=1.2, plate_y_top=28.0, plate_y_bot=-14.0,
     bat_w=30.0, bat_h=40.0, bat_d=7.8, bat_cy=7.0,
-    xiao_w=21.0, xiao_h=17.8, xiao_d=15.0, xiao_cy=-24.1, xiao_z_front=-3.0,
-    usb_w=10.0, usb_h=4.5, usb_cz=-4.6,
+    xiao_w=21.0, xiao_h=17.8, xiao_d=15.0, xiao_cy=-24.1, xiao_z_front=-12.0,
+    usb_w=10.0, usb_h=4.5, usb_cz=-13.6,
     cam_hole_d=9.0, cam_cx=0.0, cam_cy=-24.0,
     mic_d=2.0, mic_cx=6.0, mic_cy=-24.0,
     boss_d=5.0, boss_x=14.5, boss_y=31.0, pilot_d=1.7, clear_d=2.4,
@@ -92,8 +92,12 @@ def add_cyl(bm, r, p0, p1, seg=CYL_SEG):
     return bm
 
 
-def bevel_all(bm, offset, segments):
-    bmesh.ops.bevel(bm, geom=list(bm.edges), offset=offset, offset_type='OFFSET',
+def bevel_all(bm, offset, segments, keep_z=None):
+    """Bevel every edge except those lying in the plane z == keep_z (the split face),
+    so the mating rim keeps its full wall thickness."""
+    edges = [e for e in bm.edges
+             if keep_z is None or not all(abs(v.co.z - keep_z) < 1e-6 for v in e.verts)]
+    bmesh.ops.bevel(bm, geom=edges, offset=offset, offset_type='OFFSET',
                     segments=segments, profile=0.5, affect='EDGES', clamp_overlap=True)
 
 
@@ -172,7 +176,7 @@ def build_front():
     p = P
     hw, hh = p['W_out'] / 2, p['H_out'] / 2
     bm = add_box(bmesh.new(), -hw, hw, -hh, hh, p['split_z'], 0.0)
-    bevel_all(bm, p['edge_bevel'], p['bevel_segments'])
+    bevel_all(bm, p['edge_bevel'], p['bevel_segments'], keep_z=p['split_z'])
     part = bm_to_obj('front', bm)
 
     iw, ih = p['W_in'] / 2, p['H_in'] / 2
@@ -209,10 +213,6 @@ def build_front():
             cutters.append(add_cyl(bmesh.new(), p['pilot_d'] / 2,
                                    (sx * p['boss_x'], sy * p['boss_y'], -11.5),
                                    (sx * p['boss_x'], sy * p['boss_y'], -5.0)))
-    # USB-C slot through bottom wall
-    uw, uh = p['usb_w'] / 2, p['usb_h'] / 2
-    cutters.append(add_box(bmesh.new(), -uw, uw, -37.0, -33.5,
-                           p['usb_cz'] - uh, p['usb_cz'] + uh))
     for c in cutters:
         subtract(part, c)
     return part
@@ -222,7 +222,7 @@ def build_back():
     p = P
     hw, hh = p['W_out'] / 2, p['H_out'] / 2
     bm = add_box(bmesh.new(), -hw, hw, -hh, hh, -p['D_out'], p['split_z'])
-    bevel_all(bm, p['edge_bevel'], p['bevel_segments'])
+    bevel_all(bm, p['edge_bevel'], p['bevel_segments'], keep_z=p['split_z'])
     part = bm_to_obj('back', bm)
 
     iw, ih = p['W_in'] / 2, p['H_in'] / 2
@@ -244,7 +244,7 @@ def build_back():
     # XIAO side ribs: 1.2 thick in X, centred x = +/-11.4
     ribs = bmesh.new()
     for cx in (11.4, -11.4):
-        add_box(ribs, cx - 0.6, cx + 0.6, -34.0, -14.0, -23.0, -11.0)
+        add_box(ribs, cx - 0.6, cx + 0.6, -34.0, -14.0, -27.0, -11.0)
     union(part, ribs)
 
     # button sockets: square tube 6.4 x 6.4 inner, wall 1.0, y +28..+34
@@ -292,6 +292,10 @@ def build_back():
     for bx in (-p['btn_x'], p['btn_x']):
         cutters.append(add_cyl(bmesh.new(), p['btn_hole_d'] / 2, (bx, 33.5, p['btn_cz']),
                                (bx, 36.5, p['btn_cz'])))
+    # USB-C slot through the bottom wall (the XIAO sits behind the display plane)
+    uw, uh = p['usb_w'] / 2, p['usb_h'] / 2
+    cutters.append(add_box(bmesh.new(), -uw, uw, -37.0, -33.5,
+                           p['usb_cz'] - uh, p['usb_cz'] + uh))
     # lever slot through left wall
     cutters.append(add_box(bmesh.new(), -19.5, -16.5, sy_c - p['sw_slot_y'] / 2,
                            sy_c + p['sw_slot_y'] / 2, sz_c - p['sw_slot_z'] / 2,
@@ -305,6 +309,44 @@ def build_back():
     for c in cutters:
         subtract(part, c)
     return part
+
+
+def collision_check():
+    """Axis-aligned overlap check of component envelopes against fixed features."""
+    p = P
+    xz0 = p['xiao_z_front']
+    boxes = {
+        'xiao': (-10.5, 10.5, p['xiao_cy'] - 8.9, p['xiao_cy'] + 8.9, xz0 - p['xiao_d'], xz0),
+        'battery': (-15.0, 15.0, p['bat_cy'] - 20.0, p['bat_cy'] + 20.0, -12.2 - p['bat_d'], -12.2),
+    }
+    fixed = {
+        'display_bay': (-16.5, 16.5, -20.0, 28.0, -11.0, -2.0),
+        'plate': (-17.0, 17.0, p['plate_y_bot'], p['plate_y_top'], -12.2, -11.0),
+        'rib_top': (-17.0, 17.0, 28.3, 29.8, -11.0, -2.0),
+        'rib_bottom': (-17.0, 17.0, -21.8, -20.3, -11.0, -2.0),
+        'xiao_rib_l': (-12.0, -10.8, -34.0, -14.0, -27.0, -11.0),
+        'xiao_rib_r': (10.8, 12.0, -34.0, -14.0, -27.0, -11.0),
+        'switch_frame': (-17.0, -13.0, p['sw_cy'] - 2.95, p['sw_cy'] + 2.95,
+                         p['sw_cz'] - 5.5, p['sw_cz'] + 5.5),
+        'speaker_frame': (p['spk_cx'] - 8.7, p['spk_cx'] + 8.7, p['spk_cy'] - 6.2,
+                          p['spk_cy'] + 6.2, -27.0, -23.5),
+    }
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            bx, by = sx * p['boss_x'], sy * p['boss_y']
+            fixed[f'boss_{sx:+d}{sy:+d}'] = (bx - 2.5, bx + 2.5, by - 2.5, by + 2.5, -27.0, -2.0)
+    for bx in (-p['btn_x'], p['btn_x']):
+        fixed[f'button_socket_{bx:+.0f}'] = (bx - 4.2, bx + 4.2, 28.0, 34.0,
+                                              p['btn_cz'] - 4.2, p['btn_cz'] + 4.2)
+    hits = 0
+    for an, a in boxes.items():
+        for bn, b in fixed.items():
+            d = [min(a[i + 1], b[i + 1]) - max(a[i], b[i]) for i in (0, 2, 4)]
+            if all(v > 0.01 for v in d):
+                hits += 1
+                print(f"collision {an} {bn} {d[0]:.2f}x{d[1]:.2f}x{d[2]:.2f}", flush=True)
+    if not hits:
+        print("collisions: none", flush=True)
 
 
 def build_cap():
@@ -338,15 +380,17 @@ def setup_scene():
     scene.render.resolution_y = 900
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = 'PNG'
-    world = bpy.data.worlds.new('white')
+    world = bpy.data.worlds.new('bg')
     world.use_nodes = False
-    world.color = (1.0, 1.0, 1.0)
+    world.color = (0.62, 0.64, 0.68)
     scene.world = world
     sun_data = bpy.data.lights.new('sun', 'SUN')
     sun_data.energy = 3.0
     sun = scene_link(bpy.data.objects.new('sun', sun_data))
     sun.rotation_euler = (math.radians(45), 0.0, math.radians(30))
     cam_data = bpy.data.cameras.new('cam')
+    cam_data.type = 'ORTHO'
+    cam_data.clip_end = 2000.0
     cam = scene_link(bpy.data.objects.new('cam', cam_data))
     scene.camera = cam
     return scene, cam
@@ -358,7 +402,8 @@ def look_at(cam, loc, target):
     cam.rotation_euler = d.to_track_quat('-Z', 'Y').to_euler()
 
 
-def render(scene, cam, path, visible, loc, target):
+def render(scene, cam, path, visible, loc, target, scale=100.0):
+    cam.data.ortho_scale = scale
     for ob in bpy.data.objects:
         if ob.type == 'MESH':
             ob.hide_render = ob.name not in visible
@@ -399,6 +444,8 @@ def main():
     print("building cap", flush=True)
     cap = build_cap()
 
+    collision_check()
+
     bad = 0
     bad += check_part('front', front) > 0
     bad += check_part('back', back) > 0
@@ -422,34 +469,45 @@ def main():
 
     # assembled design geometry for the .blend and renders
     cap.location = (50.0, 0.0, 0.0)
-    front.data.materials.append(make_material('shell_front', (0.85, 0.85, 0.82)))
-    back.data.materials.append(make_material('shell_back', (0.62, 0.66, 0.74)))
+    front.data.materials.append(make_material('shell_front', (0.30, 0.34, 0.40)))
+    back.data.materials.append(make_material('shell_back', (0.22, 0.26, 0.32)))
     cap.data.materials.append(make_material('cap', (0.92, 0.55, 0.2)))
 
     scene, cam = setup_scene()
     print("rendering", flush=True)
     render(scene, cam, os.path.join(ren_dir, 'front_iso.png'), {'front'},
-           loc=(90, -110, 70), target=(0, 0, -4.5))
+           loc=(80, -100, 120), target=(0, 0, -5), scale=95)
+    render(scene, cam, os.path.join(ren_dir, 'front_straight.png'), {'front'},
+           loc=(0, 0, 150), target=(0, 0, 0), scale=80)
     render(scene, cam, os.path.join(ren_dir, 'back_iso.png'), {'back'},
-           loc=(90, -110, -90), target=(0, 0, -18))
+           loc=(80, -100, -150), target=(0, 0, -20), scale=95)
 
-    # exploded: back half (and its contents) moved -35 in Z; placeholders are render-only
+    # placeholders at their assembled positions (render-only, never exported)
     ph = []
-    ph.append(placeholder('ph_display', (0, P['disp_cy'], -6.5), (33, 48, P['disp_d']), (0.2, 0.5, 0.9)))
-    back_z = -35.0
-    back.location.z = back_z
-    ph.append(placeholder('ph_battery', (0, P['bat_cy'], -16.1), (30, 40, 7.8), (0.9, 0.6, 0.1)))
-    ph.append(placeholder('ph_xiao', (0, P['xiao_cy'], P['xiao_z_front'] - 7.5), (21, 17.8, 15), (0.2, 0.8, 0.3)))
-    ph.append(placeholder('ph_speaker', (P['spk_cx'], P['spk_cy'], -25.25), (15.4, 10.4, 3.5), (0.8, 0.2, 0.2)))
-    ph.append(placeholder('ph_amp', (P['amp_cx'], P['amp_cy'], -22.0), (20, 18, 4), (0.6, 0.2, 0.8)))
+    ph.append(placeholder('ph_display', (0, P['disp_cy'], -2.0 - P['disp_d'] / 2),
+                          (33, 48, P['disp_d']), (0.2, 0.5, 0.9)))
+    ph.append(placeholder('ph_battery', (0, P['bat_cy'], -12.2 - P['bat_d'] / 2),
+                          (30, 40, P['bat_d']), (0.9, 0.6, 0.1)))
+    ph.append(placeholder('ph_xiao', (0, P['xiao_cy'], P['xiao_z_front'] - P['xiao_d'] / 2),
+                          (21, 17.8, P['xiao_d']), (0.2, 0.8, 0.3)))
+    ph.append(placeholder('ph_speaker', (P['spk_cx'], P['spk_cy'], -27.0 + P['spk_d'] / 2),
+                          (15.0, 10.0, P['spk_d']), (0.8, 0.2, 0.2)))
+    ph.append(placeholder('ph_amp', (P['amp_cx'], P['amp_cy'], -25.0), (19, 17.8, 4), (0.6, 0.2, 0.8)))
     for bx in (-P['btn_x'], P['btn_x']):
-        ph.append(placeholder('ph_button', (bx, 31.0, P['btn_cz']), (6, 5, 6), (0.95, 0.9, 0.2)))
-    ph.append(placeholder('ph_switch', (-15.0, P['sw_cy'], P['sw_cz']), (3.5, 4.0, 8.6), (0.1, 0.9, 0.9)))
-    # placeholders stay at assembled coordinates; only the back half moves. The camera sits
-    # below the front rim and above the moved back so the placeholders are not occluded.
+        ph.append(placeholder('ph_button', (bx, 29.75, P['btn_cz']), (6, 3.5, 6), (0.95, 0.9, 0.2)))
+    ph.append(placeholder('ph_switch', (-15.0, P['sw_cy'], P['sw_cz']), (4.0, 3.5, 8.6), (0.1, 0.9, 0.9)))
+    names = {o.name for o in ph}
+
+    # layout: back half with its parts, looking into it from the front side
+    render(scene, cam, os.path.join(ren_dir, 'back_layout.png'),
+           {'back'} | (names - {'ph_display'}),
+           loc=(70, -90, 110), target=(0, 0, -20), scale=95)
+
+    # exploded: front half and parts in place, back half moved -45 in Z
+    back.location.z = -45.0
     render(scene, cam, os.path.join(ren_dir, 'exploded.png'),
-           {'front', 'back'} | {o.name for o in ph},
-           loc=(60, -200, -26), target=(0, 0, -20))
+           {'front', 'back'} | names,
+           loc=(160, -120, -10), target=(0, 0, -35), scale=150)
     back.location.z = 0.0
     for o in ph:
         bpy.data.objects.remove(o, do_unlink=True)

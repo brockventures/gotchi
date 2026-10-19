@@ -2,7 +2,7 @@
 
 Parametric Blender script for the V1 two-part pocket case plus button cap.
 One script generates everything: STL files in print orientation, a `.blend` of the assembled
-design, and three PNG renders.
+design, and five PNG renders (`front_iso`, `front_straight`, `back_iso`, `back_layout`, `exploded`).
 
 ## Run
 
@@ -51,7 +51,7 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 | Parameter | Value | Parameter | Value |
 |---|---|---|---|
 | `wall` | 2.0 | `usb_h` | 4.5 |
-| `W_out` | 38.0 | `usb_cz` | -4.6 |
+| `W_out` | 38.0 | `usb_cz` | -13.6 |
 | `H_out` | 72.0 | `cam_hole_d` | 9.0 |
 | `D_out` | 29.0 | `cam_cx` | 0.0 |
 | `W_in` | 34.0 | `cam_cy` | -24.0 |
@@ -78,7 +78,7 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 | `xiao_h` | 17.8 | `grille_nx` | 4 |
 | `xiao_d` | 15.0 | `grille_ny` | 3 |
 | `xiao_cy` | -24.1 | `grille_pitch` | 3.0 |
-| `xiao_z_front` | -3.0 | `amp_cx` | -6.0 |
+| `xiao_z_front` | -12.0 | `amp_cx` | -6.0 |
 | `usb_w` | 10.0 | `amp_cy` | 5.0 |
 | `mic_d` | 2.0 | | |
 | `mic_cx` | 6.0 | | |
@@ -104,25 +104,19 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 
 ## Collisions and assumptions (spec numbers kept as written)
 
-1. **Split-face rim is knife-edge.** The 2.0 mm bevel on the z=-11 edges leaves the flat part of
-   that face at exactly x ±17, y ±34, the same footprint as the cavity. The wall tapers from 2 mm
-   at z=-9 to zero at z=-11 on both halves. The halves meet on a line at the perimeter. The
-   mating surfaces are the screw bosses' end faces, not the perimeter. Not changed.
-2. **XIAO envelope collides with front-half features.** `xiao_z_front=-3.0` and `xiao_d=15.0`
-   put the XIAO at z -3..-18, but the front half occupies z -2..-11. The XIAO envelope (x ±10.5,
-   y -33..-15.2) overlaps the display module envelope (y -20..28) and the front bottom stop rib
-   (y -21.8..-20.3). Rev 2 axis-aligned check: 21.0 x 4.8 x 8.0 mm overlap with the display bay
-   envelope (y -20..-15.2, z -3..-11) and 21.0 x 1.5 x 8.0 mm with the bottom stop rib. Not fixed. The XIAO cannot sit at those coordinates. Either `xiao_z_front` means a
-   different reference face, or the XIAO sits behind the front stop. Needs a decision before printing.
+1. **Split-face rim (fixed in rev 3).** The split-face edges are no longer bevelled, so both
+   halves meet on a full 2 mm wall.
+2. **XIAO collision (fixed in rev 3).** The XIAO now sits behind the display plane,
+   z -12..-27, in the back half's bottom bay. The USB-C slot moved to the back half's bottom
+   wall at `usb_cz=-13.6`. The script prints an envelope overlap check; rev 3 reports
+   `collisions: none`.
 3. **Switch placeholder 4.0 mm in Y vs frame inner 3.9 mm.** 0.1 mm interference. The real switch
    body dimensions are unknown; the placeholder is 3.5 x 4.0 x 8.6.
 4. **Speaker frame outer edge at x=17.7** runs 0.7 mm into the side wall (x 17..19). Benign: it merges.
 5. **Button cap stem** starts 0.01 mm inside the flange (see solver notes).
 6. **Amp placement** is not specified. The placeholder sits at z -20..-24, behind the battery.
 7. **Battery placeholder** z -12.2..-20 is an assumption from the plate and `bat_d`.
-8. **Exploded view.** Only the back half moves (-35 Z). Placeholders stay at assembled coordinates, so the
-   XIAO placeholder (z -3..-18) overlaps the front half in that view. Visual only. The display
-   placeholder is mostly hidden by the front shell from the chosen camera.
+8. **Exploded view.** Front half and placeholders in place, back half moved -45 Z.
 
 ## Fit-test checklist
 
@@ -131,7 +125,7 @@ Generated from the `P` dict in `build_case.py`. Change values there, then re-run
 - [ ] **Display module depth.** `disp_d` is assumed 9.0 mm (rev 2; was 7.0).
 - [ ] **Display bay depth 9.0 mm**: confirm the PH2.0 rear header clears the XIAO side ribs and the back-half display plate.
 - [ ] **PDM mic port**: confirm the microphone's acoustic port lines up with (mic_cx, mic_cy) and that a 2.0 mm port is not blocked by the camera or by foam tape. Position assumed, not measured.
-- [ ] **USB-C slot height.** `usb_cz` is assumed -4.6.
+- [ ] **USB-C slot height.** `usb_cz` is assumed -13.6 (XIAO front face at -12.0 plus 1.6).
 - [ ] **Camera lens position.** `cam_cx` / `cam_cy` are assumed (0, -24).
 - [ ] **XIAO** is held by the side ribs plus foam tape. Confirm the ribs clear the board (see collision 2).
 - [ ] **Amp** is held by foam tape.
