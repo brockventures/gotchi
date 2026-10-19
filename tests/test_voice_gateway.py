@@ -1,11 +1,8 @@
-import asyncio
-import io
-import pytest
 from fastapi.testclient import TestClient
 
 from backend.gateway_auth import BearerTokenVerifier
 from backend.voice_gateway import VoiceGatewayService, create_app
-from poc.gotchi_poc import build_multipart_wav, parse_sse_stream, wrap_pcm16_to_wav
+from poc.gotchi_poc import parse_sse_stream, wrap_pcm16_to_wav
 
 
 def test_voice_gateway_health():
@@ -19,15 +16,36 @@ def test_voice_gateway_health():
 def test_voice_gateway_missing_payload_400():
     app = create_app()
     client = TestClient(app)
-    # Empty multipart request without audio or image
     resp = client.post("/api/voice/interact", data={"node_id": "test-device"})
     assert resp.status_code == 400
     assert resp.json()["error"] == "bad_request"
 
 
+def test_voice_gateway_empty_file_parts_rejected_400():
+    """Verify 0-byte uploaded audio or image parts do not bypass validation via UploadFile truthiness."""
+    app = create_app()
+    client = TestClient(app)
+
+    # 1. Empty 0-byte audio upload -> 400
+    resp_audio = client.post(
+        "/api/voice/interact",
+        files={"audio": ("ptt.wav", b"", "audio/wav")},
+    )
+    assert resp_audio.status_code == 400
+    assert "empty" in resp_audio.json()["message"].lower()
+
+    # 2. Empty 0-byte image upload -> 400
+    resp_img = client.post(
+        "/api/voice/interact",
+        files={"image": ("snap.jpg", b"", "image/jpeg")},
+    )
+    assert resp_img.status_code == 400
+    assert "empty" in resp_img.json()["message"].lower()
+
+
 def test_voice_gateway_auth_enforcement():
     verifier = BearerTokenVerifier(device_tokens={"gotchi-ryan": "secret-token-123"})
-    service = VoiceGatewayService(verifier=verifier, auth_required=True)
+    service = VoiceGatewayService(verifier=verifier)
     app = create_app(service=service)
     client = TestClient(app)
 
@@ -61,12 +79,11 @@ def test_voice_gateway_auth_enforcement():
 def test_f17_cold_start_hotspot_turn():
     """
     F17: From a cold start on a phone hotspot, one push-to-talk turn completes
-    and the reply plays (verified via complete SSE stream receipt).
+    and the reply plays via live `sentence` (`audio_b64`) SSE events.
     """
     app = create_app()
     client = TestClient(app)
 
-    # 16 kHz mono PCM WAV turn
     pcm = b"\x10\x00" * 8000  # 0.5s audio
     wav = wrap_pcm16_to_wav(pcm, sample_rate=16000, channels=1)
 
@@ -81,8 +98,8 @@ def test_f17_cold_start_hotspot_turn():
 
     assert resp.status_code == 200
     assert "text/event-stream" in resp.headers["content-type"]
+    assert "event: sentence" in resp.text
 
-    # Parse streamed events using POC parser
     lines = resp.text.splitlines()
     states_seen = []
     pcm_chunks = []
@@ -92,7 +109,6 @@ def test_f17_cold_start_hotspot_turn():
         on_audio_pcm=lambda pcm_data, sr, final: pcm_chunks.append((pcm_data, sr, final)),
     )
 
-    # Verify event progression
     assert "speaking" in states_seen
     assert ui.state == "idle"
     assert ui.reply != ""
