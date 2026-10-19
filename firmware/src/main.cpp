@@ -30,6 +30,7 @@
 #include "voice_client.h"
 #include "log_buffer.h"
 #include "live_client.h"
+#include "ble_framing.h"
 
 static Preferences prefs;
 static WebServer httpServer(80);
@@ -38,6 +39,7 @@ struct GotchiConfig {
     String hub_url = "http://mirrormere.local:8080";
     // Voice gateway URL (Mirrormere or Zero gateway; set per device via set_config).
     String voice_url = "http://mirrormere.local:9098/api/voice/interact";
+    String live_url = "";             // Optional dedicated Go Live WS URL (falls back to voice_url when empty)
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"
     String input_mode = "hybrid";     // "hybrid" | "tap" | "hold"
@@ -142,6 +144,7 @@ void loadConfig() {
     prefs.begin("gotchi", true);
     cfg.hub_url              = prefs.getString("hub_url", cfg.hub_url);
     cfg.voice_url            = prefs.getString("voice_url", cfg.voice_url);
+    cfg.live_url             = prefs.getString("live_url", cfg.live_url);
     cfg.node_id              = prefs.getString("node_id", cfg.node_id);
     cfg.wake_mode            = prefs.getString("wake_mode", cfg.wake_mode);
     cfg.input_mode           = prefs.getString("input_mode", cfg.input_mode);
@@ -175,6 +178,7 @@ void saveConfig() {
     prefs.begin("gotchi", false);
     prefs.putString("hub_url", cfg.hub_url);
     prefs.putString("voice_url", cfg.voice_url);
+    prefs.putString("live_url", cfg.live_url);
     prefs.putString("node_id", cfg.node_id);
     prefs.putString("wake_mode", cfg.wake_mode);
     prefs.putString("input_mode", cfg.input_mode);
@@ -217,6 +221,7 @@ String handleJsonRpc(const String& jsonLine) {
     if (cmd == "get_config") {
         res["hub_url"] = cfg.hub_url;
         res["voice_url"] = cfg.voice_url;
+        res["live_url"] = cfg.live_url;
         res["node_id"] = cfg.node_id;
         res["wake_mode"] = cfg.wake_mode;
         res["input_mode"] = cfg.input_mode;
@@ -254,6 +259,7 @@ String handleJsonRpc(const String& jsonLine) {
         }
         if (req["hub_url"].is<const char*>()) cfg.hub_url = req["hub_url"].as<String>();
         if (req["voice_url"].is<const char*>()) cfg.voice_url = req["voice_url"].as<String>();
+        if (req["live_url"].is<const char*>()) cfg.live_url = req["live_url"].as<String>();
         if (req["node_id"].is<const char*>()) cfg.node_id = req["node_id"].as<String>();
         if (req["wake_mode"].is<const char*>()) cfg.wake_mode = req["wake_mode"].as<String>();
         if (req["input_mode"].is<const char*>()) cfg.input_mode = req["input_mode"].as<String>();
@@ -443,7 +449,7 @@ static void runLiveSession() {
     }
 
     gotchi_live::LiveSessionConfig lcfg;
-    lcfg.voice_url = cfg.voice_url;
+    lcfg.voice_url = (cfg.live_url.length() > 0) ? cfg.live_url : cfg.voice_url;
     lcfg.node_id = cfg.node_id;
     lcfg.bearer_token = cfg.bearer_token;
     lcfg.audio_out_mode = cfg.audio_out_mode;

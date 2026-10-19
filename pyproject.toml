@@ -20,6 +20,9 @@ dev = [
     "httpx>=0.24.0",
 ]
 
+[tool.setuptools]
+packages = ["backend", "poc"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = "-ra -q"

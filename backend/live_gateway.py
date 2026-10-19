@@ -124,20 +124,9 @@ class LiveGatewayService:
         self.live_mode_enabled = False
 
 
-def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
-    if FastAPI is None:
-        raise RuntimeError("FastAPI is not installed")
-
-    app = FastAPI(title="Gotchi Go Live Gateway Relay")
+def register_live_routes(app: "FastAPI", service: Optional[LiveGatewayService] = None) -> LiveGatewayService:
+    """Mount `/api/live/session` and `/api/live/ws` onto an existing FastAPI application."""
     srv = service or LiveGatewayService()
-
-    @app.get("/health")
-    def health():
-        return {
-            "status": "ok",
-            "service": "gotchi-live-gateway",
-            "live_mode_enabled": srv.is_enabled(),
-        }
 
     @app.post("/api/live/session")
     async def create_session(request: Request):
@@ -274,4 +263,23 @@ def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
             pump_task.cancel()
             await provider.close()
 
+    return srv
+
+
+def create_live_app(service: Optional[LiveGatewayService] = None) -> "FastAPI":
+    if FastAPI is None:
+        raise RuntimeError("FastAPI is not installed")
+
+    app = FastAPI(title="Gotchi Go Live Gateway Relay")
+    srv = service or LiveGatewayService()
+
+    @app.get("/health")
+    def health():
+        return {
+            "status": "ok",
+            "service": "gotchi-live-gateway",
+            "live_mode_enabled": srv.is_enabled(),
+        }
+
+    register_live_routes(app, srv)
     return app

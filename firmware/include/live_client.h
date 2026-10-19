@@ -24,7 +24,7 @@ enum class SessionEndReason : uint8_t {
     USER_EXIT       = 0, // BTN_TOP pressed
     SILENCE_TIMEOUT = 1, // live_silence_ms elapsed without speech
     NETWORK_ERROR   = 2, // Connection dropped or failed
-    DISABLED        = 3, // live_mode disabled
+    LIVE_DISABLED   = 3, // live_mode disabled (avoids Arduino #define DISABLED 0x00 macro)
 };
 
 struct LiveSessionConfig {

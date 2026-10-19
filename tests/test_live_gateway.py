@@ -4,8 +4,9 @@ Covers:
 - Disabled by default (403 on POST /api/live/session and 1008 close on WebSocket /api/live/ws)
 - Bearer token enforcement on BOTH POST /api/live/session AND WebSocket /api/live/ws (header and ?token= query param)
 - Resilience against malformed JSON text frames and invalid/empty base64 image payloads without dropping the socket
-- Direct C++ source verification on firmware/src/live_client.cpp and firmware/src/main.cpp
-  (RFC 6455 WebSocket handshake, binary PCM uplink, downlink playback, and pollRpcAndHttp during Live sessions).
+- Mounting of /api/live/session and /api/live/ws directly on voice_gateway.create_app() so the unit's voice_url serves Live WebSocket
+- Direct C++ source verification on firmware/include/live_client.h, firmware/src/live_client.cpp, and firmware/src/main.cpp
+  (LIVE_DISABLED enum rename avoiding Arduino macro collision, RFC 6455 WebSocket handshake, live_url config support, and pollRpcAndHttp).
 """
 import base64
 import pathlib
@@ -17,17 +18,24 @@ from backend.live_gateway import (
     MockLiveProvider,
     create_live_app,
 )
+from backend.voice_gateway import VoiceGatewayService, create_app
 from backend.gateway_auth import BearerTokenVerifier
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+LIVE_CLIENT_H = REPO_ROOT / "firmware" / "include" / "live_client.h"
 LIVE_CLIENT_CPP = REPO_ROOT / "firmware" / "src" / "live_client.cpp"
 MAIN_CPP = REPO_ROOT / "firmware" / "src" / "main.cpp"
 
 
 def test_firmware_live_client_streaming_and_rpc_polling_invariants():
-    """Verify firmware/src/live_client.cpp opens a real WebSocket, streams audio/images, and polls HTTP/Serial RPC."""
+    """Verify firmware/src/live_client.cpp and live_client.h avoid Arduino DISABLED macro and stream over WS."""
+    live_h = LIVE_CLIENT_H.read_text(encoding="utf-8")
     live_src = LIVE_CLIENT_CPP.read_text(encoding="utf-8")
     main_src = MAIN_CPP.read_text(encoding="utf-8")
+
+    # 0. Uses LIVE_DISABLED instead of DISABLED to avoid Arduino #define DISABLED 0x00 macro collision
+    assert "LIVE_DISABLED" in live_h
+    assert "SessionEndReason::LIVE_DISABLED" in live_src
 
     # 1. Opens TCP connection & performs RFC 6455 WebSocket Upgrade handshake with Bearer token
     assert "ws_client.connect(host.c_str(), port" in live_src
@@ -47,9 +55,34 @@ def test_firmware_live_client_streaming_and_rpc_polling_invariants():
     # 4. Sends mid-session snapshot & burst JPEG frames over WebSocket
     assert "sendWsImageFrame(ws_client," in live_src
 
-    # 5. Preserves Wi-Fi HTTP & USB-C Serial JSON-RPC responsiveness during active Live session
+    # 5. Preserves Wi-Fi HTTP & USB-C Serial JSON-RPC responsiveness and supports optional live_url override
     assert "if (poll_tick_cb) poll_tick_cb();" in live_src
     assert "pollRpcAndHttp" in main_src
+    assert "cfg.live_url" in main_src
+
+
+def test_voice_gateway_create_app_mounts_live_routes():
+    """Verify voice_gateway.create_app() serves /api/live/session and /api/live/ws on the same app."""
+    verifier = BearerTokenVerifier(device_tokens={"gotchi-01": "SecretTok"})
+    voice_srv = VoiceGatewayService(verifier=verifier)
+    live_srv = LiveGatewayService(verifier=verifier, live_mode_enabled=True)
+    app = create_app(service=voice_srv, live_service=live_srv)
+    client = TestClient(app)
+
+    r_sess = client.post(
+        "/api/live/session",
+        headers={"Authorization": "Bearer SecretTok"},
+        json={"node_id": "gotchi-01"},
+    )
+    assert r_sess.status_code == 200
+    assert r_sess.json()["ok"] is True
+
+    with client.websocket_connect(
+        "/api/live/ws",
+        headers={"Authorization": "Bearer SecretTok"},
+    ) as ws:
+        ev = ws.receive_json()
+        assert ev["type"] == "session_started"
 
 
 def test_live_gateway_disabled_by_default():
@@ -76,11 +109,9 @@ def test_live_gateway_session_and_websocket_token_auth():
     app = create_live_app(srv)
     client = TestClient(app)
 
-    # 1. Missing token on HTTP session -> 401
     r1 = client.post("/api/live/session", json={"node_id": "gotchi-live-node"})
     assert r1.status_code == 401
 
-    # 2. Valid token on HTTP session -> 200
     r2 = client.post(
         "/api/live/session",
         headers={"Authorization": "Bearer SecretToken123"},
@@ -89,13 +120,11 @@ def test_live_gateway_session_and_websocket_token_auth():
     assert r2.status_code == 200
     assert r2.json()["ok"] is True
 
-    # 3. Missing token on WebSocket /api/live/ws -> error frame + close 1008
     with client.websocket_connect("/api/live/ws") as ws_unauth:
         err_ev = ws_unauth.receive_json()
         assert err_ev["type"] == "error"
         assert err_ev["error"] in ("missing_token", "unauthorized")
 
-    # 4. Invalid token on WebSocket /api/live/ws -> error frame + close 1008
     with client.websocket_connect(
         "/api/live/ws",
         headers={"Authorization": "Bearer WrongToken999"},
@@ -104,7 +133,6 @@ def test_live_gateway_session_and_websocket_token_auth():
         assert err_ev["type"] == "error"
         assert err_ev["error"] in ("forbidden", "invalid_token", "unauthorized")
 
-    # 5. Valid token on WebSocket /api/live/ws -> session_started
     with client.websocket_connect(
         "/api/live/ws",
         headers={"Authorization": "Bearer SecretToken123"},
@@ -123,19 +151,16 @@ def test_live_gateway_websocket_malformed_input_resilience():
         init_ev = ws.receive_json()
         assert init_ev["type"] == "session_started"
 
-        # 1. Send malformed JSON text frame
         ws.send_text("{not valid json")
         err1 = ws.receive_json()
         assert err1["type"] == "error"
         assert err1["error"] == "invalid_json"
 
-        # 2. Send invalid base64 image frame
         ws.send_json({"type": "image", "frame_index": 0, "image_b64": "!!!not_base64!!!"})
         err2 = ws.receive_json()
         assert err2["type"] == "error"
         assert err2["error"] == "invalid_base64"
 
-        # 3. Connection remains alive and processes subsequent valid ping & image frames
         ws.send_json({"type": "ping"})
         pong = ws.receive_json()
         assert pong["type"] == "pong"
