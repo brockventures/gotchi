@@ -316,7 +316,11 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
 
     String host, path;
     uint16_t port = 80;
-    if (!parseUrl(url, host, port, path) || !wav.data || wav.length == 0) {
+    const bool has_audio = (wav.data != nullptr && wav.length > 0);
+    const bool has_burst = (image != nullptr && image->burst_count > 0);
+    const bool has_single_image = (!has_burst && image != nullptr && image->data != nullptr && image->length > 0);
+
+    if (!parseUrl(url, host, port, path) || (!has_audio && !has_burst && !has_single_image)) {
         setFailure(ui, UiState::ERROR, "bad_url", "BAD VOICE URL", cb);
         return false;
     }
@@ -329,13 +333,12 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     snprintf(session, sizeof(session), "gotchi-%lu", (unsigned long)millis());
 
     String pre;
-    pre += "--";
-    pre += BOUNDARY;
-    pre += "\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"ptt.wav\"\r\n";
-    pre += "Content-Type: audio/wav\r\n\r\n";
-
-    const bool has_burst = (image != nullptr && image->burst_count > 0);
-    const bool has_single_image = (!has_burst && image != nullptr && image->data != nullptr && image->length > 0);
+    if (has_audio) {
+        pre += "--";
+        pre += BOUNDARY;
+        pre += "\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"ptt.wav\"\r\n";
+        pre += "Content-Type: audio/wav\r\n\r\n";
+    }
 
     String img_pre[ImageAttachment::MAX_BURST_FRAMES];
     size_t burst_total_len = 0;
@@ -343,7 +346,8 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     if (has_burst) {
         for (size_t i = 0; i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {
             if (image->burst_data[i] && image->burst_lengths[i] > 0) {
-                img_pre[i] += "\r\n--";
+                if (has_audio || i > 0) img_pre[i] += "\r\n";
+                img_pre[i] += "--";
                 img_pre[i] += BOUNDARY;
                 img_pre[i] += "\r\nContent-Disposition: form-data; name=\"image_" + String(i) + "\"; filename=\"snap_" + String(i) + ".jpg\"\r\n";
                 img_pre[i] += "Content-Type: image/jpeg\r\n\r\n";
@@ -351,7 +355,8 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
             }
         }
     } else if (has_single_image) {
-        img_pre[0] += "\r\n--";
+        if (has_audio) img_pre[0] += "\r\n";
+        img_pre[0] += "--";
         img_pre[0] += BOUNDARY;
         img_pre[0] += "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"snap.jpg\"\r\n";
         img_pre[0] += "Content-Type: image/jpeg\r\n\r\n";
@@ -376,7 +381,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     post += BOUNDARY;
     post += "--\r\n";
 
-    size_t content_len = pre.length() + wav.length + post.length() + burst_total_len;
+    size_t content_len = (has_audio ? (pre.length() + wav.length) : 0) + post.length() + burst_total_len;
 
     String head = "POST " + path + " HTTP/1.1\r\n";
     head += "Host: " + host;
@@ -399,11 +404,13 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
 
-    bool sent = writeAll(client, (const uint8_t*)head.c_str(), head.length())
-             && writeAll(client, (const uint8_t*)pre.c_str(), pre.length());
-    for (size_t off = 0; sent && off < wav.length; off += UPLOAD_CHUNK) {
-        size_t n = wav.length - off < UPLOAD_CHUNK ? wav.length - off : UPLOAD_CHUNK;
-        sent = writeAll(client, wav.data + off, n);
+    bool sent = writeAll(client, (const uint8_t*)head.c_str(), head.length());
+    if (sent && has_audio) {
+        sent = writeAll(client, (const uint8_t*)pre.c_str(), pre.length());
+        for (size_t off = 0; sent && off < wav.length; off += UPLOAD_CHUNK) {
+            size_t n = wav.length - off < UPLOAD_CHUNK ? wav.length - off : UPLOAD_CHUNK;
+            sent = writeAll(client, wav.data + off, n);
+        }
     }
     if (sent && has_burst) {
         for (size_t i = 0; sent && i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {

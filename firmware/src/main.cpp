@@ -415,8 +415,10 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
     const gotchi_voice::ImageAttachment* img_ptr = nullptr;
     if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_count > 0) {
         if (s_staged_jpeg_count > 1) {
-            img.burst_count = s_staged_jpeg_count;
-            for (size_t i = 0; i < s_staged_jpeg_count && i < gotchi_voice::ImageAttachment::MAX_BURST_FRAMES; ++i) {
+            img.burst_count = s_staged_jpeg_count < gotchi_voice::ImageAttachment::MAX_BURST_FRAMES
+                            ? s_staged_jpeg_count
+                            : gotchi_voice::ImageAttachment::MAX_BURST_FRAMES;
+            for (size_t i = 0; i < img.burst_count; ++i) {
                 img.burst_data[i] = s_staged_jpeg_bufs[i];
                 img.burst_lengths[i] = s_staged_jpeg_lens[i];
             }
@@ -759,10 +761,10 @@ void loop() {
     }
 
     // If staged camera snapshot(s) weren't paired with a voice prompt within `snap_window_ms` (3s),
-    // dispatch standalone with `default_image_prompt`.
+    // dispatch standalone with `default_image_prompt` and no `audio` part.
     if (s_staged_jpeg_active && (millis() - s_staged_jpeg_ts >= cfg.snap_window_ms)) {
-        gotchi_audio::WavView silent_wav = gotchi_audio::buildSilentWav(250);
-        dispatchVoiceOrSnap(silent_wav, true, true);
+        gotchi_audio::WavView no_audio_wav{nullptr, 0};
+        dispatchVoiceOrSnap(no_audio_wav, true, true);
         return;
     }
 
