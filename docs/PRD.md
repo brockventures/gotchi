@@ -52,6 +52,15 @@ These are what the firmware does now. None is a decision.
 - Largest single reply event the firmware can read: 256 KB. The gateway sends about 11 KB per event, so reply length is not limited.
 - Partial e-paper refresh about 0.3 s, full refresh 6.4 s measured on the 7.5 in bench panel (the 1.54 in figures are unmeasured).
 
+## 5a. Values Zero proposed (not yet confirmed by Ryan or Mike)
+
+Zero, #gotchi 2026-10-19 09:10. These fill the open questions in section 6 and are not requirements until confirmed.
+
+- Tap to start, auto-upload after about 1.5 s of trailing silence or a second tap; holding longer than 500 ms still sends on release.
+- Recording cap 90 to 120 s (about 2.9 to 3.8 MB of the 8 MB PSRAM); 250 ms minimum press.
+- `preroll_mode`: `usb_only` (default), `always`, `off`. Detecting USB power would use a VBUS sense input; whether the XIAO ESP32S3 Sense exposes one is unchecked.
+- Snapshot attach window about 10 s, with a configurable `default_image_prompt` for a standalone snapshot.
+
 ## 6. Open requirements (need Ryan or Mike)
 
 - **OPEN: hands-free listening.** Ryan asked whether one press could open listening and keep recording until he stops talking. That needs end-of-speech detection on the device. What silence length ends a turn, and what is the longest a turn may run? Proposal: 1.0 s of silence, with the longest recording the memory allows.
