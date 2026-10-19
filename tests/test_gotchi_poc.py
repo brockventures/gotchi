@@ -29,6 +29,55 @@ def test_multipart_payload():
     assert b"gotchi-pi0" in body
 
 
+def test_multipart_single_image_and_prompt():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 50)
+    dummy_jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIFdummy"
+    body, ctype = build_multipart_wav(
+        wav,
+        node_id="gotchi-cam-1",
+        session_id="sess-snap-1",
+        image_jpeg=dummy_jpeg,
+        prompt="Analyze this object",
+        audio_out_mode="speaker",
+    )
+    assert b'name="audio"; filename="ptt.wav"' in body
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"JFIFdummy" in body
+    assert b'name="prompt"' in body
+    assert b"Analyze this object" in body
+    assert b'name="audio_out_mode"' in body
+    assert b"speaker" in body
+
+
+def test_multipart_five_photo_burst():
+    wav = wrap_pcm16_to_wav(b"\x00\x00" * 50)
+    burst = [f"frame_{i}".encode() for i in range(5)]
+    body, ctype = build_multipart_wav(
+        wav,
+        node_id="gotchi-burst-1",
+        session_id="sess-burst-1",
+        burst_images=burst,
+    )
+    for i in range(5):
+        assert f'name="image_{i}"; filename="snap_{i}.jpg"'.encode() in body
+        assert f"frame_{i}".encode() in body
+
+
+def test_multipart_standalone_snapshot_without_audio():
+    dummy_jpeg = b"\xff\xd8\xff\xe0standalone"
+    body, ctype = build_multipart_wav(
+        wav_bytes=None,
+        node_id="gotchi-standalone",
+        session_id="sess-stand-1",
+        image_jpeg=dummy_jpeg,
+        prompt="What is this item?",
+    )
+    assert b'name="audio"' not in body
+    assert b'name="image"; filename="snap.jpg"' in body
+    assert b"standalone" in body
+    assert b"What is this item?" in body
+
+
 def test_refresh_tracker_policy():
     rt = RefreshTracker(max_consecutive_partials=3, full_refresh_minutes=15.0)
     assert rt.select_refresh_mode(now=100.0) == "full"

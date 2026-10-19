@@ -334,13 +334,28 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     pre += "\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"ptt.wav\"\r\n";
     pre += "Content-Type: audio/wav\r\n\r\n";
 
-    const bool has_image = (image != nullptr && image->data != nullptr && image->length > 0);
-    String img_pre;
-    if (has_image) {
-        img_pre += "\r\n--";
-        img_pre += BOUNDARY;
-        img_pre += "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"snap.jpg\"\r\n";
-        img_pre += "Content-Type: image/jpeg\r\n\r\n";
+    const bool has_burst = (image != nullptr && image->burst_count > 0);
+    const bool has_single_image = (!has_burst && image != nullptr && image->data != nullptr && image->length > 0);
+
+    String img_pre[ImageAttachment::MAX_BURST_FRAMES];
+    size_t burst_total_len = 0;
+
+    if (has_burst) {
+        for (size_t i = 0; i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {
+            if (image->burst_data[i] && image->burst_lengths[i] > 0) {
+                img_pre[i] += "\r\n--";
+                img_pre[i] += BOUNDARY;
+                img_pre[i] += "\r\nContent-Disposition: form-data; name=\"image_" + String(i) + "\"; filename=\"snap_" + String(i) + ".jpg\"\r\n";
+                img_pre[i] += "Content-Type: image/jpeg\r\n\r\n";
+                burst_total_len += img_pre[i].length() + image->burst_lengths[i];
+            }
+        }
+    } else if (has_single_image) {
+        img_pre[0] += "\r\n--";
+        img_pre[0] += BOUNDARY;
+        img_pre[0] += "\r\nContent-Disposition: form-data; name=\"image\"; filename=\"snap.jpg\"\r\n";
+        img_pre[0] += "Content-Type: image/jpeg\r\n\r\n";
+        burst_total_len += img_pre[0].length() + image->length;
     }
 
     String post = "\r\n--";
@@ -351,7 +366,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     post += BOUNDARY;
     post += "\r\nContent-Disposition: form-data; name=\"session_id\"\r\n\r\n";
     post += session;
-    if (has_image && image->default_prompt.length() > 0) {
+    if (image != nullptr && image->default_prompt.length() > 0) {
         post += "\r\n--";
         post += BOUNDARY;
         post += "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n";
@@ -361,10 +376,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     post += BOUNDARY;
     post += "--\r\n";
 
-    size_t content_len = pre.length() + wav.length + post.length();
-    if (has_image) {
-        content_len += img_pre.length() + image->length;
-    }
+    size_t content_len = pre.length() + wav.length + post.length() + burst_total_len;
 
     String head = "POST " + path + " HTTP/1.1\r\n";
     head += "Host: " + host;
@@ -393,8 +405,18 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         size_t n = wav.length - off < UPLOAD_CHUNK ? wav.length - off : UPLOAD_CHUNK;
         sent = writeAll(client, wav.data + off, n);
     }
-    if (sent && has_image) {
-        sent = writeAll(client, (const uint8_t*)img_pre.c_str(), img_pre.length());
+    if (sent && has_burst) {
+        for (size_t i = 0; sent && i < image->burst_count && i < ImageAttachment::MAX_BURST_FRAMES; ++i) {
+            if (image->burst_data[i] && image->burst_lengths[i] > 0) {
+                sent = writeAll(client, (const uint8_t*)img_pre[i].c_str(), img_pre[i].length());
+                for (size_t off = 0; sent && off < image->burst_lengths[i]; off += UPLOAD_CHUNK) {
+                    size_t n = image->burst_lengths[i] - off < UPLOAD_CHUNK ? image->burst_lengths[i] - off : UPLOAD_CHUNK;
+                    sent = writeAll(client, image->burst_data[i] + off, n);
+                }
+            }
+        }
+    } else if (sent && has_single_image) {
+        sent = writeAll(client, (const uint8_t*)img_pre[0].c_str(), img_pre[0].length());
         for (size_t off = 0; sent && off < image->length; off += UPLOAD_CHUNK) {
             size_t n = image->length - off < UPLOAD_CHUNK ? image->length - off : UPLOAD_CHUNK;
             sent = writeAll(client, image->data + off, n);
