@@ -22,7 +22,7 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [ ] **T2.3 — PDM Microphone Capture & PSRAM WAV Ring Buffer** (`Zero`)
   - Configure I2S/PDM RX on `GPIO41` (`CLK`) and `GPIO42` (`DATA`) at `16 kHz` 16-bit mono; buffer PTT recordings in PSRAM with a 500ms circular pre-roll.
 - [ ] **T2.4 — `MAX98357A` I2S Audio Output & Chime/TTS Stream Player** (`Zero`)
-  - Configure I2S TX on `D6` (`GPIO43` BCLK), `D7` (`GPIO44` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks and Tamagotchi UI chimes.
+  - Configure I2S TX on `D7` (`GPIO44` BCLK — silent at boot), `D6` (`GPIO43` LRCLK), and `D9` (`GPIO8` DIN) to play streamed TTS audio chunks and Tamagotchi UI chimes.
 - [ ] **T2.5 — `OV5640` Camera Driver & Single-Shot VCM Autofocus** (`Zero`)
   - Initialize DVP camera pins, load `OV5640` AF firmware registers (`0x3022 = 0x08`), and expose snapshot capture for multimodal prompts.
 - [ ] **T2.6 — 1.54" E-Paper (`SSD1681`) Sprite & Partial-Refresh Renderer** (`Amos`, `Zero`)

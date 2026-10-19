@@ -23,11 +23,11 @@ When writing or reviewing firmware for the **Seeed Studio XIAO ESP32S3 Sense** s
 1. **ePaper SPI Pins (Hardwired by Breakout):**
    - `RST` = `D0` (`GPIO1`), `CS` = `D1` (`GPIO2`), `DC` = `D3` (`GPIO4`), `BUSY` = `D5` (`GPIO6`), `SCK` = `D8` (`GPIO7`), `MOSI` = `D10` (`GPIO9`).
 2. **MAX98357A I2S Audio Output Pins:**
-   - `BCLK` = `D6` (`GPIO43`), `LRCLK` = `D7` (`GPIO44`), `DIN` = `D9` (`GPIO8`).
+   - `BCLK` = `D7` (`GPIO44` — silent `UART0_RX` at boot to prevent speaker pop), `LRCLK` = `D6` (`GPIO43`), `DIN` = `D9` (`GPIO8`).
    - *Crucial:* Never assign I2S to `D5` (`GPIO6`), as `D5` is hardwired to the ePaper `BUSY` line on the Seeed breakout.
 3. **Tactile Buttons & Reserved V2 Wake Pin:**
    - `BTN_TOP` (Push-to-Talk & Deep-Sleep Wake) = `D2` (`GPIO3` / `RTC_GPIO3`, active-low with internal pull-up).
-   - `BTN_BOT` (Secondary / Mode / Snap) = `GPIO0` (or removable jumper on `D4` / `GPIO5`).
+   - `BTN_BOT` (Secondary / Mode / Snap) = `D4` (`GPIO5` / `RTC_GPIO5`, avoiding `GPIO0` boot-strapping).
    - `D4` (`GPIO5` / `RTC_GPIO5`) is reserved as the future hardware wake interrupt / `I2C_SDA` expansion pin.
 4. **Internal Sense Expansion Board Pins:**
    - Digital PDM Microphone: `CLK` = `GPIO41`, `DATA` = `GPIO42`.

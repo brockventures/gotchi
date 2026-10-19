@@ -18,20 +18,22 @@ When plugged into the **Seeed ePaper Breakout Board**, 6 pins are routed to the 
 | **`D1`** | `GPIO 2` | Yes (`RTC_GPIO2`) | **ePaper `CS`** (SPI Chip Select) | Hardwired on Seeed ePaper Breakout |
 | **`D2`** | `GPIO 3` | **Yes (`RTC_GPIO3`)** | **BTN_TOP (Push-to-Talk & Wake)** | Hand-wired momentary switch to `GND` (`INPUT_PULLUP`) |
 | **`D3`** | `GPIO 4` | Yes (`RTC_GPIO4`) | **ePaper `DC`** (Data/Command) | Hardwired on Seeed ePaper Breakout |
-| **`D4`** | `GPIO 5` | **Yes (`RTC_GPIO5`)** | **RESERVED (V2 Wake IRQ / `I2C_SDA`)** | **Leave open in V1** (reserved for future neural DSP/wake daughterboard) |
-| **`D5`** | `GPIO 6` | Yes (`RTC_GPIO6`) | **ePaper `BUSY`** *(+ V2 `I2C_SCL`)* | Hardwired on Seeed ePaper Breakout |
-| **`D6`** | `GPIO 43` | No | **I2S `BCLK`** (Audio Bit Clock) | Wire to `MAX98357A` **`BCLK`** pin |
-| **`D7`** | `GPIO 44` | No | **I2S `LRCLK`** (Audio Word Select) | Wire to `MAX98357A` **`LRC`** pin |
+| **`D4`** | `GPIO 5` | **Yes (`RTC_GPIO5`)** | **BTN_BOT (Secondary / Mode / Snap)** | Hand-wired momentary switch to `GND` (`INPUT_PULLUP`); reclaimable for V2 wake hardware |
+| **`D5`** | `GPIO 6` | Yes (`RTC_GPIO6`) | **ePaper `BUSY`** *(+ V2 `I2C_SCL`)* | Hardwired on Seeed ePaper Breakout ([Seeed Wiki](https://wiki.seeedstudio.com/epaper_breakout-board/)) |
+| **`D6`** | `GPIO 43` | No | **I2S `LRCLK`** (Audio Word Select) | Wire to `MAX98357A` **`LRC`** pin *(UART0 TX at reset)* |
+| **`D7`** | `GPIO 44` | No | **I2S `BCLK`** (Audio Bit Clock) | Wire to `MAX98357A` **`BCLK`** pin *(UART0 RX — silent at reset)* |
 | **`D8`** | `GPIO 7` | No | **ePaper `SCK`** (SPI Clock) | Hardwired on Seeed ePaper Breakout |
 | **`D9`** | `GPIO 8` | No | **I2S `DIN`** (Audio Data Out) | Wire to `MAX98357A` **`DIN`** pin *(MISO is unused by ePaper)* |
 | **`D10`** | `GPIO 9` | No | **ePaper `MOSI`** (SPI Data Out) | Hardwired on Seeed ePaper Breakout |
-| **`GPIO 0`** | `GPIO 0` | Yes (`RTC_GPIO0`) | **BTN_BOT (Secondary / Camera / Back)** | Solder wire to `BOOT` pad (or use `D4` if preferred) to `GND` |
+| **`GPIO 0`** | `GPIO 0` | Yes (`RTC_GPIO0`) | **Reserved (`BOOT` Strapping Pad)** | Leave unattached in V1 so holding `BTN_BOT` at power-on never traps the MCU in ROM download mode |
 | *Internal* | `GPIO 41` | — | **PDM Mic `CLK`** | Internal via Sense B2B Header |
 | *Internal* | `GPIO 42` | — | **PDM Mic `DATA`** | Internal via Sense B2B Header |
 | *Internal* | `GPIO 10–18, 38–40, 47–48` | — | **`OV5640` DVP Camera Bus** | Internal via Sense B2B Header |
 
-> **Why `D4` (`GPIO5` / `RTC_GPIO5`) is Reserved:**
-> Keeping `D4` unblocked guarantees a dedicated **deep-sleep RTC wake interrupt pin** (and hardware I2C `SDA`) so we can drop in an external ultralow-power acoustic wake-word co-processor in V2 without desoldering the V1 harness. If you prefer not to solder `BTN_BOT` to the tiny `GPIO0` pad on V1, you can temporarily land `BTN_BOT` on `D4` (`GPIO5`) using a 1-pin DuPont header.
+> **Strapping & Boot-Glitch Protections (Amos + Zero Audit):**
+> 1. **`BTN_BOT` Landed on `D4` (`GPIO 5`) Instead of `GPIO 0`:** `GPIO 0` is the ESP32-S3 ROM bootloader strapping pin. Landing `BTN_BOT` on `D4` (`GPIO 5` / `RTC_GPIO5`) eliminates the risk of entering USB download mode if the button is pressed in a pocket while flipping the power switch, and avoids micro-soldering to the tiny surface-mount `BOOT` pad. (If V2 adds an external I2C/wake module later, both buttons can multiplex onto a single ADC resistor ladder on `D2`).
+> 2. **Pop-Free Boot on `MAX98357A` (`BCLK` on `D7` / `GPIO 44`):** `D6` (`GPIO 43`) is the ESP32-S3's default `UART0_TX`, which emits brief ROM boot messages at reset, whereas `D7` (`GPIO 44` / `UART0_RX`) is completely silent at boot. Routing **`BCLK` to `D7` (`GPIO 44`)** and **`LRCLK` to `D6` (`GPIO 43`)** ensures the `MAX98357A` sees zero valid bit-clock edges during ROM boot and stays muted until the I2S driver starts. Additionally, pull `MAX98357A SD` to `GND` via a **100 kΩ pull-down resistor** if wiring `SD` to a control pin, or rely on the clock-loss auto-shutdown with `BCLK` on silent `GPIO 44`.
+> 3. **`BTN_TOP` on `D2` (`GPIO 3` Strapping Note):** `GPIO 3` is an optional JTAG-source strapping pin (only evaluated when `EFUSE_STRAP_JTAG_SEL` is burned, which is disabled by default from the factory). Leave `EFUSE_STRAP_JTAG_SEL` unburned (`0`) so holding PTT at power-on has zero effect on USB serial/JTAG.
 
 ---
 
@@ -64,8 +66,8 @@ When plugged into the **Seeed ePaper Breakout Board**, 6 pins are routed to the 
 Use the 8-pin auxiliary header (or tap the XIAO header pins) to wire the **`MAX98357A`** breakout with 30 AWG silicone wire:
 - **`MAX98357A VIN`** -> XIAO **`5V`** (or **`3V3`** for lower peak current on battery)
 - **`MAX98357A GND`** -> XIAO **`GND`**
-- **`MAX98357A BCLK`** -> XIAO **`D6` (`GPIO 43`)**
-- **`MAX98357A LRC`** -> XIAO **`D7` (`GPIO 44`)**
+- **`MAX98357A BCLK`** -> XIAO **`D7` (`GPIO 44`)** *(Silent `UART0_RX` at boot — prevents ROM serial boot pop)*
+- **`MAX98357A LRC`** -> XIAO **`D6` (`GPIO 43`)**
 - **`MAX98357A DIN`** -> XIAO **`D9` (`GPIO 8`)**
 - **`MAX98357A SD` (Shutdown)** -> Leave floating (internal pull-up keeps amp enabled in mono `(L+R)/2` mode; automatically enters `<1 µA` hardware shutdown whenever the ESP32-S3 stops the I2S clock).
 - Solder the **1W 8Ω Micro-Speaker** leads to the `Speaker +` and `Speaker -` pads on the `MAX98357A`.
@@ -75,7 +77,7 @@ Use the 8-pin auxiliary header (or tap the XIAO header pins) to wire the **`MAX9
    - Wire Pin 1 of the tactile switch to XIAO **`D2` (`GPIO 3` / `RTC_GPIO3`)**.
    - Wire Pin 2 of the tactile switch to **`GND`**.
 2. **Bottom Button (`BTN_BOT` — Mode / Camera Snap / Cancel):**
-   - Wire Pin 1 of the tactile switch to **`D4` (`GPIO 5`)** (via a removable pin so `D4` stays reclaimable for V2 wake hardware) or to the **`GPIO 0` (`BOOT`)** pad.
+   - Wire Pin 1 of the tactile switch directly to XIAO **`D4` (`GPIO 5` / `RTC_GPIO5`)**. *(Do not use `GPIO 0`, so holding the button during power-up cannot trigger ROM download mode).*
    - Wire Pin 2 of the tactile switch to **`GND`**.
 
 ---
