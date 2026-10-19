@@ -41,7 +41,9 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F13 | Pressing a button while a reply plays interrupts it; the bottom button can also cancel or mute playback | Ryan, #gotchi 2026-10-19 09:09 | Not built |
 | F14 | A snapshot attaches to the next voice prompt if that prompt starts within a debounce time; otherwise it is sent alone for the bot to comment on | Ryan, #gotchi 2026-10-19 09:09 | Not built |
 | F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Config exists (`voice_url`) |
-| F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured; "normal usage" is not yet defined |
+| F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
+| F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
+| F18 | BLE relay test: the same turn with the phone away from home Wi-Fi | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed |
 
 ## 5. Limits of today's build
@@ -68,8 +70,6 @@ Zero, #gotchi 2026-10-19 09:10. These fill the open questions in section 6 and a
 - **OPEN: standalone snapshot.** How long is the window in which a snapshot attaches to the next voice prompt? What should the bot do with a snapshot that arrives alone? Attaching needs an optional `image` field on `/api/voice/interact`; whether the gateway accepts one has not been checked.
 - **OPEN: pre-roll purpose.** Ryan asked whether pre-roll is only for wake word. With push-to-talk it also catches the first syllables spoken before the chime and screen draw finish; Zero's mic task (PR #9) now covers part of that. Is a USB-only default still wanted?
 - **OPEN: where the off-LAN gateway runs** (T3.2). Mike's call.
-- **OPEN: how we will know the hotspot and BLE modes work.** Each needs one concrete test the unit must pass before V1 is called done. Proposal: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays; the same turn over the BLE relay with the phone off home Wi-Fi.
-- **OPEN: what "normal usage" means** for the battery target, for example turns per day. Proposal: to be set by Ryan and Mike; the test cannot run without it.
 - **OPEN: wake word** is deferred to V1.1 (T5.2); confirm that stays out of V1.
 
 ## 7. Out of scope for V1
