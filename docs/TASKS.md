@@ -18,7 +18,8 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
 - [x] **T2.1 — Scaffold PlatformIO Project & Dual-OTA Partition Table** (`Zero`)
   - Configure `platformio.ini` for `seeed_xiao_esp32s3` with 8MB Flash (`ota_0`, `ota_1`, `nvs`, `coredump`) and 8MB Octal PSRAM enabled.
 - [x] **T2.2 — Implement Dual-Transport JSON-RPC Config & `self_test` Engine** (`Zero`, `Amos`)
-  - Shared command dispatcher over USB-C CDC Serial (`115200`) and Wi-Fi HTTP (`get_config`, `set_config`, `set_wifi`, `self_test`, `get_logs`, `reboot`, `factory_reset`).
+  - Shared command dispatcher over USB-C CDC Serial (`115200`) and Wi-Fi HTTP (`get_config`, `set_config`, `set_wifi`, `self_test`, `get_logs`, `clear_logs`, `reboot`, `factory_reset`).
+  - [x] Bounded circular log ring buffer in RAM/PSRAM (`firmware/include/log_buffer.h`, `firmware/src/log_buffer.cpp`) with unconditional credential scrubbing (`psk`, `bearer_token`) and multi-subsystem lifecycle telemetry (F6 / Issue #18).
 - [x] **T2.3 — PDM Microphone Capture & PSRAM WAV Ring Buffer** (`Zero`)
   - Configure I2S/PDM RX on `GPIO41` (`CLK`) and `GPIO42` (`DATA`) at `16 kHz` 16-bit mono; buffer PTT recordings in PSRAM with a 500ms circular pre-roll.
 - [x] **T2.4 — `MAX98357A` I2S Audio Output & Chime/TTS Stream Player** (`Zero`)
