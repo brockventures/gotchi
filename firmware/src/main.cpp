@@ -1,13 +1,16 @@
 // ============================================================================
 // GOTCHI V1 Edge Firmware — Seeed Studio XIAO ESP32S3 Sense (8MB Flash / 8MB PSRAM)
-// Implements Epic 2 (T2.1-T2.7) & Epic 3 (T3.1-T3.2):
+// Implements Epic 2 (T2.1-T2.7), Epic 3 (T3.1-T3.2) & PRD F13/F14/F19/F20/F21:
 //   - Dual-transport JSON-RPC (`USB-C Serial 115200` + `POST /api/rpc` w/ Bearer auth)
+//   - Strict separation: Top button (`BTN_TOP`) = speaking only; Bottom (`BTN_BOT`) = camera only
 //   - Hybrid / Tap-to-Talk / Hold-to-Talk input with 120s PSRAM WAV cap & VAD silence stop
-//   - Configurable 500ms circular pre-roll (`usb_only` | `always` | `off`)
-//   - Mid-reply Barge-In (`BTN_TOP`) and Cancel/Mute (`BTN_BOT`) within 42ms
-//   - Camera snapshot staging (`BTN_BOT`) with 3s voice-attach debounce & standalone fallback
-//   - Waveshare 1.54" V2 (`SSD1681`) 200x200 e-paper sprite & partial/full refresh manager
-//   - QR Soft-AP Captive Portal onboarding (`192.168.4.1`)
+//   - Configurable 500ms circular pre-roll (`usb_host`/`usb_only` | `always` | `off`)
+//   - Reply Cancel/Mute on `BTN_TOP` within 42ms (barge-in dropped per F13)
+//   - Camera snapshot on `BTN_BOT`: short press on release stages 1 photo (or attaches to
+//     in-progress recording per F14); long press (>=700ms) captures 5-photo burst over 3s (F20)
+//   - Go Live mode (`live_mode`, default false): entered via `BTN_TOP` double-tap within
+//     `double_tap_ms` (400ms) or whole-utterance `"go live"` transcript (F19/F21); ends on
+//     `BTN_TOP` press or `live_silence_ms` (15s) silence
 // ============================================================================
 
 #include <Arduino.h>
@@ -46,9 +49,13 @@ struct GotchiConfig {
     uint32_t ptt_min_ms = 250;        // 250ms minimum floor
     uint32_t ptt_min_rms_lsb = 50;    // 50 LSB minimum RMS energy
     uint32_t tap_latch_ms = 500;      // Press released < 500ms latches into hands-free Tap-to-Talk
+    uint32_t double_tap_ms = 400;     // Second BTN_TOP tap within 400ms of first release -> Go Live (F19)
     uint32_t vad_silence_ms = 1500;   // 1.5s trailing silence ends Tap-to-Talk turn
     uint32_t vad_rms_lsb = 150;       // 150 LSB speech detection threshold for VAD silence timer
     uint32_t snap_window_ms = 3000;   // 3.0s debounce window to attach snapshot to next voice prompt
+    uint32_t cam_long_press_ms = 700; // Holding BTN_BOT >= 700ms triggers 5-photo burst over 3s (F20)
+    bool     live_mode = false;       // F19: Go Live mode off by default (configurable via set_config)
+    uint32_t live_silence_ms = 15000; // F19: 15s silence ends Go Live session
     String default_image_prompt = "Describe what you see in this snapshot briefly.";
 } cfg;
 
@@ -66,13 +73,16 @@ static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
 static constexpr uint32_t BTN_DEBOUNCE_MS = 30;
 static constexpr uint32_t VAD_INITIAL_TIMEOUT_MS = 5000; // Max wait for speech to start in tap mode
 static constexpr size_t   MAX_STAGED_JPEG_BYTES = 128 * 1024;
+static constexpr size_t   BURST_FRAME_COUNT = 5;
+static constexpr uint32_t BURST_TOTAL_DURATION_MS = 3000; // 5 frames over 3.0s (0, 750, 1500, 2250, 3000ms)
 
-// Staged camera snapshot state (BTN_BOT)
-static uint8_t* s_staged_jpeg_buf = nullptr;
-static size_t   s_staged_jpeg_len = 0;
+// Staged camera snapshot / 5-frame burst state (BTN_BOT, allocated in PSRAM)
+static uint8_t* s_staged_jpeg_bufs[BURST_FRAME_COUNT] = {nullptr};
+static size_t   s_staged_jpeg_lens[BURST_FRAME_COUNT] = {0};
+static size_t   s_staged_jpeg_count = 0;
 static bool     s_staged_jpeg_active = false;
 static uint32_t s_staged_jpeg_ts = 0;
-static bool     s_barge_in_pending = false;
+static bool     s_enter_live_pending = false;
 
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
@@ -90,8 +100,39 @@ static void applyPrerollPolicy() {
     } else if (cfg.preroll_mode == "off") {
         gotchi_audio::setPrerollEnabled(false);
     } else {
-        // "usb_only": active when enumerated on USB host power/data
+        // "usb_host" or "usb_only": active when enumerated on USB host power/data
         gotchi_audio::setPrerollEnabled(isUsbDataHostConnected());
+    }
+}
+
+// Normalizes a transcript (lowercase, strips punctuation/whitespace) and returns
+// true iff the entire utterance is "go live" (PRD F21).
+static bool isWholeUtteranceGoLive(const String& transcript) {
+    String cleaned;
+    cleaned.reserve(transcript.length());
+    bool last_space = true;
+    for (size_t i = 0; i < transcript.length(); ++i) {
+        char c = transcript.charAt(i);
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            cleaned += c;
+            last_space = false;
+        } else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            if (!last_space) {
+                cleaned += ' ';
+                last_space = true;
+            }
+        }
+    }
+    cleaned.trim();
+    return cleaned == "go live";
+}
+
+static void clearStagedSnapshots() {
+    s_staged_jpeg_active = false;
+    s_staged_jpeg_count = 0;
+    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+        s_staged_jpeg_lens[i] = 0;
     }
 }
 
@@ -112,9 +153,13 @@ void loadConfig() {
     cfg.ptt_min_ms           = prefs.getUInt("ptt_min_ms", cfg.ptt_min_ms);
     cfg.ptt_min_rms_lsb      = prefs.getUInt("ptt_min_rms", cfg.ptt_min_rms_lsb);
     cfg.tap_latch_ms         = prefs.getUInt("tap_latch_ms", cfg.tap_latch_ms);
+    cfg.double_tap_ms        = prefs.getUInt("dbl_tap_ms", cfg.double_tap_ms);
     cfg.vad_silence_ms       = prefs.getUInt("vad_sil_ms", cfg.vad_silence_ms);
     cfg.vad_rms_lsb          = prefs.getUInt("vad_rms_lsb", cfg.vad_rms_lsb);
     cfg.snap_window_ms       = prefs.getUInt("snap_win_ms", cfg.snap_window_ms);
+    cfg.cam_long_press_ms    = prefs.getUInt("cam_long_ms", cfg.cam_long_press_ms);
+    cfg.live_mode            = prefs.getBool("live_mode", cfg.live_mode);
+    cfg.live_silence_ms      = prefs.getUInt("live_sil_ms", cfg.live_silence_ms);
     cfg.default_image_prompt = prefs.getString("img_prompt", cfg.default_image_prompt);
     prefs.end();
     if (cfg.ptt_max_ms > 120000) cfg.ptt_max_ms = 120000;
@@ -138,9 +183,13 @@ void saveConfig() {
     prefs.putUInt("ptt_min_ms", cfg.ptt_min_ms);
     prefs.putUInt("ptt_min_rms", cfg.ptt_min_rms_lsb);
     prefs.putUInt("tap_latch_ms", cfg.tap_latch_ms);
+    prefs.putUInt("dbl_tap_ms", cfg.double_tap_ms);
     prefs.putUInt("vad_sil_ms", cfg.vad_silence_ms);
     prefs.putUInt("vad_rms_lsb", cfg.vad_rms_lsb);
     prefs.putUInt("snap_win_ms", cfg.snap_window_ms);
+    prefs.putUInt("cam_long_ms", cfg.cam_long_press_ms);
+    prefs.putBool("live_mode", cfg.live_mode);
+    prefs.putUInt("live_sil_ms", cfg.live_silence_ms);
     prefs.putString("img_prompt", cfg.default_image_prompt);
     prefs.end();
     applyPrerollPolicy();
@@ -175,9 +224,13 @@ String handleJsonRpc(const String& jsonLine) {
         res["ptt_min_ms"] = cfg.ptt_min_ms;
         res["ptt_min_rms_lsb"] = cfg.ptt_min_rms_lsb;
         res["tap_latch_ms"] = cfg.tap_latch_ms;
+        res["double_tap_ms"] = cfg.double_tap_ms;
         res["vad_silence_ms"] = cfg.vad_silence_ms;
         res["vad_rms_lsb"] = cfg.vad_rms_lsb;
         res["snap_window_ms"] = cfg.snap_window_ms;
+        res["cam_long_press_ms"] = cfg.cam_long_press_ms;
+        res["live_mode"] = cfg.live_mode;
+        res["live_silence_ms"] = cfg.live_silence_ms;
         res["default_image_prompt"] = cfg.default_image_prompt;
         res["usb_host_connected"] = isUsbDataHostConnected();
         res["psram_free"] = ESP.getFreePsram();
@@ -199,9 +252,13 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["ptt_min_ms"].is<uint32_t>()) cfg.ptt_min_ms = req["ptt_min_ms"].as<uint32_t>();
         if (req["ptt_min_rms_lsb"].is<uint32_t>()) cfg.ptt_min_rms_lsb = req["ptt_min_rms_lsb"].as<uint32_t>();
         if (req["tap_latch_ms"].is<uint32_t>()) cfg.tap_latch_ms = req["tap_latch_ms"].as<uint32_t>();
+        if (req["double_tap_ms"].is<uint32_t>()) cfg.double_tap_ms = req["double_tap_ms"].as<uint32_t>();
         if (req["vad_silence_ms"].is<uint32_t>()) cfg.vad_silence_ms = req["vad_silence_ms"].as<uint32_t>();
         if (req["vad_rms_lsb"].is<uint32_t>()) cfg.vad_rms_lsb = req["vad_rms_lsb"].as<uint32_t>();
         if (req["snap_window_ms"].is<uint32_t>()) cfg.snap_window_ms = req["snap_window_ms"].as<uint32_t>();
+        if (req["cam_long_press_ms"].is<uint32_t>()) cfg.cam_long_press_ms = req["cam_long_press_ms"].as<uint32_t>();
+        if (req["live_mode"].is<bool>()) cfg.live_mode = req["live_mode"].as<bool>();
+        if (req["live_silence_ms"].is<uint32_t>()) cfg.live_silence_ms = req["live_silence_ms"].as<uint32_t>();
         if (req["default_image_prompt"].is<const char*>()) {
             cfg.default_image_prompt = req["default_image_prompt"].as<String>();
         }
@@ -259,8 +316,10 @@ static void waitForButtonRelease(uint8_t pin, uint32_t max_wait_ms = 2000) {
 static void showIdle() {
     GotchiUIState idle_ui;
     idle_ui.skin = cfg.skin;
-    if (s_staged_jpeg_active) {
-        idle_ui.status_text = "SNAP STAGED";
+    if (s_staged_jpeg_active && s_staged_jpeg_count > 0) {
+        idle_ui.status_text = s_staged_jpeg_count > 1
+            ? (String("BURST (") + String(s_staged_jpeg_count) + ") STAGED")
+            : "SNAP STAGED";
     }
     panel.draw(idle_ui);
 }
@@ -269,18 +328,70 @@ static void onVoiceState(const GotchiUIState& ui) {
     panel.draw(ui);
 }
 
-// Polled every ~42ms during TTS playback and SSE wait.
-// BTN_TOP triggers immediate Barge-In (abort playback + start new voice recording).
-// BTN_BOT triggers immediate Cancel / Mute (abort playback + return to IDLE).
+// Polled every ~42ms during TTS playback and SSE wait (PRD F13).
+// BTN_TOP cancels/mutes the reply and returns to IDLE (barge-in is dropped).
+// BTN_BOT is camera-only and never aborts voice playback.
 static gotchi_voice::InteractResult pollVoiceAbort() {
     httpServer.handleClient();
     if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
-        return gotchi_voice::InteractResult::ABORT_BARGE_IN;
-    }
-    if (digitalRead(PIN_BTN_BOT_MOD) == LOW && btnStable(PIN_BTN_BOT_MOD, true)) {
         return gotchi_voice::InteractResult::ABORT_CANCEL;
     }
     return gotchi_voice::InteractResult::DONE;
+}
+
+// Captures one JPEG frame into slot `slot_idx` of PSRAM staging buffers.
+static bool captureIntoSlot(size_t slot_idx) {
+    if (slot_idx >= BURST_FRAME_COUNT || !s_staged_jpeg_bufs[slot_idx]) return false;
+    camera_fb_t* fb = gotchi_camera::captureJpeg();
+    if (!fb || !fb->buf || fb->len == 0 || fb->len > MAX_STAGED_JPEG_BYTES) {
+        if (fb) esp_camera_fb_return(fb);
+        return false;
+    }
+    memcpy(s_staged_jpeg_bufs[slot_idx], fb->buf, fb->len);
+    s_staged_jpeg_lens[slot_idx] = fb->len;
+    esp_camera_fb_return(fb);
+    return true;
+}
+
+// Runs a Go Live continuous session (PRD F19).
+// Stays open until `BTN_TOP` is pressed or `cfg.live_silence_ms` (default 15s) of silence elapses.
+static void runLiveSession() {
+    waitForButtonRelease(PIN_BTN_TOP_PTT);
+    GotchiUIState ui;
+    ui.skin = cfg.skin;
+
+    if (!cfg.live_mode) {
+        showIdle();
+        return;
+    }
+
+    gotchi_audio::playChime("ptt_start");
+    ui.state = UiState::LISTENING;
+    ui.status_text = "LIVE SESSION";
+    panel.draw(ui);
+
+    const float vad_thresh = (float)cfg.vad_rms_lsb / 32768.0f;
+    uint32_t last_speech_ts = millis();
+
+    while (true) {
+        httpServer.handleClient();
+        // Pressing BTN_TOP during a Live session ends it immediately (F19)
+        if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
+            waitForButtonRelease(PIN_BTN_TOP_PTT);
+            break;
+        }
+        gotchi_audio::pumpPreroll();
+        float recent_rms = gotchi_audio::getRecentRms(1600);
+        if (recent_rms >= vad_thresh) {
+            last_speech_ts = millis();
+        } else if (millis() - last_speech_ts >= cfg.live_silence_ms) {
+            break; // 15s (configurable live_silence_ms) of silence ends Live session
+        }
+        delay(10);
+    }
+
+    gotchi_audio::playChime("ptt_stop");
+    showIdle();
 }
 
 static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_staged_snap, bool is_standalone_snap) {
@@ -302,15 +413,15 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
 
     gotchi_voice::ImageAttachment img;
     const gotchi_voice::ImageAttachment* img_ptr = nullptr;
-    if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_buf && s_staged_jpeg_len > 0) {
-        img.data = s_staged_jpeg_buf;
-        img.length = s_staged_jpeg_len;
+    if (include_staged_snap && s_staged_jpeg_active && s_staged_jpeg_count > 0 &&
+        s_staged_jpeg_bufs[0] && s_staged_jpeg_lens[0] > 0) {
+        img.data = s_staged_jpeg_bufs[0];
+        img.length = s_staged_jpeg_lens[0];
         if (is_standalone_snap) {
             img.default_prompt = cfg.default_image_prompt;
         }
         img_ptr = &img;
-        s_staged_jpeg_active = false;
-        s_staged_jpeg_len = 0;
+        clearStagedSnapshots();
     }
 
     gotchi_voice::InteractResult result = gotchi_voice::InteractResult::DONE;
@@ -319,30 +430,44 @@ static void dispatchVoiceOrSnap(const gotchi_audio::WavView& wav, bool include_s
         img_ptr, pollVoiceAbort, &result
     );
 
-    if (result == gotchi_voice::InteractResult::ABORT_BARGE_IN) {
-        s_barge_in_pending = true;
-        return;
-    }
     if (result == gotchi_voice::InteractResult::ABORT_CANCEL) {
-        waitForButtonRelease(PIN_BTN_BOT_MOD);
+        waitForButtonRelease(PIN_BTN_TOP_PTT);
         showIdle();
         return;
     }
+
+    // PRD F21: Saying "Go Live" as the whole utterance launches a Live session (when live_mode is enabled)
+    if (cfg.live_mode && isWholeUtteranceGoLive(ui.transcript)) {
+        s_enter_live_pending = true;
+        return;
+    }
+
     if (!ok) {
         delay(2000);
     }
     showIdle();
 }
 
-// Stage a camera JPEG snapshot in PSRAM when BTN_BOT is pressed in IDLE.
-// Attaches to the next voice turn if BTN_TOP is pressed within `cfg.snap_window_ms` (default 3s),
-// or dispatches standalone with `cfg.default_image_prompt` once the window expires.
-static void stageCameraSnapshot() {
+// Handles bottom camera button (`BTN_BOT`) in IDLE (PRD F14 & F20):
+//   - Short press (< `cam_long_press_ms`, default 700ms): captures 1 snapshot on release and
+//     stages it for `snap_window_ms` (3s) to attach to the next voice prompt or send standalone.
+//   - Long press (>= `cam_long_press_ms`): captures a burst of 5 photos over 3 seconds.
+static void handleCameraButtonIdle() {
     GotchiUIState ui;
     ui.skin = cfg.skin;
-    waitForButtonRelease(PIN_BTN_BOT_MOD);
+    uint32_t t0 = millis();
+    bool is_long_press = false;
 
-    if (!s_staged_jpeg_buf) {
+    while (digitalRead(PIN_BTN_BOT_MOD) == LOW) {
+        if (millis() - t0 >= cfg.cam_long_press_ms) {
+            is_long_press = true;
+            break;
+        }
+        delay(5);
+    }
+
+    if (!s_staged_jpeg_bufs[0]) {
+        waitForButtonRelease(PIN_BTN_BOT_MOD);
         ui.state = UiState::ERROR;
         ui.status_text = "NO SNAP BUF";
         panel.draw(ui);
@@ -351,35 +476,71 @@ static void stageCameraSnapshot() {
         return;
     }
 
-    camera_fb_t* fb = gotchi_camera::captureJpeg();
-    if (!fb || !fb->buf || fb->len == 0 || fb->len > MAX_STAGED_JPEG_BYTES) {
-        if (fb) esp_camera_fb_return(fb);
+    clearStagedSnapshots();
+
+    if (!is_long_press) {
+        // Short press: capture single snapshot on release (F14)
+        if (!captureIntoSlot(0)) {
+            gotchi_audio::playChime("error");
+            ui.state = UiState::ERROR;
+            ui.status_text = "CAM ERROR";
+            panel.draw(ui);
+            delay(1500);
+            showIdle();
+            return;
+        }
+        s_staged_jpeg_count = 1;
+        s_staged_jpeg_active = true;
+        s_staged_jpeg_ts = millis();
+        gotchi_audio::playChime("snap");
+        showIdle();
+        return;
+    }
+
+    // Long press: capture burst of 5 photos over 3 seconds (F20: 0ms, 750ms, 1500ms, 2250ms, 3000ms)
+    const uint32_t interval_ms = BURST_TOTAL_DURATION_MS / (BURST_FRAME_COUNT - 1);
+    uint32_t burst_start = millis();
+    size_t captured = 0;
+    for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+        uint32_t target_ts = burst_start + (uint32_t)(i * interval_ms);
+        while ((int32_t)(target_ts - millis()) > 0) {
+            httpServer.handleClient();
+            delay(5);
+        }
+        if (captureIntoSlot(captured)) {
+            gotchi_audio::playChime("snap");
+            captured++;
+        }
+    }
+    waitForButtonRelease(PIN_BTN_BOT_MOD);
+
+    if (captured == 0) {
         gotchi_audio::playChime("error");
         ui.state = UiState::ERROR;
-        ui.status_text = "CAM ERROR";
+        ui.status_text = "BURST ERROR";
         panel.draw(ui);
         delay(1500);
         showIdle();
         return;
     }
 
-    memcpy(s_staged_jpeg_buf, fb->buf, fb->len);
-    s_staged_jpeg_len = fb->len;
+    s_staged_jpeg_count = captured;
     s_staged_jpeg_active = true;
     s_staged_jpeg_ts = millis();
-    esp_camera_fb_return(fb);
-
-    gotchi_audio::playChime("snap");
     showIdle();
 }
 
-// One voice turn supporting:
+// One voice turn on `BTN_TOP` (speaking-only button, PRD F13/F14/F19):
 //   - "hold" mode: hold BTN_TOP to record, release to send.
 //   - "tap" mode: tap BTN_TOP to open mic, auto-stops after `cfg.vad_silence_ms` (1.5s)
 //     of trailing silence once speech is heard (or tap BTN_TOP again to send immediately).
 //   - "hybrid" mode (default): releasing BTN_TOP within `cfg.tap_latch_ms` (500ms) latches
 //     into hands-free Tap-to-Talk; holding longer than `cfg.tap_latch_ms` stops on release.
-// Pressing BTN_BOT during recording cancels the turn without uploading.
+//   - Double-tap `BTN_TOP` within `cfg.double_tap_ms` (400ms) of first release: when `cfg.live_mode`
+//     is enabled, discards the partial clip and starts a Go Live session (F19); when `cfg.live_mode`
+//     is off, does nothing special.
+//   - Pressing `BTN_BOT` during recording captures a photo on release and attaches it to the
+//     voice turn in progress (F14; bottom button no longer cancels recording).
 static void runPttTurn() {
     GotchiUIState ui;
     ui.skin = cfg.skin;
@@ -405,26 +566,35 @@ static void runPttTurn() {
     const size_t min_bytes = 44 + (SAMPLE_RATE_REC * sizeof(int16_t) * cfg.ptt_min_ms) / 1000;
 
     uint32_t t0 = millis();
+    uint32_t first_release_ts = 0;
     uint32_t last_speech_ts = t0;
     bool speech_heard = false;
     bool released_once = (digitalRead(PIN_BTN_TOP_PTT) == HIGH);
+    if (released_once) first_release_ts = t0;
     bool latched_tap_mode = (cfg.input_mode == "tap");
-    bool cancelled = false;
+    bool start_live_session = false;
 
     while (millis() - t0 < cfg.ptt_max_ms) {
         uint32_t elapsed = millis() - t0;
         if (!async_running) gotchi_audio::pollPttRecording();
         httpServer.handleClient();
 
-        // BTN_BOT during recording cancels the turn immediately
+        // PRD F14: Pressing BTN_BOT during a recording captures a snapshot on release
+        // and attaches it to the voice turn in progress (does not cancel the turn).
         if (digitalRead(PIN_BTN_BOT_MOD) == LOW && btnStable(PIN_BTN_BOT_MOD, true)) {
-            cancelled = true;
-            break;
+            waitForButtonRelease(PIN_BTN_BOT_MOD);
+            if (captureIntoSlot(0)) {
+                s_staged_jpeg_count = 1;
+                s_staged_jpeg_active = true;
+                s_staged_jpeg_ts = millis();
+                gotchi_audio::playChime("snap");
+            }
         }
 
         if (!released_once) {
             if (btnStable(PIN_BTN_TOP_PTT, false)) {
                 released_once = true;
+                first_release_ts = millis();
                 if (cfg.input_mode == "hold") {
                     break;
                 } else if (cfg.input_mode == "hybrid") {
@@ -436,10 +606,22 @@ static void runPttTurn() {
                 }
             }
         } else if (latched_tap_mode) {
-            // In latched Tap-to-Talk mode, a second tap of BTN_TOP finishes and sends immediately
+            // Second tap of BTN_TOP after first release:
+            //   - Within `double_tap_ms` (400ms): if `live_mode` is enabled, discard clip & start Go Live (F19);
+            //     if `live_mode` is off, do nothing special (keep listening).
+            //   - After `double_tap_ms`: finish recording and send immediately.
             if (digitalRead(PIN_BTN_TOP_PTT) == LOW && btnStable(PIN_BTN_TOP_PTT, true)) {
+                uint32_t since_release = millis() - first_release_ts;
                 waitForButtonRelease(PIN_BTN_TOP_PTT);
-                break;
+                if (since_release <= cfg.double_tap_ms) {
+                    if (cfg.live_mode) {
+                        start_live_session = true;
+                        break;
+                    }
+                    // When live_mode is off, a double-tap within 400ms does nothing special
+                } else {
+                    break;
+                }
             }
         }
 
@@ -461,16 +643,14 @@ static void runPttTurn() {
     }
 
     gotchi_audio::stopAsyncPttTask();
+    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
 
-    if (cancelled) {
-        waitForButtonRelease(PIN_BTN_BOT_MOD);
-        gotchi_audio::playChime("error");
-        showIdle();
+    if (start_live_session) {
+        s_enter_live_pending = true;
         return;
     }
 
     gotchi_audio::playChime("ptt_stop");
-    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
 
     if (wav.rms < min_rms || wav.length < min_bytes) {
         ui.state = UiState::IDLE;
@@ -491,7 +671,9 @@ void setup() {
     pinMode(PIN_EPD_BUSY, INPUT);
 
     if (psramFound()) {
-        s_staged_jpeg_buf = (uint8_t*)ps_malloc(MAX_STAGED_JPEG_BYTES);
+        for (size_t i = 0; i < BURST_FRAME_COUNT; ++i) {
+            s_staged_jpeg_bufs[i] = (uint8_t*)ps_malloc(MAX_STAGED_JPEG_BYTES);
+        }
     }
     loadConfig();
 
@@ -550,27 +732,27 @@ void loop() {
         }
     }
 
-    // If user barged in with BTN_TOP during TTS playback, jump straight into recording
-    if (s_barge_in_pending) {
-        s_barge_in_pending = false;
-        runPttTurn();
+    // Launch Go Live session if triggered by double-tap or whole-utterance "Go Live" command (F19/F21)
+    if (s_enter_live_pending) {
+        s_enter_live_pending = false;
+        runLiveSession();
         return;
     }
 
-    // Top button: start Hybrid / Tap-to-Talk / Hold-to-Talk voice turn
+    // Top button (speaking only, F13): start Hybrid / Tap-to-Talk / Hold-to-Talk / Double-Tap Live
     if (btnStable(PIN_BTN_TOP_PTT, true)) {
         runPttTurn();
         return;
     }
 
-    // Bottom button in IDLE: capture & stage camera snapshot
+    // Bottom button (camera only, F14/F20): short press = 1 photo on release; long press = 5-photo burst over 3s
     if (btnStable(PIN_BTN_BOT_MOD, true)) {
-        stageCameraSnapshot();
+        handleCameraButtonIdle();
         return;
     }
 
-    // If a staged camera snapshot wasn't paired with a voice prompt within `snap_window_ms` (3s),
-    // dispatch it standalone with `default_image_prompt`.
+    // If staged camera snapshot(s) weren't paired with a voice prompt within `snap_window_ms` (3s),
+    // dispatch standalone with `default_image_prompt`.
     if (s_staged_jpeg_active && (millis() - s_staged_jpeg_ts >= cfg.snap_window_ms)) {
         gotchi_audio::WavView silent_wav = gotchi_audio::buildSilentWav(250);
         dispatchVoiceOrSnap(silent_wav, true, true);
