@@ -667,3 +667,16 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
 
 
 
+
+    # 8. Verify TLS root CA verification (no setInsecure), am_schedar Kokoro style tensor, and clean PRD
+    assert "setInsecure" not in vc_cpp_text
+    assert "setInsecure" not in lc_cpp_text
+    assert "setCACert(GOTCHI_TLS_ROOT_CA_PEM)" in vc_cpp_text
+    assert "setCACert(GOTCHI_TLS_ROOT_CA_PEM)" in lc_cpp_text
+    tls_ca_text = (REPO_ROOT / "firmware" / "include" / "tls_root_ca.h").read_text(encoding="utf-8")
+    assert "GTS Root R1" in tls_ca_text
+    assert "ISRG Root X1" in tls_ca_text
+    assert KokoroTTSAdapter.resolve_kokoro_voice("Schedar") == "am_schedar"
+    assert KokoroTTSAdapter.AM_SCHEDAR_STYLE_PATH.exists()
+    prd_md_text = (REPO_ROOT / "docs" / "PRD.md").read_text(encoding="utf-8")
+    assert "mirrormere" not in prd_md_text.lower()

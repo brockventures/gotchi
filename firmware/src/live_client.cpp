@@ -7,6 +7,7 @@
 #include "log_buffer.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "tls_root_ca.h"
 #include <ArduinoJson.h>
 #include <mbedtls/base64.h>
 #include <string.h>
@@ -442,7 +443,7 @@ SessionEndReason runSession(
 
     WiFiClient plain_ws;
     WiFiClientSecure tls_ws;
-    if (is_tls) tls_ws.setInsecure();
+    if (is_tls) tls_ws.setCACert(GOTCHI_TLS_ROOT_CA_PEM);
     WiFiClient& ws_client = is_tls ? static_cast<WiFiClient&>(tls_ws) : plain_ws;
     if (!ws_client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS) ||
         !performWsHandshake(ws_client, host, port, ws_path, config.node_id, config.bearer_token, config.audio_out_mode)) {

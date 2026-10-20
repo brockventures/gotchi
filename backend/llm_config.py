@@ -75,6 +75,7 @@ GEMINI_HD_VOICES = (
     "Zubenelgenubi",
 )
 KOKORO_VOICES = (
+    "am_schedar",
     "am_michael",
     "am_adam",
     "am_fenrir",
