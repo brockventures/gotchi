@@ -94,6 +94,24 @@ static size_t   s_staged_jpeg_count = 0;
 static bool     s_staged_jpeg_active = false;
 static uint32_t s_staged_jpeg_ts = 0;
 static bool     s_enter_live_pending = false;
+static bool     s_wifi_disabled_for_ble_lp = false;
+static uint32_t s_last_journal_sniff_ts    = 0;
+
+// Dynamically boosts CPU clock to 240 MHz during active voice, camera, live, or journal-upload
+// bursts so JPEG DMA, base64 audio decoding, and NLMS AEC run at full speed, then drops back to
+// 80 MHz as soon as the device returns to idle in BLE low-power mode.
+struct ScopedCpuBoost {
+    ScopedCpuBoost() {
+        if (s_wifi_disabled_for_ble_lp) {
+            setCpuFrequencyMhz(240);
+        }
+    }
+    ~ScopedCpuBoost() {
+        if (s_wifi_disabled_for_ble_lp) {
+            setCpuFrequencyMhz(80);
+        }
+    }
+};
 
 // E-paper panel + refresh policy live in epd_panel.{h,cpp}.
 EpdPanel panel;
@@ -964,25 +982,6 @@ static void runPttTurn() {
 //     speaker or e-paper screen. Any button press (`BTN_TOP` / `BTN_BOT`) immediately preempts
 //     passive journal capture with zero user latency.
 // ============================================================================
-static bool     s_wifi_disabled_for_ble_lp = false;
-static uint32_t s_last_journal_sniff_ts    = 0;
-
-// Dynamically boosts CPU clock to 240 MHz during active voice, camera, live, or journal-upload
-// bursts so JPEG DMA, base64 audio decoding, and NLMS AEC run at full speed, then drops back to
-// 80 MHz as soon as the device returns to idle in BLE low-power mode.
-struct ScopedCpuBoost {
-    ScopedCpuBoost() {
-        if (s_wifi_disabled_for_ble_lp) {
-            setCpuFrequencyMhz(240);
-        }
-    }
-    ~ScopedCpuBoost() {
-        if (s_wifi_disabled_for_ble_lp) {
-            setCpuFrequencyMhz(80);
-        }
-    }
-};
-
 static void manageBleLowPowerWiFi() {
     // Default V1 behavior (`ble_disable_wifi == true`): whenever bonded & connected to the phone
     // over BLE (`gotchi_ble::isBlePeerConnected()`), turn off the Wi-Fi radio completely (`WIFI_OFF`)

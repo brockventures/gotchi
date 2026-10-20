@@ -476,6 +476,9 @@ def test_cpp_ble_transport_and_voice_client_invariants():
     assert 'res["live_barge_in"] = cfg.live_barge_in;' in main_cpp
     assert '"invalid_node_id"' in main_cpp
     assert '#include "ble_transport.h"' in main_cpp
+    decl_idx = main_cpp.index("static bool     s_wifi_disabled_for_ble_lp = false;")
+    use_idx = main_cpp.index("if (s_wifi_disabled_for_ble_lp)")
+    assert decl_idx < use_idx
 
 
 def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts():
