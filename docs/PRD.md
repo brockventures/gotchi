@@ -93,6 +93,20 @@ Source: Mike, #gotchi 2026-10-19 14:23. Facts below come from `services/mirrorme
 - **Barge-in (updated, Mike #gotchi 2026-10-19 14:25; Ryan 14:43):** Normal push-to-talk has no barge-in (`BTN_TOP` cancels/mutes playback). Inside Go Live only, a 64-tap NLMS adaptive echo canceller and 300 ms speech barge-in are implemented (PR #46) and gated behind `live_barge_in = false` by default (PR #47) until physical speaker-to-mic DMA delay is measured on the bench (`docs/TASKS.md` T6.1 / Issue #37).
 - **Per-turn timing log & `node_id` validation:** Structured per-turn latency logging (`stt_ms`, `first_text_ms`, `first_audio_ms`, `total_ms`) and `^[A-Za-z0-9_-]{1,64}$` `node_id` validation are implemented on both gateway (PR #36) and firmware (PR #46 / Issue #39).
 
+### 5d. How Mirrormere runs voice locally (reviewed 2026-10-19 by Amos)
+
+Read from `services/mirrormere-voice-gateway/gateway.py`, the bench ear's `/etc/mirrormere/voice.yaml` and the running services on the Pi and the desktop. This is the reference, not a backend GOTCHI calls.
+
+- **Ear (Pi bench unit):** openWakeWord "hey_amos" plus ambient listening, Silero VAD, a turn ends after **500 ms** of silence, 10 s cap. It posts straight to the gateway's `/api/voice/interact` on `:9098`; the Go hub is not in the voice path. Barge-in is on for this unit: 700 ms of speech at VAD threshold 0.85.
+- **Gateway, in order:** Silero speech gate (clips under 400 ms voiced are dropped before Whisper), speech-to-text, and speaker ID all start in parallel. Then the Whisper ghost filter, then a text echo filter (a transcript that is 80% words from the unit's last reply within 120 s is dropped as the speaker heard by the mic), then the "was this addressed to me" classifier for ambient turns.
+- **Speech-to-text:** faster-whisper `large-v3`, float16 on the desktop RTX 4090, beam size 1 with its VAD filter, behind an HTTP server on `192.168.1.185:9099`. Median 711 ms over the last four logged clips.
+- **Brain:** a streamed call to an Amos session, prompted for plain spoken sentences under 60 words. Sentences are cut out as the text arrives.
+- **Speech synthesis, all local:** the desktop server on `:9097` (reached from the Pi over an ssh tunnel) streams 24 kHz PCM from a Chatterbox Turbo clone of Amos's voice, falling back to Piper on the same server, then Piper on the Pi. No cloud voice is used; Mike confirmed ElevenLabs is out (2026-10-19 20:59) and its leftover hop is being removed. Every chunk is normalized to 24 kHz mono 16-bit.
+- **Filler:** pre-rendered clips at 1.2 s and a "still working" clip at 5 s.
+- **Measured (last three logged turns, latest 2026-10-20 00:05 UTC, medians):** filler at 1.3 s, first reply text at 4.8 s, first real audio at 6.3 s. The brain is the slow step.
+
+What GOTCHI can take from it: the text echo filter costs nothing and suits Go Live alongside the NLMS canceller; a short silence end (500 ms) works when a neural VAD decides speech; and local synthesis needs a GPU host for a cloned voice, while Kokoro runs acceptably on CPU.
+
 ## 6. Open items & Bench Verification Checks
 
 Questions for people:
