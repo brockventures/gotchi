@@ -152,13 +152,18 @@ def test_firmware_journal_mode_and_ble_low_power_contracts():
 
     # Config defaults to off (false) and exposes JSON-RPC + NVS persistence
     assert "bool     journal_mode = false;" in main_cpp
+    assert "bool     ble_disable_wifi = true;" in main_cpp
     assert 'res["journal_mode"] = cfg.journal_mode;' in main_cpp
+    assert 'res["ble_disable_wifi"] = cfg.ble_disable_wifi;' in main_cpp
     assert 'if (req["journal_mode"].is<bool>()) cfg.journal_mode = req["journal_mode"].as<bool>();' in main_cpp
+    assert 'if (req["ble_disable_wifi"].is<bool>()) cfg.ble_disable_wifi = req["ble_disable_wifi"].as<bool>();' in main_cpp
 
-    # BLE-only low-power mode turns off Wi-Fi and drops CPU clock to 80 MHz
+    # BLE-connected default behavior turns off Wi-Fi and drops CPU clock to 80 MHz
     assert "manageBleLowPowerWiFi()" in main_cpp
+    assert "bool want_ble_lp = cfg.ble_disable_wifi && gotchi_ble::isBlePeerConnected();" in main_cpp
     assert "WiFi.mode(WIFI_OFF);" in main_cpp
     assert "setCpuFrequencyMhz(80);" in main_cpp
+    assert "if (WiFi.status() != WL_CONNECTED && !gotchi_ble::isBlePeerConnected())" in main_cpp
 
     # Passive journal loop & upload helper
     assert "pollJournalMode()" in main_cpp
