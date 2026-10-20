@@ -75,3 +75,12 @@ def test_firmware_power_and_fuel_gauge_contracts():
     assert "220 kΩ" in bom_md
     assert "B089CXFH4H" in bom_md
     assert "Step 6: Wiring the V1 Battery Fuel Gauge" in hw_md
+    assert "Step 7: RF Desense & Internal Harness Routing Rules" in hw_md
+
+    # 5. Self-test & get_config Wi-Fi RSSI / RF desense telemetry
+    assert 'res["wifi_rssi_dbm"] = rssi_idle_dbm;' in main_cpp
+    assert 'res["wifi_rssi_idle_dbm"] = rssi_idle_dbm;' in main_cpp
+    assert 'res["wifi_rssi_active_dbm"] = rssi_active_dbm;' in main_cpp
+    assert 'res["wifi_rssi_drop_db"] = rssi_drop_db;' in main_cpp
+    assert 'res["rf_desense_warn"] = rf_desense_warn;' in main_cpp
+    assert 'res["camera_frame_bytes"] = (uint32_t)cam_frame_bytes;' in main_cpp

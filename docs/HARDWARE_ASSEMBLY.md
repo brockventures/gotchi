@@ -45,7 +45,7 @@ The **Waveshare 1.54" E-Paper Module V2 (`SKU 12955` / Amazon `B0728BJTZC`)** in
 ### Step 1: Camera & Sense Expansion Board Check
 1. **Stock V1 Baseline (No Swap Required):** The **XIAO ESP32S3 Sense** ships with its stock camera (`OV2640` / `OV3660`) pre-installed on the Sense expansion board alongside the digital PDM microphone. Stick the included mini heatsink onto the flat backing of the camera module and snap the Sense board onto the top B2B header of the XIAO.
 2. **Optional `OV5640` 5MP Autofocus Upgrade (`$11.99`):** If installing the optional `OV5640` camera, unplug the Sense board from the XIAO first, flip up the black locking bail on the 24-pin FPC socket, swap in the `OV5640` ribbon (contacts facing the PCB), press the locking bail flat, and attach the heatsink.
-3. Snap the included **U.FL Wi-Fi/BLE flex antenna** onto the coaxial receptacle on the XIAO and route the adhesive antenna patch along the inner plastic wall of the enclosure away from the speaker magnet.
+3. Snap the included **U.FL Wi-Fi/BLE flex antenna (`~42 x 12 mm`)** onto the coaxial receptacle on the XIAO and adhere the flat antenna patch strictly along the **inner plastic perimeter wall** of the enclosure. **Never** stick the antenna onto the `803040` LiPo battery's aluminized foil pouch or the metallic rear shield of the Waveshare e-paper panel (which causes `6–12 dB` of near-field capacitive detuning), and keep the U.FL coax away from the speaker magnet and camera FPC ribbon.
 
 ### Step 2: Battery Pads & Hardware Power Switch (Bottom of XIAO)
 > **SAFETY WARNING:** Never connect or solder the LiPo battery while USB-C is plugged in. Always verify wire polarity (`red = BAT+`, `black = BAT-`) before soldering, and insulate all exposed joints with Kapton tape.
@@ -76,7 +76,7 @@ Wire the **`MAX98357A`** breakout to the XIAO with 30 AWG silicone wire:
 - **`MAX98357A LRC`** -> XIAO **`D6` (`GPIO 43`)**
 - **`MAX98357A DIN`** -> XIAO **`D9` (`GPIO 8`)**
 - **`MAX98357A SD` (Shutdown)** -> Leave floating (internal pull-up keeps amp enabled in mono `(L+R)/2` mode; automatically enters `<1 µA` hardware shutdown whenever the ESP32-S3 stops the I2S clock).
-- Connect or solder the **1W 8Ω Mini Cavity Speaker (`B0D7S8FFKY`)** leads to the `+` and `-` audio output terminals on the `MAX98357A`.
+- Connect or solder the **1W 8Ω Mini Cavity Speaker (`B0D7S8FFKY`)** leads to the `+` and `-` audio output terminals on the `MAX98357A`. **Twist the `+` and `-` speaker wires into a tight twisted pair (`~2–3 twists/cm`)** and trim lead length to **`<= 40–50 mm`** so the `MAX98357A`'s filterless Class-D switching edges (`~300 kHz`) cancel out rather than radiating broadband harmonics into the 2.4 GHz antenna.
 
 ### Step 5: Wiring the Tactile Push Buttons (`6x6x5mm`, `B07VSNN9S2`)
 1. **Top Button (`BTN_TOP` — Push-to-Talk & Deep-Sleep Wake):**
@@ -96,6 +96,15 @@ Because the XIAO ESP32S3 does not route `VBUS` (`5V`) or `BAT+` internally to an
 2. **Wall-Brick (`5V VBUS`) Sense on `D2` (`GPIO 3` / `ADC1_CH2` — 1x `220 kΩ`):**
    - Solder the third **`220 kΩ` resistor** between XIAO **`5V`** (`VBUS`) and XIAO **`D2`** *(no external ground resistor is used on `D2`)*.
    - *How it works:* During normal operation (`INPUT_PULLUP` `45 kΩ` to `3.3V`), even if the `5V` rail is pulled to `0V` by the `MAX98357A` load when running on battery, `D2` idles at `3.3V × 220 / (45 + 220) = 2.74 V` (or `3.30 V` if `5V` floats) — safely above the ESP32-S3's `2.475 V` (`0.75 × VDD`) `V_IH` minimum so `BTN_TOP` digital reads and `ext0` deep-sleep wake work reliably. Once per second when idle, firmware briefly enables `INPUT_PULLDOWN` (`45 kΩ` to `GND`) for `200 µs`: when a 5V USB-C wall brick or computer is plugged in, `D2` reads `5.0V × 45 / (220 + 45) ≈ 849 mV` (`>= 450 mV` threshold) vs. `0 mV` on battery, enabling `preroll_mode: "usb_host"` and the on-screen charging indicator (`+`).
+
+### Step 7: RF Desense & Internal Harness Routing Rules (2.4 GHz Wi-Fi / BLE)
+Inside the compact `54 × 44 mm` enclosure, follow these three physical routing rules to prevent 2.4 GHz receiver desense and near-field antenna detuning:
+1. **LiPo Foil & E-Paper Shield Keep-Out (`6–12 dB` Detuning Prevention):**
+   - Adhere the `42 × 12 mm` U.FL flex antenna patch flat against the **outer PLA/PETG perimeter wall** with **`>= 5 mm` air gap** from both the `803040` LiPo battery's aluminized pouch and the metallic rear shield of the Waveshare 1.54" e-paper module. Never fold, crease, or trim the copper radiating element.
+2. **Twisted-Pair Filterless Class-D Speaker Leads (`MAX98357A` EMI Suppression):**
+   - Because the `MAX98357A` uses a filterless Class-D H-bridge (`~300 kHz` PWM with fast rising/falling edges), keep the speaker leads **`<= 40–50 mm`** and twisted at **`~2–3 twists/cm`** all the way from the amp terminals to the `1510` speaker cavity.
+3. **High-Speed Digital Bus Separation (`I2S`, `SPI`, and `20 MHz` Camera `XCLK`):**
+   - Dress the thin coaxial lead from the XIAO U.FL jack along the opposite edge of the board from the `D6/D7/D9` I2S clock bundle (`BCLK`/`LRCLK`), the `D8/D10` e-paper SPI harness, and the 24-pin camera FPC ribbon (`20 MHz XCLK` / PCLK).
 
 ---
 
@@ -119,8 +128,9 @@ Reference dimensions for the locked 7-item V1 BOM (`cad/` multi-part openable sh
 
 1. **Continuity & Short Check:** With the power switch **OFF** and USB-C unplugged, use a multimeter to verify there is no short between `3V3` and `GND` or `5V` and `GND`.
 2. **USB-C Bring-Up:** Plug a USB-C data cable into your workstation, flip the slide switch **ON**, and verify `/dev/ttyACM0` (Linux) or `/dev/cu.usbmodem*` (macOS) enumerates.
-3. **Automated Hardware Self-Test:** Once V1 firmware is flashed, send `{"cmd": "self_test"}` over USB serial (`115200` baud) and confirm all four peripherals pass:
-   - `speaker`: Plays a 440 Hz chime on the `MAX98357A`.
+3. **Automated Hardware & RF Desense Self-Test:** Once V1 firmware is flashed, send `{"cmd": "self_test"}` over USB serial (`115200` baud) or HTTP (`POST /api/rpc`) and confirm all subsystems and RF checks pass:
+   - `speaker`: Plays an 880 Hz test tone on the `MAX98357A`.
    - `mic`: Samples non-zero RMS audio energy on the PDM mic (`GPIO41`/`42`).
-   - `camera`: Initializes the stock `OV2640`/`OV3660` (or optional `OV5640` AF) camera on the DVP bus and returns a valid JPEG frame size/CRC.
-   - `display`: Renders the 200x200 verification sprite and QR code on the Waveshare 1.54" V2 e-paper panel.
+   - `camera`: Initializes the stock `OV2640`/`OV3660` (or optional `OV5640` AF) camera (`camera_pid != 0`) and captures a valid test JPEG frame (`camera_frame_bytes > 0`).
+   - `display`: Verifies `epd_busy_clear: true` and renders the 200x200 sprite on the Waveshare 1.54" V2 e-paper panel.
+   - `wifi_rssi_dbm` (`wifi_rssi_idle_dbm` vs. `wifi_rssi_active_dbm`): Measures baseline idle 2.4 GHz Wi-Fi RSSI against active RSSI sampled while the `MAX98357A` Class-D speaker tone and camera DVP capture run simultaneously. Confirm **`wifi_rssi_drop_db <= 2` (`rf_desense_warn: false`)**. If `wifi_rssi_drop_db > 2 dB`, move the U.FL flex antenna further from the LiPo/e-paper shield or tighten the speaker wire twist before closing the case.

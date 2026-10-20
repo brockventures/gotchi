@@ -332,6 +332,8 @@ String handleJsonRpc(const String& jsonLine) {
         res["battery_mv"] = s_battery_mv;
         res["battery_pct"] = (int)s_battery_pct;
         res["ble_connected"] = gotchi_ble::isBlePeerConnected();
+        res["wifi_connected"] = (WiFi.status() == WL_CONNECTED);
+        res["wifi_rssi_dbm"] = (WiFi.status() == WL_CONNECTED) ? (int)WiFi.RSSI() : 0;
         res["psram_free"] = ESP.getFreePsram();
         res["fw_version"] = GOTCHI_FW_VERSION;
     } else if (cmd == "set_config") {
@@ -403,6 +405,32 @@ String handleJsonRpc(const String& jsonLine) {
         samplePowerAndBatteryTelemetry(true);
         sensor_t* s = esp_camera_sensor_get();
         uint16_t cam_pid = s ? s->id.PID : 0;
+
+        // Baseline idle 2.4 GHz Wi-Fi RSSI before energizing Class-D amp + camera DVP bus
+        bool wifi_conn = (WiFi.status() == WL_CONNECTED);
+        int rssi_idle_dbm = wifi_conn ? (int)WiFi.RSSI() : 0;
+
+        // Drive MAX98357A Class-D speaker chime while capturing a test JPEG frame and
+        // sampling active Wi-Fi RSSI to detect near-field coupling or Class-D EMI desense.
+        const uint32_t sr = 24000;
+        const size_t tone_samples = sr / 12; // 83 ms 880 Hz test note
+        int16_t tone_buf[2000];
+        for (size_t i = 0; i < tone_samples; ++i) {
+            float env = 1.0f - ((float)i / (float)tone_samples);
+            tone_buf[i] = (int16_t)(sinf(2.0f * 3.14159265f * 880.0f * ((float)i / sr)) * 4800.0f * env);
+        }
+        gotchi_audio::playPcmChunk(tone_buf, tone_samples, sr);
+        camera_fb_t* fb = gotchi_camera::captureJpeg();
+        size_t cam_frame_bytes = (fb && fb->buf) ? fb->len : 0;
+        int rssi_active_dbm = wifi_conn ? (int)WiFi.RSSI() : 0;
+        if (fb) {
+            esp_camera_fb_return(fb);
+        }
+        gotchi_audio::muteSpeaker();
+
+        int rssi_drop_db = wifi_conn ? (rssi_idle_dbm - rssi_active_dbm) : 0;
+        bool rf_desense_warn = wifi_conn && (rssi_drop_db > 2);
+
         res["psram_ok"] = psram_ok;
         res["epd_busy_clear"] = epd_ok;
         res["btn_top_state"] = top_btn;
@@ -412,6 +440,13 @@ String handleJsonRpc(const String& jsonLine) {
         res["wall_power_connected"] = isWallBrickPowerConnected();
         res["usb_host_connected"] = isUsbDataHostConnected();
         res["camera_pid"] = cam_pid;
+        res["camera_frame_bytes"] = (uint32_t)cam_frame_bytes;
+        res["wifi_connected"] = wifi_conn;
+        res["wifi_rssi_dbm"] = rssi_idle_dbm;
+        res["wifi_rssi_idle_dbm"] = rssi_idle_dbm;
+        res["wifi_rssi_active_dbm"] = rssi_active_dbm;
+        res["wifi_rssi_drop_db"] = rssi_drop_db;
+        res["rf_desense_warn"] = rf_desense_warn;
         gotchi_log::RingLogger.info("self_test", psram_ok && epd_ok && cam_pid != 0 ? "Self-test passed" : "Self-test detected hardware faults");
     } else if (cmd == "factory_reset") {
         prefs.begin("gotchi", false);

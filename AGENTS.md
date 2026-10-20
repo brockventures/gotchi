@@ -47,7 +47,7 @@ Every GOTCHI unit is **100% agent-configurable** over both **USB-C CDC Serial (`
    - Configure Wi-Fi slots via `{"cmd": "set_wifi", "slot": 0, "ssid": "...", "psk": "..."}` (Slot 0 = Home Wi-Fi, Slot 1 = Mobile Hotspot).
    - Configure runtime parameters via `{"cmd": "set_config", "hub_url": "...", "node_id": "...", "wake_mode": "ptt", "audio_out_mode": "speaker"}`.
 3. **Mandatory Hardware Verification (`self_test`):**
-   - After flashing or reconfiguring a unit, always execute `{"cmd": "self_test"}` and verify passing receipts for all four subsystems (`speaker`, `mic`, `camera`, `display`) before declaring provisioning complete.
+   - After flashing or reconfiguring a unit, always execute `{"cmd": "self_test"}` and verify passing receipts for all subsystems (`speaker`, `mic`, `camera`, `display`, plus `wifi_rssi_dbm` / `wifi_rssi_drop_db <= 2` / `rf_desense_warn: false` when connected to Wi-Fi) before declaring provisioning complete.
 4. **Dual-Slot OTA Safety:**
    - OTA updates write to the inactive partition (`ota_0` <-> `ota_1`) and require a clean `self_test` heartbeat within 60 seconds of boot; otherwise the bootloader automatically rolls back to the previous working slot.
 
