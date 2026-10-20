@@ -4,6 +4,7 @@
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include "tls_root_ca.h"
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -608,7 +609,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
 
     WiFiClient plain_client;
     WiFiClientSecure tls_client;
-    if (is_tls) tls_client.setInsecure();
+    if (is_tls) tls_client.setCACert(GOTCHI_TLS_ROOT_CA_PEM);
     WiFiClient& client = is_tls ? static_cast<WiFiClient&>(tls_client) : plain_client;
     if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
         setFailure(ui, UiState::OFFLINE, "connect", "NO HUB", cb);
@@ -791,7 +792,7 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
 
     WiFiClient plain_client;
     WiFiClientSecure tls_client;
-    if (is_tls) tls_client.setInsecure();
+    if (is_tls) tls_client.setCACert(GOTCHI_TLS_ROOT_CA_PEM);
     WiFiClient& client = is_tls ? static_cast<WiFiClient&>(tls_client) : plain_client;
     if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
         return false;

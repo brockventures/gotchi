@@ -1,3 +1,4 @@
+from pathlib import Path
 #!/usr/bin/env python3
 """
 GOTCHI V1 — Reference Voice Gateway Server (`POST /api/voice/interact`)
@@ -352,8 +353,18 @@ class KokoroTTSAdapter:
         with urllib.request.urlopen(req, timeout=15.0) as resp:
             return resp.read()
 
+    AM_SCHEDAR_STYLE_PATH = Path(__file__).resolve().parent / "voices" / "am_schedar.npy"
+
+    @classmethod
+    def resolve_kokoro_voice(cls, voice_name: str) -> str:
+        """Map 'Schedar' or empty voice_name to baked local 'am_schedar' style tensor preset."""
+        v = (voice_name or "").strip()
+        if not v or v.lower() == "schedar":
+            return "am_schedar"
+        return v
+
     def synthesize(self, sentence_text: str, sample_rate: int = 24000) -> bytes:
-        voice = self.llm_config.voice_name or "am_michael"
+        voice = self.resolve_kokoro_voice(self.llm_config.voice_name)
         if self.local_synthesizer is not None:
             return self.local_synthesizer(sentence_text, voice, sample_rate)
 

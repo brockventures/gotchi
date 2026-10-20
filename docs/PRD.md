@@ -4,9 +4,9 @@ Status: V1 baseline synced against `main` (`PR #1`–`PR #50`). Every requiremen
 
 ## 1. Goal
 
-A pocket e-ink companion. The user holds a button and speaks. The device sends the speech to GOTCHI's voice gateway (`backend/voice_gateway.py`, using the `POST /api/voice/interact` SSE wire format inspired by Mirrormere) and plays the spoken reply, showing a character face that reflects what it is doing.
+A pocket e-ink companion. The user holds a button and speaks. The device sends the speech to GOTCHI's voice gateway (`backend/voice_gateway.py`, using `POST /api/voice/interact` over SSE on local port `:8765` or off-LAN over a Cloudflare Tunnel `https://` URL on port `443`) and plays the spoken reply, showing a character face that reflects what it is doing.
 
-GOTCHI uses neither Mirrormere hardware nor the Mirrormere backend hub (Mirrormere is a source of design ideas and wire-format inspiration only). The locked V1 bill of materials is the hardware goal, changed only by what testing shows (Mike, #gotchi 2026-10-19 09:27 and 09:29). Which backend a unit talks to is set per unit with `voice_url`.
+The locked V1 bill of materials is the hardware goal, changed only by what testing shows (Mike, #gotchi 2026-10-19 09:27 and 09:29). Which backend a unit talks to is set per unit with `voice_url`.
 
 Sources: `README.md`; Mike and Ryan in #gotchi, 2026-10-18.
 
@@ -23,7 +23,7 @@ Sources: `README.md`; Mike and Ryan in #gotchi, 2026-10-18.
 3. Hub streams events. Device shows THINKING or SYNTHESIZING, then plays audio as it arrives and shows SPEAKING.
 4. Stream ends. Device returns to IDLE.
 
-Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
+Source: `docs/ARCHITECTURE.md`, `firmware/src/main.cpp`.
 
 ## 4. Functional requirements
 
@@ -35,7 +35,7 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F4 | Nine on-screen states: idle, listening, transcribing, thinking, synthesizing, speaking, error, busy, offline | `firmware/include/ui_state.h` | Built, verified on a bench panel |
 | F5 | Two skins, `zero` (default) and `gotchi`, set with `set_config` | Zero, PR #9 | Built, unflashed |
 | F6 | Configuration and scrubbed ring-buffer logs (`get_config`, `set_config`, `get_logs`, `clear_logs`) over USB serial and Wi-Fi JSON-RPC | `README.md` section 3, PR #26 | Built, unflashed (`firmware/src/log_buffer.cpp`, `firmware/src/main.cpp`) |
-| F7 | Optional bearer token on Wi-Fi RPC and on hub requests | `docs/TASKS.md` T3.2 | Built on device and reference gateway (`backend/gateway_auth.py`, `backend/voice_gateway.py`, `backend/live_gateway.py`, PR #9 / PR #23 / PR #35) |
+| F7 | Optional bearer token (`Authorization: Bearer <token>`) on Wi-Fi RPC and on gateway requests, paired with verified TLS root CA certificates (`setCACert(GOTCHI_TLS_ROOT_CA_PEM)`) over `https://` and `wss://` | `docs/TASKS.md` T3.2 | Built on device and reference gateway (`firmware/include/tls_root_ca.h`, `backend/gateway_auth.py`, `backend/voice_gateway.py`, `backend/live_gateway.py`, PR #9 / PR #23 / PR #35 / PR #68) |
 | F8 | Reply audio routing: `speaker`, `discord_voice`, `ble_phone` | `docs/TASKS.md` T3.3 | Built on device and reference gateway (`DiscordVoiceSink`, `ble_transport.cpp`, PR #27 / PR #34 / PR #36) |
 | F9 | Camera snapshot on the bottom button | `README.md` | Built on device and reference gateway (`firmware/src/main.cpp`, `backend/voice_gateway.py`, PR #12 / PR #23 / PR #24) |
 | F10 | First-boot Wi-Fi setup by QR code and captive portal | `docs/TASKS.md` T2.7 | Built, unflashed (`firmware/src/onboarding_portal.cpp`) |
@@ -43,7 +43,7 @@ Source: `docs/MIRRORMERE_VOICE_CLIENT.md`, `firmware/src/main.cpp`.
 | F12 | Pre-roll runs on external USB/wall power by default (`preroll_mode: "usb_host"`), with `"always"` and `"off"` settings | Ryan, #gotchi 2026-10-19 09:09 | Built, unflashed (`applyPrerollPolicy` in `firmware/src/main.cpp`, PR #25 / PR #50) |
 | F13 | Top button is for speaking only. While a reply plays, pressing it cancels or mutes the reply and returns to idle. It does not start a new recording | Ryan, #gotchi 2026-10-19 09:45 | Built, unflashed (PR #12 / PR #24) |
 | F14 | Bottom button is for the camera only. A short press takes a snapshot that attaches to the next voice prompt if that prompt starts within the attach window; otherwise it is sent alone for the bot to comment on. A short press during a recording takes a snapshot and attaches it to the turn in progress | Ryan, #gotchi 2026-10-19 09:15, 09:45, 09:47 | Built, unflashed (PR #12 / PR #24) |
-| F15 | Each unit points `voice_url` at its own backend; Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 | Built (`voice_url` in `GotchiConfig`) |
+| F15 | Each unit points `voice_url` at its own backend (`:8765` on LAN or Cloudflare Tunnel `https://` on port `443` when roaming off-LAN without Tailscale); Ryan's unit goes straight to Zero's gateway | Ryan, #gotchi 2026-10-19 09:09 & 21:18 | Built (`voice_url` in `GotchiConfig`, PR #68) |
 | F16 | Battery life with normal usage: 48 hours without wake word, 24 hours with wake word enabled | Ryan, #gotchi 2026-10-19 09:18 | Not measured. Normal usage: 20 push-to-talk turns a day (Ryan, #gotchi 2026-10-19 09:21) |
 | F17 | Hotspot test: from a cold start on a phone hotspot, one push-to-talk turn completes and the reply plays | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 | Not tested on physical unit |
 | F18 | BLE relay test & BLE-first Wi-Fi shutoff (`ble_disable_wifi: true` default): whenever connected to the phone over BLE, GOTCHI automatically turns off the Wi-Fi radio (`WiFi.mode(WIFI_OFF)`) and drops idle CPU clock to `80 MHz`, routing all PTT voice, camera snapshot/burst, and journal turns over BLE and only waking Wi-Fi if the BLE phone link disconnects | Proposed by Amos, accepted by Ryan, #gotchi 2026-10-19 09:21 and 17:27 | Built (`android-ble-forwarder/`, `ble_transport.cpp`, `manageBleLowPowerWiFi` in `firmware/src/main.cpp`); not tested on physical unit |
@@ -80,12 +80,12 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 - Mid-session camera support: pressing the bottom button (short press single snapshot or long press 5-photo burst) during a Live session injects base64 JPEG frames into the active WebSocket session (`firmware/src/live_client.cpp`).
 - Customizable LLM Provider (`backend/llm_config.py`): Mike approved a metered API for Go Live on 2026-10-19 14:02 PT (#gotchi) on condition that the LLM configuration is user-customizable (`mock`, metered `api_key`, or `subscription` account bridge via `GET/PUT/POST /api/config/llm`).
 
-## 5c. Lessons carried over from Mirrormere and the household voice work
+## 5c. Voice pipeline tuning & local synthesis architecture
 
-Source: Mike, #gotchi 2026-10-19 14:23. Facts below come from `services/mirrormere-voice-gateway/gateway.py`, `specs/2026-10-02-lammen-voice-pipeline.md`, `specs/2026-10-16-gap-fill-topical-openers.md` and the ear client config in `specs/2026-10-16-ear-bargein-merge/`.
+Source: Mike and Ryan, #gotchi 2026-10-19 14:23 & 21:18.
 
 - **Spoken filler while the brain thinks:** Implemented in `backend/voice_gateway.py` (`filler_first_ms = 1200`, `filler_second_ms = 5000`, PR #36).
-- **First sentence plays first:** Per-sentence `tts_synthesizer` streaming and real `WhisperSTTAdapter`, `GeminiTTSAdapter` (defaulting to Zero's `"Schedar"` voice profile, with automatic 10-minute cooldown fallback to local `KokoroTTSAdapter` on any cloud error), `KokoroTTSAdapter`, and `SubscriptionBrainAdapter` (`agy` / `claude` CLI subscription bridge) are implemented in `backend/voice_gateway.py` (`T6.4` / Issue #40).
+- **First sentence plays first (Local-First Kokoro + Tuned `am_schedar` Voice Tensor):** Per-sentence `tts_synthesizer` streaming, `WhisperSTTAdapter`, `KokoroTTSAdapter` (with the baked local `backend/voices/am_schedar.npy` style tensor tuned to match Go Live's `Schedar` voice, plus built-in presets like `am_fenrir` and `am_michael`), optional `GeminiTTSAdapter` (with automatic 10-minute cooldown fallback to local `KokoroTTSAdapter`), and `SubscriptionBrainAdapter` (`agy` / `claude` CLI subscription bridge) are implemented in `backend/voice_gateway.py` (`T6.4` / Issue #40).
 - **Cap spoken reply length:** Implemented via configurable `reply_cap_words = 60` in `backend/voice_gateway.py` (PR #36).
 - **Filter speech-to-text ghosts:** Implemented in `backend/voice_gateway.py` (`min_voiced_ms = 400` + known Whisper hallucination phrase filter, PR #36).
 - **Silence length:** `vad_silence_ms` defaults to Ryan's confirmed `1500 ms` (`1.5 s`); bench comparison against `800 ms`, `1.0 s`, and `ESP-SR` neural VAD is tracked in `docs/TASKS.md` T6.2 (Issue #38).
@@ -95,7 +95,7 @@ Source: Mike, #gotchi 2026-10-19 14:23. Facts below come from `services/mirrorme
 ## 6. Open items & Bench Verification Checks
 
 Questions for people:
-- **Where the off-LAN gateway runs** (T3.2). Mike's call.
+- **Off-LAN mobile roaming** (T3.2): Resolved for Ryan's unit via **Cloudflare Tunnel (`https://` / `wss://` on port 443)** authenticated with per-device `Authorization: Bearer <token>` and verified against public Root CAs (`GOTCHI_TLS_ROOT_CA_PEM`), requiring no Tailscale client on the phone.
 - **Wake word** is deferred to V1.1 (`docs/TASKS.md` T5.2). Confirm with Mike that it stays out of V1. Ryan's 24-hour battery target only applies once it ships.
 
 Checks the robots owe:
