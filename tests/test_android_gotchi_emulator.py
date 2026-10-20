@@ -141,3 +141,7 @@ def test_emulator_activity_hardware_buttons_and_vad_toggles():
     assert "handleBtnTopTouch" in act_src
     assert "handleBtnBotTouch" in act_src
     assert "800L" in act_src and "1000L" in act_src and "1500L" in act_src
+    assert "ArcticPurpleChassisView" in act_src
+    assert "showHamburgerSettingsDialog" in act_src
+    assert "☰" in act_src
+

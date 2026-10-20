@@ -5,21 +5,23 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import android.os.SystemClock
 import android.view.View
 
 /**
- * 200x200 1-Bit Monochrome E-Paper Viewport & Refresh Physics Emulator (`SSD1681` V2).
+ * 200x200 1-Bit Monochrome E-Paper Viewport & Refresh Physics Emulator (`GDEY0154D67-FT` V2.6).
  *
  * Emulates the exact 200x200 pixel layout from `poc/gotchi_poc.py` and `firmware/src/epd_panel.cpp`:
  * - 9 states: `idle`, `listening`, `transcribing`, `thinking`, `synthesizing`, `speaking`, `error`, `busy`, `offline`.
  * - Dual skins: `gotchi` (vector companion face) and `zero` (1-bit pre-baked sprites in `assets/zero_skin/`).
- * - `RefreshTracker` partial/full refresh policy (`maxConsecutivePartials = 8`, `fullRefreshMinutes = 15.0`)
- *   with realistic 300ms partial transitions and 2.0s black-white inversion flash on full refreshes.
+ * - Realistic warm e-ink substrate (`#EAE6DC`) and carbon pigment (`#141418`) with flush optical cover-glass sheen.
+ * - `RefreshTracker` partial/full refresh policy (`maxConsecutivePartials = 8`, `fullRefreshMinutes = 15.0`).
  */
 class GotchiEpaperView(context: Context) : View(context) {
 
@@ -28,6 +30,9 @@ class GotchiEpaperView(context: Context) : View(context) {
         const val EPD_HEIGHT = 200
         const val PARTIAL_REFRESH_MS = 300L
         const val FULL_REFRESH_MS = 2000L
+
+        val EINK_PAPER_COLOR = Color.rgb(234, 230, 220)
+        val EINK_INK_COLOR = Color.rgb(20, 20, 24)
 
         val VALID_STATES = setOf(
             "idle", "listening", "transcribing", "thinking",
@@ -74,7 +79,7 @@ class GotchiEpaperView(context: Context) : View(context) {
         var audioBytesReceived: Int = 0,
         var lastSampleRate: Int = 24000,
         var batteryPct: Int = 96,
-        var skin: String = "gotchi", // "gotchi" | "zero"
+        var skin: String = "zero", // "zero" | "gotchi"
         var lastRefreshMode: String = "full"
     )
 
@@ -84,6 +89,7 @@ class GotchiEpaperView(context: Context) : View(context) {
     private val frameCanvas = Canvas(frameBitmap)
     private val destRect = RectF()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glassPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private var fullFlashPhase: Int = 0 // 0=normal, 1=invert-black, 2=invert-white
 
     fun updateState(
@@ -118,7 +124,7 @@ class GotchiEpaperView(context: Context) : View(context) {
 
     fun render200x200Framebuffer(): Bitmap {
         val c = frameCanvas
-        c.drawColor(Color.WHITE)
+        c.drawColor(EINK_PAPER_COLOR)
 
         val st = if (uiState.state in VALID_STATES) uiState.state else "idle"
         val badge = if (uiState.lastRefreshMode == "full") "FULL" else "PART"
@@ -127,8 +133,17 @@ class GotchiEpaperView(context: Context) : View(context) {
             val assetPath = "zero_skin/zero_${st}_200x200_1bit.png"
             runCatching {
                 context.assets.open(assetPath).use { stream ->
-                    BitmapFactory.decodeStream(stream)?.let { bmp ->
-                        c.drawBitmap(bmp, 0f, 0f, null)
+                    BitmapFactory.decodeStream(stream)?.let { rawBmp ->
+                        // Tint pure white/black pixels to warm e-ink paper & carbon black
+                        val tinted = Bitmap.createBitmap(EPD_WIDTH, EPD_HEIGHT, Bitmap.Config.ARGB_8888)
+                        val pixels = IntArray(EPD_WIDTH * EPD_HEIGHT)
+                        rawBmp.getPixels(pixels, 0, EPD_WIDTH, 0, 0, EPD_WIDTH, EPD_HEIGHT)
+                        for (i in pixels.indices) {
+                            val r = Color.red(pixels[i])
+                            pixels[i] = if (r > 128) EINK_PAPER_COLOR else EINK_INK_COLOR
+                        }
+                        tinted.setPixels(pixels, 0, EPD_WIDTH, 0, 0, EPD_WIDTH, EPD_HEIGHT)
+                        c.drawBitmap(tinted, 0f, 0f, null)
                     }
                 }
             }
@@ -138,10 +153,10 @@ class GotchiEpaperView(context: Context) : View(context) {
 
         // Top status bar (y = 0..20)
         paint.style = Paint.Style.FILL
-        paint.color = Color.BLACK
+        paint.color = EINK_INK_COLOR
         c.drawRect(0f, 0f, 200f, 20f, paint)
 
-        paint.color = Color.WHITE
+        paint.color = EINK_PAPER_COLOR
         paint.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         paint.textSize = 10.5f
         val prefix = if (uiState.skin == "zero") "ZERO" else "GOTCHI"
@@ -151,15 +166,15 @@ class GotchiEpaperView(context: Context) : View(context) {
         // Outer 1-bit border
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 2f
-        paint.color = Color.BLACK
+        paint.color = EINK_INK_COLOR
         c.drawRect(1f, 1f, 199f, 199f, paint)
 
-        // Bottom caption tray (y = 140..199)
+        // Bottom caption tray (y = 148..199)
         paint.style = Paint.Style.FILL
-        paint.color = Color.WHITE
-        c.drawRect(2f, 141f, 198f, 198f, paint)
-        paint.color = Color.BLACK
-        c.drawLine(0f, 140f, 200f, 140f, paint)
+        paint.color = EINK_PAPER_COLOR
+        c.drawRect(2f, 149f, 198f, 198f, paint)
+        paint.color = EINK_INK_COLOR
+        c.drawLine(0f, 148f, 200f, 148f, paint)
 
         val primaryText = when {
             uiState.reply.isNotBlank() -> uiState.reply
@@ -170,28 +185,26 @@ class GotchiEpaperView(context: Context) : View(context) {
         val line2 = if (primaryText.length > 26) {
             primaryText.substring(26, minOf(52, primaryText.length))
         } else {
-            "SR:${uiState.lastSampleRate / 1000}k B:${uiState.audioBytesReceived}"
+            "SR:${uiState.lastSampleRate / 1000}k ${uiState.skin.uppercase()} SKIN V2.6"
         }
 
         paint.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         paint.textSize = 11.5f
-        c.drawText(line1, 6f, 156f, paint)
+        c.drawText(line1, 6f, 165f, paint)
 
         paint.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
-        paint.textSize = 10.5f
-        c.drawText(line2.take(28), 6f, 173f, paint)
-        c.drawText(uiState.statusText.take(28), 6f, 190f, paint)
+        paint.textSize = 10.0f
+        c.drawText(line2.take(28), 6f, 182f, paint)
 
         return frameBitmap
     }
 
     private fun drawGotchiVectorFace(c: Canvas, st: String) {
-        paint.color = Color.BLACK
+        paint.color = EINK_INK_COLOR
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = 3f
         c.drawRoundRect(RectF(42f, 30f, 158f, 134f), 18f, 18f, paint)
 
-        // Ears
         paint.style = Paint.Style.FILL
         val leftEar = Path().apply { moveTo(56f, 30f); lineTo(66f, 18f); lineTo(76f, 30f); close() }
         val rightEar = Path().apply { moveTo(124f, 30f); lineTo(134f, 18f); lineTo(144f, 30f); close() }
@@ -202,10 +215,10 @@ class GotchiEpaperView(context: Context) : View(context) {
             "idle" -> {
                 c.drawOval(RectF(66f, 62f, 82f, 78f), paint)
                 c.drawOval(RectF(118f, 62f, 134f, 78f), paint)
-                paint.color = Color.WHITE
+                paint.color = EINK_PAPER_COLOR
                 c.drawOval(RectF(70f, 65f, 75f, 70f), paint)
                 c.drawOval(RectF(122f, 65f, 127f, 70f), paint)
-                paint.color = Color.BLACK
+                paint.color = EINK_INK_COLOR
                 paint.style = Paint.Style.STROKE
                 c.drawArc(RectF(82f, 88f, 118f, 110f), 15f, 150f, false, paint)
             }
@@ -266,17 +279,29 @@ class GotchiEpaperView(context: Context) : View(context) {
         when (fullFlashPhase) {
             1 -> {
                 paint.style = Paint.Style.FILL
-                paint.color = Color.BLACK
+                paint.color = EINK_INK_COLOR
                 canvas.drawRect(destRect, paint)
             }
             2 -> {
                 paint.style = Paint.Style.FILL
-                paint.color = Color.WHITE
+                paint.color = EINK_PAPER_COLOR
                 canvas.drawRect(destRect, paint)
             }
             else -> {
                 paint.isFilterBitmap = false
                 canvas.drawBitmap(frameBitmap, null, destRect, paint)
+                // Subtle diagonal GDEY0154D67-FT optical cover-glass reflection sweep
+                glassPaint.shader = LinearGradient(
+                    left, top, left + size, top + size,
+                    intArrayOf(
+                        Color.argb(24, 255, 255, 255),
+                        Color.argb(6, 255, 255, 255),
+                        Color.argb(0, 255, 255, 255)
+                    ),
+                    floatArrayOf(0f, 0.42f, 1f),
+                    Shader.TileMode.CLAMP
+                )
+                canvas.drawRect(destRect, glassPaint)
             }
         }
     }
