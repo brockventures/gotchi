@@ -1,5 +1,5 @@
 // ============================================================================
-// GOTCHI Mirrormere / Zero Gateway Voice Client (T3.1) — see include/voice_client.h.
+// GOTCHI Voice Gateway Client (T3.1) — see include/voice_client.h.
 // ============================================================================
 
 #include <WiFi.h>

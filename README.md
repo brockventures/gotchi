@@ -2,7 +2,7 @@
 
 **Pocket E-Ink AI Companion & Agent-Configurable Hardware Node**
 
-`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and the **Waveshare 1.54" (200x200) E-Paper Module V2** (`SKU 12955` / Amazon `B0728BJTZC`, `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh). It captures push-to-talk (PTT) audio and camera snapshots (using the included stock `OV2640`/`OV3660` camera or optional `OV5640` 5MP autofocus upgrade), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Kokoro TTS) to the **Mirrormere** backend hub over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android BLE-to-Tailscale forwarder**.
+`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and the **Waveshare 1.54" (200x200) E-Paper Module V2** (`SKU 12955` / Amazon `B0728BJTZC`, `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh). It captures push-to-talk (PTT) audio and camera snapshots (using the included stock `OV2640`/`OV3660` camera or optional `OV5640` 5MP autofocus upgrade), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Gemini Schedar / Kokoro TTS) to GOTCHI's own **voice gateway** (`backend/voice_gateway.py`, configurable per unit via `voice_url`) over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android BLE-to-Tailscale forwarder**.
 
 ---
 
@@ -10,8 +10,8 @@
 
 - **[`docs/BOM.md`](docs/BOM.md):** Locked V1 8-item Bill of Materials, verified 1-unit shopping list (`$68.81` / `$76.81` / `$86.81`), bench wire/insulation consumables, and optional V2 camera upgrade.
 - **[`docs/HARDWARE_ASSEMBLY.md`](docs/HARDWARE_ASSEMBLY.md):** Step-by-step meatspace wiring guide, direct 8-pin PH2.0 display harness map, GPIO pinout allocation (`D0–D10`), 3x `220 kΩ` battery/wall-sense dividers, RF desense & harness routing rules, and mechanical component dimensions for the multi-part 3D-printed enclosure.
-- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md):** End-to-end system design covering the Mirrormere `POST /api/voice/interact` wire contract, dual-transport JSON-RPC agent configuration, Android BLE-to-Tailscale packet forwarder, and future wake-word / tiny audio-intent classifier upgrade paths.
-- **[`docs/MIRRORMERE_VOICE_CLIENT.md`](docs/MIRRORMERE_VOICE_CLIENT.md):** Verified Mirrormere `POST /api/voice/interact` SSE event specification and `client/eink-node/` refresh policy notes.
+- **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md):** End-to-end system design covering the GOTCHI `POST /api/voice/interact` wire contract (`backend/voice_gateway.py`), dual-transport JSON-RPC agent configuration, Android BLE-to-Tailscale packet forwarder, and future wake-word / tiny audio-intent classifier upgrade paths.
+- **[`docs/MIRRORMERE_VOICE_CLIENT.md`](docs/MIRRORMERE_VOICE_CLIENT.md):** `POST /api/voice/interact` SSE wire-format reference and `client/eink-node/` refresh policy notes carried over as design inspiration from Mirrormere.
 - **[`docs/TASKS.md`](docs/TASKS.md):** V1 software, firmware, mobile relay, and multi-part Blender/CAD enclosure task board across **Zero**, **Amos**, **Ryan**, and **Mike (Arbiter)**.
 - **[`AGENTS.md`](AGENTS.md):** Autonomous agent operating guide, USB-C/HTTP JSON-RPC provisioning protocol, `self_test` hardware verification contract, and security guardrails.
 
@@ -33,7 +33,7 @@
 ## 2. Transport & Audio Routing Modes
 
 1. **Home Wi-Fi (Direct LAN / Tailscale):**
-   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) to the Mirrormere hub, receiving SSE state events and `24 kHz` PCM TTS audio chunks.
+   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) to the GOTCHI voice gateway (`backend/voice_gateway.py`), receiving SSE state events and `24 kHz` PCM TTS audio chunks.
 2. **Android Walk-Out-The-Door Roaming (Headless BLE-to-Tailscale Forwarder):**
    - Bonds over **BLE 5.0 (`L2CAP CoC` / GATT)** (`~2–5 mA` idle draw) to a lightweight headless Android background service on Ryan's Pixel, forwarding audio/snapshots over Tailscale without toggling the phone's Wi-Fi hotspot.
 3. **iOS / Universal On-The-Go Mode (2.4 GHz Hotspot + Discord Backdoor):**

@@ -1,11 +1,11 @@
 #pragma once
 // ============================================================================
-// GOTCHI Mirrormere / Zero Gateway Voice Client (T3.1) — POST /api/voice/interact.
+// GOTCHI Voice Gateway Client (T3.1) — POST /api/voice/interact.
 //   - Multipart WAV (+ optional JPEG snapshot & prompt) upload over WiFiClient.
 //   - Streaming SSE reply parser; `sentence` / `audio_chunk` PCM plays as it
 //     arrives through gotchi_audio::playBase64PcmChunk with 42ms Barge-In / Cancel poll.
 //   - Supports configurable `audio_out_mode`: "speaker" | "discord_voice" | "ble_phone" (F8/T3.3).
-// Wire contract: docs/MIRRORMERE_VOICE_CLIENT.md ("Live gateway").
+// Wire contract: docs/MIRRORMERE_VOICE_CLIENT.md & backend/voice_gateway.py.
 // ============================================================================
 
 #include <Arduino.h>

@@ -9,8 +9,8 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`README.md`**: High-level project overview, locked V1 hardware baseline, and transport modes.
 - **`docs/BOM.md`**: Locked V1 Bill of Materials, exact part numbers, and verified purchase links.
 - **`docs/HARDWARE_ASSEMBLY.md`**: Physical pinout allocation table (`D0–D10` + internal Sense pins) and step-by-step meatspace soldering/wiring instructions.
-- **`docs/ARCHITECTURE.md`**: System topology, Mirrormere `POST /api/voice/interact` wire specification, BLE-to-Tailscale relay protocol, and JSON-RPC config spec.
-- **`docs/MIRRORMERE_VOICE_CLIENT.md`**: Verified Mirrormere `POST /api/voice/interact` SSE event contract (`state`, `audio_chunk` `24 kHz` base64 PCM, error codes) and `client/eink-node/` refresh policy audit.
+- **`docs/ARCHITECTURE.md`**: System topology, GOTCHI `POST /api/voice/interact` wire specification (`backend/voice_gateway.py`), BLE-to-Tailscale relay protocol, and JSON-RPC config spec.
+- **`docs/MIRRORMERE_VOICE_CLIENT.md`**: `POST /api/voice/interact` SSE wire-format reference (`state`, `sentence` / `audio_chunk` `24 kHz` base64 PCM, error codes) and `client/eink-node/` e-ink refresh policy notes carried over as design inspiration from Mirrormere.
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
 - **`firmware/`**: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`) including `log_buffer`, `voice_client`, `live_client`, `ble_framing`, `audio_hal`, `camera_hal`, and `epd_panel`. Build with: `pio run -d firmware -e seeed_xiao_esp32s3`.
 - **`backend/`**: Reference voice, live, and all-day journal gateways and companion codecs (`voice_gateway.py`, `live_gateway.py`, `journal_service.py`, `ble_framing.py`, `gateway_auth.py`).
