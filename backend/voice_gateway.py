@@ -155,8 +155,13 @@ def is_stt_ghost(
     return False, ""
 
 
-def cap_reply_words(text: str, max_words: int = 60) -> str:
-    """Caps spoken reply length to `max_words` (PRD 5c default: 60 words)."""
+_ABBREV_WORDS = frozenset({
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "eg", "ie", "e.g", "i.e",
+})
+
+
+def cap_reply_words(text: str, max_words: int = 0) -> str:
+    """Caps spoken reply length to `max_words` when positive (`0` = uncapped default)."""
     if max_words <= 0:
         return text.strip()
     words = text.strip().split()
@@ -169,12 +174,112 @@ def cap_reply_words(text: str, max_words: int = 60) -> str:
 
 
 def split_into_sentences(text: str) -> List[str]:
-    """Splits a reply into individual sentences so TTS starts streaming on sentence 1."""
+    """
+    Splits a reply into complete sentences so TTS starts streaming on sentence 1
+    without chopping mid-sentence at commas (preserving natural TTS prosody) while
+    avoiding false splits on abbreviations (`Dr.`, `Mr.`, `e.g.`) and decimals (`3.14`).
+    """
     cleaned = (text or "").strip()
     if not cleaned:
         return []
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", cleaned) if p.strip()]
-    return parts if parts else [cleaned]
+    raw_parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", cleaned) if p.strip()]
+    if len(raw_parts) <= 1:
+        return raw_parts if raw_parts else [cleaned]
+
+    merged: List[str] = []
+    for part in raw_parts:
+        if merged:
+            prev = merged[-1]
+            prev_last_token = prev.split()[-1] if prev.split() else ""
+            token_stem = prev_last_token.rstrip(".!?'\")").lower()
+            # Merge back if previous segment ended with a known abbreviation or single initial
+            if prev.endswith(".") and (
+                token_stem in _ABBREV_WORDS
+                or (len(token_stem) == 1 and token_stem.isalpha())
+            ):
+                merged[-1] = f"{prev} {part}"
+                continue
+        merged.append(part)
+    return merged if merged else [cleaned]
+
+
+PCM_CHUNK_FLOOR = 4800  # Ported from Mirrormere hub.go: 4800 bytes = 100ms @ 24kHz s16le
+
+
+def slice_pcm_chunks(pcm_bytes: bytes, chunk_floor: int = PCM_CHUNK_FLOOR) -> List[bytes]:
+    """
+    Ported from Mirrormere (`internal/voice/hub.go` `pcmChunkStreamer`):
+    Slices raw 16-bit PCM into `chunk_floor` (4,800-byte / 100ms) streaming frames.
+    """
+    if not pcm_bytes:
+        return []
+    if chunk_floor <= 0 or len(pcm_bytes) <= chunk_floor:
+        return [pcm_bytes]
+    return [
+        pcm_bytes[i : i + chunk_floor]
+        for i in range(0, len(pcm_bytes), chunk_floor)
+    ]
+
+
+def consume_streaming_sse(
+    sse_text_or_lines: Any,
+    on_status: Optional[Callable[[str], None]] = None,
+    on_sentence: Optional[Callable[[str], None]] = None,
+) -> Tuple[str, List[str]]:
+    """
+    Ported from Mirrormere (`internal/voice/hub.go` `consumeStreamingSSE`):
+    Parses `/ask/stream`-shaped SSE streams (`status`, `sentence`, `reply`, `done`),
+    invoking `on_sentence` as each sentence event arrives so TTS can pipeline synthesis
+    immediately before the full LLM reply finishes.
+    """
+    if isinstance(sse_text_or_lines, (bytes, bytearray)):
+        lines = sse_text_or_lines.decode("utf-8", errors="replace").splitlines()
+    elif isinstance(sse_text_or_lines, str):
+        lines = sse_text_or_lines.splitlines()
+    else:
+        lines = list(sse_text_or_lines)
+
+    current_event = ""
+    reply = ""
+    sentences: List[str] = []
+
+    for raw_line in lines:
+        line = raw_line.strip() if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace").strip()
+        if not line:
+            current_event = ""
+            continue
+        if line.startswith("event:"):
+            current_event = line[6:].strip()
+            continue
+        if line.startswith("data:"):
+            data_str = line[5:].strip()
+            try:
+                payload = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if current_event == "status":
+                st = payload.get("status")
+                if isinstance(st, str) and st and on_status is not None:
+                    on_status(st)
+            elif current_event == "sentence":
+                txt = payload.get("text")
+                if isinstance(txt, str) and txt.strip():
+                    clean_s = txt.strip()
+                    sentences.append(clean_s)
+                    if on_sentence is not None:
+                        on_sentence(clean_s)
+            elif current_event == "reply":
+                rep = payload.get("reply")
+                if isinstance(rep, str):
+                    reply = rep.strip()
+            elif current_event == "done":
+                break
+
+    if not reply and sentences:
+        reply = " ".join(sentences).strip()
+    return reply, sentences
 
 
 def generate_synthetic_pcm(duration_s: float = 0.25, sample_rate: int = 24000) -> bytes:
@@ -282,7 +387,7 @@ class GeminiTTSAdapter:
     def build_endpoint(self) -> str:
         if self.llm_config.tts_url.strip():
             return self.llm_config.tts_url.strip()
-        model = self.llm_config.tts_model or "gemini-2.5-flash-preview-tts"
+        model = self.llm_config.tts_model or "gemini-3.8-flash-tts"
         model_path = model if model.startswith("models/") else f"models/{model}"
         return f"{self.GEMINI_TTS_BASE}/{model_path}:generateContent"
 
@@ -320,6 +425,30 @@ class GeminiTTSAdapter:
                 if b64_audio:
                     return base64.b64decode(b64_audio)
         return generate_synthetic_pcm(duration_s=0.25, sample_rate=sample_rate)
+
+
+def extract_pcm_from_wav_or_raw(raw_bytes: bytes) -> bytes:
+    """
+    Ported from Mirrormere (`internal/voice/hub.go` `parseWAVHeader`):
+    Walks RIFF/WAVE chunks (`fmt `, `LIST`, etc.) up to the `data` chunk so WAV
+    responses from OpenAI-compatible/Kokoro TTS servers are cleanly unwrapped to
+    raw 16-bit mono PCM without fixed 44-byte header assumptions.
+    """
+    if len(raw_bytes) < 12 or raw_bytes[:4] != b"RIFF" or raw_bytes[8:12] != b"WAVE":
+        return raw_bytes
+    offset = 12
+    total_len = len(raw_bytes)
+    while offset + 8 <= total_len:
+        chunk_id = raw_bytes[offset : offset + 4]
+        chunk_size = struct.unpack_from("<I", raw_bytes, offset + 4)[0]
+        offset += 8
+        if chunk_id == b"data":
+            if 0 < chunk_size < 0xFFFFFFFF and offset + chunk_size <= total_len:
+                return raw_bytes[offset : offset + chunk_size]
+            return raw_bytes[offset:]
+        skip = chunk_size + (chunk_size % 2)
+        offset += skip
+    return raw_bytes[44:] if total_len > 44 else raw_bytes
 
 
 class KokoroTTSAdapter:
@@ -381,7 +510,7 @@ class KokoroTTSAdapter:
                 headers["Authorization"] = f"Bearer {self.llm_config.api_key.strip()}"
             raw = self.http_poster(self.llm_config.tts_url.strip(), headers, payload)
             if raw:
-                return raw
+                return extract_pcm_from_wav_or_raw(raw)
 
         return generate_synthetic_pcm(duration_s=0.25, sample_rate=sample_rate)
 
@@ -446,6 +575,14 @@ class SubscriptionBrainAdapter:
                 if isinstance(res_raw, (bytes, bytearray))
                 else str(res_raw).strip()
             )
+            if "event: sentence" in text_out or "event: reply" in text_out:
+                reply, streamed_sentences = consume_streaming_sse(text_out)
+                return {
+                    "transcript": transcript,
+                    "reply": reply,
+                    "sentences": streamed_sentences,
+                    "stt_ms": stt_ms,
+                }
             try:
                 parsed_json = json.loads(text_out)
                 reply = str(
@@ -891,6 +1028,7 @@ class VoiceGatewayService:
             else:
                 reply_text = self.default_reply_text
             explicit_pcm_chunks = None
+            streamed_sentences: Optional[List[str]] = None
             first_audio_ms: Optional[int] = None
         else:
             # Custom turn_handler path: run in background task and emit spoken filler at 1200ms / 5000ms
@@ -1009,8 +1147,9 @@ class VoiceGatewayService:
             )
             reply_text = result.get("reply", self.default_reply_text)
             explicit_pcm_chunks = result.get("pcm_chunks")
+            streamed_sentences = result.get("sentences")
 
-        # Apply PRD Section 5c spoken reply word cap (default 60 words)
+        # Apply optional spoken reply word cap (default 0 = uncapped)
         reply_text = cap_reply_words(reply_text, max_words=self.llm_config.reply_cap_words)
         first_text_ms = int((time.monotonic() - t_start) * 1000)
 
@@ -1030,21 +1169,37 @@ class VoiceGatewayService:
 
         yield build_sse_event("state", {"state": "speaking"})
 
-        sentences = split_into_sentences(reply_text)
-        if explicit_pcm_chunks is not None:
-            sentence_pairs = [
-                (sentences[idx] if idx < len(sentences) else "", chunk)
-                for idx, chunk in enumerate(explicit_pcm_chunks)
-            ]
-        else:
-            loop = asyncio.get_running_loop()
-            sentence_pairs = []
-            for sent in sentences:
-                pcm_bytes = await loop.run_in_executor(None, self._synthesize_sentence_pcm, sent)
-                sentence_pairs.append((sent, pcm_bytes))
+        sentences = (
+            list(streamed_sentences)
+            if streamed_sentences and self.llm_config.reply_cap_words <= 0
+            else split_into_sentences(reply_text)
+        )
+        loop = asyncio.get_running_loop()
 
-        for idx, (sent_text, raw_pcm) in enumerate(sentence_pairs):
-            is_final = (idx == len(sentence_pairs) - 1)
+        # Lookahead async pipeline (Mirrormere streaming pattern):
+        # Start synthesizing sentence i+1 in the background executor BEFORE yielding
+        # sentence i over SSE, so Sentence 0 streams immediately upon synthesis and
+        # subsequent sentences render concurrently behind active ESP32 playback.
+        total_sentences = len(sentences) if explicit_pcm_chunks is None else len(explicit_pcm_chunks)
+        lookahead_task: Optional[asyncio.Future[bytes]] = None
+        if explicit_pcm_chunks is None and total_sentences > 0:
+            lookahead_task = loop.run_in_executor(None, self._synthesize_sentence_pcm, sentences[0])
+
+        for idx in range(total_sentences):
+            sent_text = sentences[idx] if idx < len(sentences) else ""
+            if explicit_pcm_chunks is not None:
+                raw_pcm = explicit_pcm_chunks[idx]
+            else:
+                assert lookahead_task is not None
+                next_task: Optional[asyncio.Future[bytes]] = None
+                if idx + 1 < total_sentences:
+                    next_task = loop.run_in_executor(
+                        None, self._synthesize_sentence_pcm, sentences[idx + 1]
+                    )
+                raw_pcm = await lookahead_task
+                lookahead_task = next_task
+
+            is_final = (idx == total_sentences - 1)
             b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
             if first_audio_ms is None:
                 first_audio_ms = int((time.monotonic() - t_start) * 1000)
