@@ -3,6 +3,7 @@
 // ============================================================================
 
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,17 +133,28 @@ private:
     size_t len_ = 0;
 };
 
-// Splits "http://host[:port]/path". Only plain http is supported.
-bool parseUrl(const String& url, String& host, uint16_t& port, String& path) {
-    if (!url.startsWith("http://")) return false;
-    String rest = url.substring(7);
+// Splits "http(s)://host[:port]/path". Supports https:// (443 default for Tailscale-free
+// mobile roaming over Cloudflare Tunnel / reverse proxy) and http:// (80/8765 on LAN).
+bool parseUrl(const String& url, String& host, uint16_t& port, String& path, bool* out_tls = nullptr) {
+    bool is_tls = false;
+    String rest;
+    if (url.startsWith("https://")) {
+        is_tls = true;
+        rest = url.substring(8);
+    } else if (url.startsWith("http://")) {
+        is_tls = false;
+        rest = url.substring(7);
+    } else {
+        return false;
+    }
+    if (out_tls) *out_tls = is_tls;
     int slash = rest.indexOf('/');
     String hostport = slash < 0 ? rest : rest.substring(0, slash);
     path = slash < 0 ? String("/") : rest.substring(slash);
     int colon = hostport.indexOf(':');
     if (colon < 0) {
         host = hostport;
-        port = 80;
+        port = is_tls ? 443 : 80;
     } else {
         host = hostport.substring(0, colon);
         port = (uint16_t)hostport.substring(colon + 1).toInt();
@@ -494,11 +506,12 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
 
     String host, path;
     uint16_t port = 80;
+    bool is_tls = false;
     const bool has_audio = (wav.data != nullptr && wav.length > 0);
     const bool has_burst = (image != nullptr && image->burst_count > 0);
     const bool has_single_image = (!has_burst && image != nullptr && image->data != nullptr && image->length > 0);
 
-    if (!parseUrl(url, host, port, path) || (!has_audio && !has_burst && !has_single_image)) {
+    if (!parseUrl(url, host, port, path, &is_tls) || (!has_audio && !has_burst && !has_single_image)) {
         setFailure(ui, UiState::ERROR, "bad_url", "BAD VOICE URL", cb);
         return false;
     }
@@ -580,7 +593,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
 
     String head = "POST " + path + " HTTP/1.1\r\n";
     head += "Host: " + host;
-    if (port != 80) head += ":" + String(port);
+    if ((!is_tls && port != 80) || (is_tls && port != 443)) head += ":" + String(port);
     head += "\r\n";
     head += "Content-Type: multipart/form-data; boundary=";
     head += BOUNDARY;
@@ -593,7 +606,10 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     }
     head += "Connection: close\r\n\r\n";
 
-    WiFiClient client;
+    WiFiClient plain_client;
+    WiFiClientSecure tls_client;
+    if (is_tls) tls_client.setInsecure();
+    WiFiClient& client = is_tls ? static_cast<WiFiClient&>(tls_client) : plain_client;
     if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
         setFailure(ui, UiState::OFFLINE, "connect", "NO HUB", cb);
         return false;
@@ -732,7 +748,8 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
 
     String host, path;
     uint16_t port = 80;
-    if (!parseUrl(url, host, port, path)) {
+    bool is_tls = false;
+    if (!parseUrl(url, host, port, path, &is_tls)) {
         return false;
     }
 
@@ -762,7 +779,7 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
 
     String head = "POST " + path + " HTTP/1.1\r\n";
     head += "Host: " + host;
-    if (port != 80) head += ":" + String(port);
+    if ((!is_tls && port != 80) || (is_tls && port != 443)) head += ":" + String(port);
     head += "\r\nContent-Type: multipart/form-data; boundary=";
     head += BOUNDARY;
     head += "\r\nContent-Length: " + String((unsigned long)content_len) + "\r\n";
@@ -772,7 +789,10 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
     }
     head += "Connection: close\r\n\r\n";
 
-    WiFiClient client;
+    WiFiClient plain_client;
+    WiFiClientSecure tls_client;
+    if (is_tls) tls_client.setInsecure();
+    WiFiClient& client = is_tls ? static_cast<WiFiClient&>(tls_client) : plain_client;
     if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
         return false;
     }

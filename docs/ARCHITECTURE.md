@@ -22,7 +22,7 @@
           |                | Headless Android  |     | Provisioning  |
           |                | BLE Forwarder     |     | (Amos / Zero) |
           |                +---------+---------+     +---------------+
-          |                          | (Tailscale)
+          |                          | (HTTPS 443 / Cloudflare Tunnel or LAN :8765)
           +------------+-------------+
                        |
                        v
@@ -45,7 +45,7 @@ GOTCHI runs its own backend gateway (`backend/voice_gateway.py`), implementing t
 ### Request (`multipart/form-data`)
 ```http
 POST /api/voice/interact HTTP/1.1
-Host: <gotchi-gateway>:8080
+Host: <gotchi-gateway>:8765
 Authorization: Bearer <device-token>
 Content-Type: multipart/form-data; boundary=---GotchiBoundary
 
@@ -88,7 +88,7 @@ To give Ryan zero-touch connectivity when walking out of home Wi-Fi range withou
    - **Priority 3 (Phone Hotspot Fallback — iOS / Universal):** If BLE relay is unavailable, wake Wi-Fi and connect to the configured mobile hotspot (`Maximize Compatibility` 2.4 GHz on iPhone).
 2. **Android Foreground Service (`android-ble-forwarder/`):**
    - Minimal headless Kotlin service (~250 lines) running an persistent BLE Central manager.
-   - Reassembles incoming audio/snapshot frames from GOTCHI, attaches the device's bearer token, and dispatches `POST /api/voice/interact` over the phone's active **Tailscale** interface to the GOTCHI voice gateway (`backend/voice_gateway.py`).
+   - Reassembles incoming audio/snapshot frames from GOTCHI, attaches the device's bearer token, and dispatches `POST /api/voice/interact` over standard **HTTPS (`443`, Cloudflare Tunnel / reverse proxy — no Tailscale required on the phone)** or LAN (`:8765`) to the GOTCHI voice gateway (`backend/voice_gateway.py`).
    - Streams the hub's SSE response events back down the BLE channel to GOTCHI (and optionally plays TTS audio directly to Bluetooth earbuds paired to the phone).
 
 ---

@@ -6,6 +6,7 @@
 #include "pins.h"
 #include "log_buffer.h"
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <mbedtls/base64.h>
 #include <string.h>
@@ -371,11 +372,15 @@ static bool performWsHandshake(WiFiClient& c, const String& host, uint16_t port,
 
 } // namespace
 
-bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path) {
+bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path, bool* out_tls) {
+    bool is_tls = false;
     String rest;
-    if (url.startsWith("http://")) rest = url.substring(7);
-    else if (url.startsWith("ws://")) rest = url.substring(5);
+    if (url.startsWith("https://")) { is_tls = true; rest = url.substring(8); }
+    else if (url.startsWith("wss://")) { is_tls = true; rest = url.substring(6); }
+    else if (url.startsWith("http://")) { is_tls = false; rest = url.substring(7); }
+    else if (url.startsWith("ws://")) { is_tls = false; rest = url.substring(5); }
     else return false;
+    if (out_tls) *out_tls = is_tls;
 
     int slash = rest.indexOf('/');
     String hostport = slash < 0 ? rest : rest.substring(0, slash);
@@ -384,7 +389,7 @@ bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_pa
     int colon = hostport.indexOf(':');
     if (colon < 0) {
         host = hostport;
-        port = 80;
+        port = is_tls ? 443 : 80;
     } else {
         host = hostport.substring(0, colon);
         port = (uint16_t)hostport.substring(colon + 1).toInt();
@@ -422,7 +427,8 @@ SessionEndReason runSession(
 
     String host, ws_path;
     uint16_t port = 80;
-    if (!parseLiveUrl(config.voice_url, host, port, ws_path)) {
+    bool is_tls = false;
+    if (!parseLiveUrl(config.voice_url, host, port, ws_path, &is_tls)) {
         gotchi_log::RingLogger.error("live", "Go Live invalid voice_url");
         ui.state = UiState::ERROR;
         ui.error_code = "bad_url";
@@ -434,7 +440,10 @@ SessionEndReason runSession(
     waitForRelease(PIN_BTN_TOP_PTT);
     gotchi_log::RingLogger.info("live", "Connecting Go Live WebSocket", nullptr, config.bearer_token.c_str());
 
-    WiFiClient ws_client;
+    WiFiClient plain_ws;
+    WiFiClientSecure tls_ws;
+    if (is_tls) tls_ws.setInsecure();
+    WiFiClient& ws_client = is_tls ? static_cast<WiFiClient&>(tls_ws) : plain_ws;
     if (!ws_client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS) ||
         !performWsHandshake(ws_client, host, port, ws_path, config.node_id, config.bearer_token, config.audio_out_mode)) {
         ws_client.stop();

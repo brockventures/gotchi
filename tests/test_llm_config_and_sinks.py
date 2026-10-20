@@ -633,15 +633,20 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     wire_md_text = (REPO_ROOT / "docs" / "MIRRORMERE_VOICE_CLIENT.md").read_text(encoding="utf-8")
     assert "mirrormere.local" not in main_cpp_text
     assert "mirrormere.local" not in portal_cpp_text
-    assert "http://gotchi.local:8080/api/voice/interact" in main_cpp_text
+    assert "http://gotchi.local:8765/api/voice/interact" in main_cpp_text
     assert "MIRRORMERE / DISCORD BACKEND HUB" not in arch_md_text
     assert "mirrormere.local:9098" not in wire_md_text
     live_h_text = (REPO_ROOT / "firmware" / "include" / "live_client.h").read_text(encoding="utf-8")
+    vc_cpp_text = (REPO_ROOT / "firmware" / "src" / "voice_client.cpp").read_text(encoding="utf-8")
+    lc_cpp_text = (REPO_ROOT / "firmware" / "src" / "live_client.cpp").read_text(encoding="utf-8")
     android_readme_text = (REPO_ROOT / "android-ble-forwarder" / "README.md").read_text(encoding="utf-8")
     assert ":9098" not in live_h_text
     assert ":9098" not in android_readme_text
-    assert "http://host:8080/api/voice/interact" in live_h_text
-    assert "http://100.64.0.1:8080" in android_readme_text
+    assert "http://host:8765/api/voice/interact" in live_h_text
+    assert "WiFiClientSecure" in vc_cpp_text
+    assert 'url.startsWith("https://")' in vc_cpp_text
+    assert "WiFiClientSecure" in lc_cpp_text
+    assert 'url.startsWith("wss://")' in lc_cpp_text
     kotlin_srv_text = (
         REPO_ROOT
         / "android-ble-forwarder"
@@ -656,7 +661,7 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
         / "GotchiBleRelayService.kt"
     ).read_text(encoding="utf-8")
     assert ":9098" not in kotlin_srv_text
-    assert 'DEFAULT_GATEWAY_URL = "http://100.64.0.1:8080"' in kotlin_srv_text
+    assert 'DEFAULT_GATEWAY_URL = "http://gotchi.local:8765"' in kotlin_srv_text
 
 
 
