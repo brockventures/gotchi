@@ -14,7 +14,7 @@ button{background:#38bdf8;color:#0f172a;font-weight:700;border:none;cursor:point
 <form method="POST" action="/provision">
 <label>Wi-Fi SSID</label><input name="ssid" required placeholder="Home Wi-Fi SSID">
 <label>Wi-Fi Password</label><input name="psk" type="password" placeholder="Wi-Fi Password">
-<label>Voice Gateway URL</label><input name="hub" value="http://gotchi.local:8080">
+<label>Voice Gateway URL</label><input name="hub" value="http://gotchi.local:8765">
 <label>Node ID</label><input name="node_id" value="gotchi-v1-01">
 <button type="submit">Save & Connect</button></form></body></html>
 )rawliteral";

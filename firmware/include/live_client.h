@@ -49,9 +49,9 @@ using SnapshotCallback = bool (*)(size_t slot_idx, CapturedFrameView* out_frame)
 using BurstCallback = size_t (*)(CapturedFrameView* out_frames, size_t max_frames);
 using PollTickCallback = void (*)();
 
-// Converts an HTTP/WS voice_url (e.g. "http://host:8080/api/voice/interact")
-// into host, port, and "/api/live/ws" path.
-bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path);
+// Converts an HTTP(S)/WS(S) voice_url (e.g. "https://gotchi.example.com/api/voice/interact" or "http://host:8765/api/voice/interact")
+// into host, port, "/api/live/ws" path, and TLS flag.
+bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path, bool* out_tls = nullptr);
 
 // Runs the interactive bidirectional Go Live session loop until exit.
 SessionEndReason runSession(

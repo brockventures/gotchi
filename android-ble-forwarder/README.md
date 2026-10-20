@@ -1,6 +1,6 @@
 # GOTCHI Headless Android BLE-to-Tailscale Relay (`android-ble-forwarder/`)
 
-Headless Android foreground companion service (`F18` / `T4.2`) for out-of-home pocket operation. Eliminates mobile Wi-Fi hotspot battery drain by bonding to GOTCHI over **BLE 5.0 (`2M PHY`)** and relaying voice/vision turns over the phone's existing **Tailscale** tunnel to the GOTCHI Voice Gateway (`POST /api/voice/interact`).
+Headless Android foreground companion service (`F18` / `T4.2`) for out-of-home pocket operation. Eliminates mobile Wi-Fi hotspot battery drain by bonding to GOTCHI over **BLE 5.0 (`2M PHY`)** and relaying voice/vision turns over standard **HTTPS (`443`, Cloudflare Tunnel / reverse proxy — zero Tailscale required on the phone)** or LAN (`:8765`) to the GOTCHI Voice Gateway (`POST /api/voice/interact`).
 
 ---
 
@@ -28,7 +28,7 @@ Configure the target gateway URL, per-device bearer token, and audio routing mod
 ```bash
 adb shell am start-foreground-service \
   -n ventures.brock.gotchi.forwarder/.GotchiBleRelayService \
-  --es gateway_url "http://100.64.0.1:8080" \
+  --es gateway_url "https://gotchi.example.com" \
   --es bearer_token "<YOUR_DEVICE_TOKEN>" \
   --es node_id "gotchi-pocket-01" \
   --es audio_out_mode "ble_phone"

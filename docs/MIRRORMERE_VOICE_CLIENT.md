@@ -1,6 +1,6 @@
 # GOTCHI Voice Wire-Format Reference & E-Ink Refresh Notes (T3.1, T2.6)
 
-> **Scope Note:** GOTCHI's backend is its own `backend/voice_gateway.py` (with each unit pointing `voice_url` at its configured gateway, e.g. `http://gotchi.local:8080/api/voice/interact`). Mirrormere (`azylman/mirrormere`) served strictly as a design inspiration and wire-format / e-ink refresh reference—never as GOTCHI's runtime backend.
+> **Scope Note:** GOTCHI's backend is its own `backend/voice_gateway.py` (with each unit pointing `voice_url` at its configured gateway, e.g. `http://gotchi.local:8765/api/voice/interact`). Mirrormere (`azylman/mirrormere`) served strictly as a design inspiration and wire-format / e-ink refresh reference—never as GOTCHI's runtime backend.
 
 Sources read 2026-10-18 in `azylman/mirrormere` at `8bcb2ca` for wire-format & e-ink inspiration: `api/openapi.yaml`,
 `internal/voice/hub.go`, `internal/voice/coordinator.go`, `internal/server/voice.go`,
@@ -78,7 +78,7 @@ the 1.54" SSD1681 and cannot be reused as is. The ideas below carry over:
 
 GOTCHI's `backend/voice_gateway.py` implements the SSE wire contract below. Each unit takes its target address from `voice_url` (`set_config`).
 
-- **Endpoint:** `POST http://<gotchi-gateway>:8080/api/voice/interact` (`backend/voice_gateway.py`). The firmware default `voice_url` is `http://gotchi.local:8080/api/voice/interact`.
+- **Endpoint:** `POST http://<gotchi-gateway>:8765/api/voice/interact` (`backend/voice_gateway.py`). The firmware default `voice_url` is `http://gotchi.local:8765/api/voice/interact`.
 - **Request:** `multipart/form-data` with `audio` (`ptt.wav`, `audio/wav`, 16 kHz mono 16-bit WAV), `node_id`, `session_id` (plus optional `image` or `image_0`..`image_4` and `prompt`).
 - **Response:** `200 text/event-stream`.
 
