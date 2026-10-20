@@ -39,6 +39,51 @@ VALID_PROVIDERS = (
     "custom",
 )
 VALID_DISCORD_BOTS = ("zero", "mirrormere", "custom")
+VALID_TTS_ENGINES = ("mock", "gemini", "kokoro", "custom")
+VALID_STT_ENGINES = ("mock", "whisper_http", "faster_whisper")
+DEFAULT_VOICE_NAME = "Schedar"
+GEMINI_HD_VOICES = (
+    "Schedar",
+    "Achird",
+    "Puck",
+    "Charon",
+    "Kore",
+    "Fenrir",
+    "Aoede",
+    "Orus",
+    "Zephyr",
+    "Autonoe",
+    "Enceladus",
+    "Iapetus",
+    "Umbriel",
+    "Algieba",
+    "Despina",
+    "Erinome",
+    "Algenib",
+    "Rasalgethi",
+    "Laomedeia",
+    "Achernar",
+    "Alnilam",
+    "Gacrux",
+    "Pulcherrima",
+    "Vindemiatrix",
+    "Sadachbia",
+    "Sadaltager",
+    "Sulafat",
+    "Callirrhoe",
+    "Leda",
+    "Zubenelgenubi",
+)
+KOKORO_VOICES = (
+    "am_michael",
+    "am_adam",
+    "am_fenrir",
+    "am_onyx",
+    "bm_george",
+    "bm_lewis",
+    "af_heart",
+    "af_bella",
+)
 ALLOWED_SUBSCRIPTION_BINARIES = ("claude", "agy", "gemini", "codex")
 FORBIDDEN_SUBSCRIPTION_ARGS = (
     "--dangerously-skip-permissions",
@@ -128,6 +173,13 @@ class LLMConfig:
     session_token: str = ""
     discord_voice_bot: str = "zero"
     discord_voice_webhook_url: str = ""
+    voice_name: str = DEFAULT_VOICE_NAME
+    tts_engine: str = "kokoro"
+    tts_model: str = "gemini-2.5-flash-preview-tts"
+    tts_url: str = ""
+    stt_engine: str = "mock"
+    stt_url: str = ""
+    stt_model: str = "whisper-1"
     reply_cap_words: int = 60
     filler_delay_ms: int = 1200
     second_filler_delay_ms: int = 5000
@@ -146,6 +198,16 @@ class LLMConfig:
             raise ValueError(
                 f"Invalid discord_voice_bot '{self.discord_voice_bot}'; expected one of {VALID_DISCORD_BOTS}"
             )
+        if self.tts_engine not in VALID_TTS_ENGINES:
+            raise ValueError(
+                f"Invalid tts_engine '{self.tts_engine}'; expected one of {VALID_TTS_ENGINES}"
+            )
+        if self.stt_engine not in VALID_STT_ENGINES:
+            raise ValueError(
+                f"Invalid stt_engine '{self.stt_engine}'; expected one of {VALID_STT_ENGINES}"
+            )
+        if not self.voice_name or not str(self.voice_name).strip():
+            raise ValueError("voice_name must be a non-empty string")
         if self.auth_mode == "api_key" and not self.api_key.strip():
             raise ValueError("auth_mode 'api_key' requires a non-empty api_key")
         if self.auth_mode == "subscription":
@@ -181,6 +243,13 @@ class LLMConfig:
             "session_token_set": bool(self.session_token.strip()),
             "discord_voice_bot": self.discord_voice_bot,
             "discord_voice_webhook_url": self.discord_voice_webhook_url,
+            "voice_name": self.voice_name,
+            "tts_engine": self.tts_engine,
+            "tts_model": self.tts_model,
+            "tts_url": self.tts_url,
+            "stt_engine": self.stt_engine,
+            "stt_url": self.stt_url,
+            "stt_model": self.stt_model,
             "reply_cap_words": self.reply_cap_words,
             "filler_delay_ms": self.filler_delay_ms,
             "second_filler_delay_ms": self.second_filler_delay_ms,
@@ -211,6 +280,13 @@ class LLMConfig:
             discord_voice_webhook_url=str(
                 updates.get("discord_voice_webhook_url", self.discord_voice_webhook_url)
             ),
+            voice_name=str(updates.get("voice_name", self.voice_name)).strip(),
+            tts_engine=str(updates.get("tts_engine", self.tts_engine)).strip(),
+            tts_model=str(updates.get("tts_model", self.tts_model)).strip(),
+            tts_url=str(updates.get("tts_url", self.tts_url)).strip(),
+            stt_engine=str(updates.get("stt_engine", self.stt_engine)).strip(),
+            stt_url=str(updates.get("stt_url", self.stt_url)).strip(),
+            stt_model=str(updates.get("stt_model", self.stt_model)).strip(),
             reply_cap_words=int(updates.get("reply_cap_words", self.reply_cap_words)),
             filler_delay_ms=int(updates.get("filler_delay_ms", self.filler_delay_ms)),
             second_filler_delay_ms=int(
@@ -228,6 +304,13 @@ class LLMConfig:
         self.session_token = candidate.session_token
         self.discord_voice_bot = candidate.discord_voice_bot
         self.discord_voice_webhook_url = candidate.discord_voice_webhook_url
+        self.voice_name = candidate.voice_name
+        self.tts_engine = candidate.tts_engine
+        self.tts_model = candidate.tts_model
+        self.tts_url = candidate.tts_url
+        self.stt_engine = candidate.stt_engine
+        self.stt_url = candidate.stt_url
+        self.stt_model = candidate.stt_model
         self.reply_cap_words = candidate.reply_cap_words
         self.filler_delay_ms = candidate.filler_delay_ms
         self.second_filler_delay_ms = candidate.second_filler_delay_ms
@@ -268,6 +351,23 @@ class LLMConfig:
         discord_voice_webhook_url = os.environ.get(
             "GOTCHI_DISCORD_VOICE_URL", file_data.get("discord_voice_webhook_url", "")
         )
+        voice_name = os.environ.get(
+            "GOTCHI_VOICE_NAME", file_data.get("voice_name", DEFAULT_VOICE_NAME)
+        )
+        tts_engine = os.environ.get(
+            "GOTCHI_TTS_ENGINE", file_data.get("tts_engine", "kokoro")
+        )
+        tts_model = os.environ.get(
+            "GOTCHI_TTS_MODEL", file_data.get("tts_model", "gemini-2.5-flash-preview-tts")
+        )
+        tts_url = os.environ.get("GOTCHI_TTS_URL", file_data.get("tts_url", ""))
+        stt_engine = os.environ.get(
+            "GOTCHI_STT_ENGINE", file_data.get("stt_engine", "mock")
+        )
+        stt_url = os.environ.get("GOTCHI_STT_URL", file_data.get("stt_url", ""))
+        stt_model = os.environ.get(
+            "GOTCHI_STT_MODEL", file_data.get("stt_model", "whisper-1")
+        )
         reply_cap_words = int(
             os.environ.get("GOTCHI_REPLY_CAP_WORDS", file_data.get("reply_cap_words", 60))
         )
@@ -294,6 +394,13 @@ class LLMConfig:
             session_token=session_token,
             discord_voice_bot=discord_voice_bot,
             discord_voice_webhook_url=discord_voice_webhook_url,
+            voice_name=voice_name,
+            tts_engine=tts_engine,
+            tts_model=tts_model,
+            tts_url=tts_url,
+            stt_engine=stt_engine,
+            stt_url=stt_url,
+            stt_model=stt_model,
             reply_cap_words=reply_cap_words,
             filler_delay_ms=filler_delay_ms,
             second_filler_delay_ms=second_filler_delay_ms,

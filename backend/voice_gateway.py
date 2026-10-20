@@ -26,10 +26,12 @@ import asyncio
 import base64
 import hmac
 import inspect
+import io
 import json
 import logging
 import os
 import re
+import shlex
 import struct
 import time
 import urllib.request
@@ -42,7 +44,14 @@ except ImportError:
     FastAPI = None
 
 from backend.gateway_auth import BearerTokenVerifier
-from backend.llm_config import LLMConfig, validate_discord_webhook_url
+from backend.llm_config import (
+    DEFAULT_VOICE_NAME,
+    GEMINI_HD_VOICES,
+    KOKORO_VOICES,
+    LLMConfig,
+    validate_discord_webhook_url,
+    validate_subscription_command,
+)
 
 logger = logging.getLogger("gotchi_gateway")
 
@@ -171,6 +180,290 @@ def generate_synthetic_pcm(duration_s: float = 0.25, sample_rate: int = 24000) -
     """Generate 16-bit mono PCM audio for reference TTS playback."""
     num_samples = max(1, int(duration_s * sample_rate))
     return b"\x00\x00" * num_samples
+
+
+class WhisperSTTAdapter:
+    """
+    Real Speech-to-Text adapter for T6.4 (`Issue #40`) supporting:
+    1. `whisper_http`: OpenAI-compatible `/v1/audio/transcriptions` or JSON Whisper endpoint
+       (e.g. local `faster-whisper-server`, `whisper.cpp`, or remote Whisper API).
+    2. `faster_whisper`: Local in-process `faster_whisper.WhisperModel` when installed.
+    """
+
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        http_poster: Optional[Callable[[str, Dict[str, str], bytes], Dict[str, Any]]] = None,
+        local_transcriber: Optional[Callable[[bytes, str], str]] = None,
+    ):
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.http_poster = http_poster or self._default_http_poster
+        self.local_transcriber = local_transcriber
+        self._fw_model: Any = None
+
+    @staticmethod
+    def _default_http_poster(url: str, headers: Dict[str, str], body: bytes) -> Dict[str, Any]:
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else {"text": ""}
+
+    def transcribe(self, wav_bytes: bytes) -> str:
+        if not wav_bytes:
+            return ""
+        engine = self.llm_config.stt_engine
+        if self.local_transcriber is not None:
+            return str(self.local_transcriber(wav_bytes, self.llm_config.stt_model)).strip()
+
+        if engine == "whisper_http" and self.llm_config.stt_url.strip():
+            boundary = "----GotchiWhisperBoundary7MA4YWxkTrZu0gW"
+            model_name = self.llm_config.stt_model or "whisper-1"
+            parts = [
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="model"\r\n\r\n{model_name}\r\n'.encode("utf-8"),
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="file"; filename="ptt.wav"\r\n'
+                f"Content-Type: audio/wav\r\n\r\n".encode("utf-8")
+                + wav_bytes
+                + f"\r\n--{boundary}--\r\n".encode("utf-8"),
+            ]
+            body = b"".join(parts)
+            headers: Dict[str, str] = {
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            }
+            if self.llm_config.api_key.strip():
+                headers["Authorization"] = f"Bearer {self.llm_config.api_key.strip()}"
+            res = self.http_poster(self.llm_config.stt_url.strip(), headers, body)
+            return str(res.get("text") or res.get("transcript") or "").strip()
+
+        if engine == "faster_whisper":
+            from faster_whisper import WhisperModel  # type: ignore
+
+            if self._fw_model is None:
+                model_id = self.llm_config.stt_model or "base.en"
+                self._fw_model = WhisperModel(model_id, device="cpu", compute_type="int8")
+            segments, _ = self._fw_model.transcribe(io.BytesIO(wav_bytes), beam_size=1)
+            return " ".join(seg.text.strip() for seg in segments if seg.text.strip()).strip()
+
+        return "What is the status?"
+
+
+class GeminiTTSAdapter:
+    """
+    Per-sentence Gemini API TTS adapter (`tts_engine == "gemini"`, default voice `"Schedar"`).
+    Allows GOTCHI to run LLM reasoning on the flat-rate `agy` subscription while synthesizing
+    each short sentence in Zero's signature `"Schedar"` voice (24 kHz 16-bit mono PCM).
+    Passes the API key strictly via `x-goog-api-key` header (never in URL query string).
+    """
+
+    GEMINI_TTS_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        http_poster: Optional[Callable[[str, Dict[str, str], Dict[str, Any]], Dict[str, Any]]] = None,
+    ):
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.http_poster = http_poster or self._default_http_poster
+
+    @staticmethod
+    def _default_http_poster(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", **headers},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def build_endpoint(self) -> str:
+        if self.llm_config.tts_url.strip():
+            return self.llm_config.tts_url.strip()
+        model = self.llm_config.tts_model or "gemini-2.5-flash-preview-tts"
+        model_path = model if model.startswith("models/") else f"models/{model}"
+        return f"{self.GEMINI_TTS_BASE}/{model_path}:generateContent"
+
+    def build_payload(self, sentence_text: str) -> Dict[str, Any]:
+        voice_name = self.llm_config.voice_name or DEFAULT_VOICE_NAME
+        return {
+            "contents": [{"parts": [{"text": sentence_text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": voice_name,
+                        }
+                    }
+                },
+            },
+        }
+
+    def synthesize(self, sentence_text: str, sample_rate: int = 24000) -> bytes:
+        api_key = self.llm_config.api_key.strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+        if not api_key and not self.llm_config.tts_url.strip():
+            return generate_synthetic_pcm(duration_s=0.25, sample_rate=sample_rate)
+
+        url = self.build_endpoint()
+        headers = {"x-goog-api-key": api_key} if api_key else {}
+        res = self.http_poster(url, headers, self.build_payload(sentence_text))
+
+        candidates = res.get("candidates") or []
+        for cand in candidates:
+            content = cand.get("content") or {}
+            for part in content.get("parts") or []:
+                inline = part.get("inlineData") or {}
+                b64_audio = inline.get("data")
+                if b64_audio:
+                    return base64.b64decode(b64_audio)
+        return generate_synthetic_pcm(duration_s=0.25, sample_rate=sample_rate)
+
+
+class KokoroTTSAdapter:
+    """
+    Per-sentence Kokoro TTS adapter (`tts_engine == "kokoro"`) for T6.4 (`Issue #40`).
+    Supports:
+    1. Local/remote Kokoro HTTP server (`tts_url`, e.g. `POST /v1/audio/speech` returning 24 kHz PCM16).
+    2. Local in-process `kokoro_onnx` / `kokoro` Python pipeline when installed.
+    3. Graceful fallback to `generate_synthetic_pcm` when offline/unconfigured in unit tests.
+    """
+
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        http_poster: Optional[Callable[[str, Dict[str, str], Dict[str, Any]], bytes]] = None,
+        local_synthesizer: Optional[Callable[[str, str, int], bytes]] = None,
+    ):
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.http_poster = http_poster or self._default_http_poster
+        self.local_synthesizer = local_synthesizer
+
+    @staticmethod
+    def _default_http_poster(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> bytes:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", **headers},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            return resp.read()
+
+    def synthesize(self, sentence_text: str, sample_rate: int = 24000) -> bytes:
+        voice = self.llm_config.voice_name or "am_michael"
+        if self.local_synthesizer is not None:
+            return self.local_synthesizer(sentence_text, voice, sample_rate)
+
+        if self.llm_config.tts_url.strip():
+            payload = {
+                "model": self.llm_config.tts_model or "kokoro",
+                "input": sentence_text,
+                "voice": voice,
+                "response_format": "pcm",
+                "sample_rate": sample_rate,
+            }
+            headers: Dict[str, str] = {}
+            if self.llm_config.api_key.strip():
+                headers["Authorization"] = f"Bearer {self.llm_config.api_key.strip()}"
+            raw = self.http_poster(self.llm_config.tts_url.strip(), headers, payload)
+            if raw:
+                return raw
+
+        return generate_synthetic_pcm(duration_s=0.25, sample_rate=sample_rate)
+
+
+class SubscriptionBrainAdapter:
+    """
+    Executes GOTCHI push-to-talk LLM reasoning turns over the regular `agy` or `claude`
+    subscription (`auth_mode == "subscription"`), keeping LLM calls off metered API keys
+    while pairing with `WhisperSTTAdapter` and `GeminiTTSAdapter` (`voice_name="Schedar"`) or `KokoroTTSAdapter`.
+    """
+
+    def __init__(
+        self,
+        llm_config: LLMConfig,
+        stt_adapter: Optional[WhisperSTTAdapter] = None,
+        cli_runner: Optional[Callable[[List[str], bytes], Any]] = None,
+        http_poster: Optional[Callable[[str, Dict[str, str], Dict[str, Any]], Dict[str, Any]]] = None,
+    ):
+        self.llm_config = llm_config
+        self.stt_adapter = stt_adapter or WhisperSTTAdapter(llm_config=llm_config)
+        self.cli_runner = cli_runner
+        self.http_poster = http_poster
+
+    async def __call__(self, parsed_turn: Dict[str, Any]) -> Dict[str, Any]:
+        t0 = time.monotonic()
+        loop = asyncio.get_running_loop()
+        if parsed_turn.get("prompt"):
+            transcript = str(parsed_turn["prompt"])
+        elif parsed_turn.get("audio_bytes"):
+            transcript = await loop.run_in_executor(
+                None, self.stt_adapter.transcribe, parsed_turn["audio_bytes"]
+            )
+        else:
+            transcript = "Analyzing camera snapshot"
+        stt_ms = int((time.monotonic() - t0) * 1000)
+
+        payload: Dict[str, Any] = {
+            "node_id": parsed_turn.get("node_id", "gotchi-device"),
+            "session_id": parsed_turn.get("session_id", "sess-0"),
+            "prompt": transcript,
+            "has_image": bool(parsed_turn.get("image_bytes")),
+            "burst_count": len(parsed_turn.get("burst_images") or []),
+        }
+        if parsed_turn.get("image_bytes"):
+            payload["image_b64"] = base64.b64encode(parsed_turn["image_bytes"]).decode("ascii")
+
+        cmd = self.llm_config.subscription_command.strip()
+        if cmd:
+            validate_subscription_command(cmd)
+            argv = shlex.split(cmd)
+            stdin_bytes = json.dumps(payload).encode("utf-8")
+            if self.cli_runner is not None:
+                res_raw = self.cli_runner(argv, stdin_bytes)
+                if inspect.isawaitable(res_raw):
+                    res_raw = await res_raw
+            else:
+                from backend.live_gateway import _default_cli_runner
+
+                res_raw = await _default_cli_runner(argv, stdin_bytes)
+            text_out = (
+                res_raw.decode("utf-8", errors="replace").strip()
+                if isinstance(res_raw, (bytes, bytearray))
+                else str(res_raw).strip()
+            )
+            try:
+                parsed_json = json.loads(text_out)
+                reply = str(
+                    parsed_json.get("reply")
+                    or parsed_json.get("text")
+                    or parsed_json.get("result")
+                    or text_out
+                )
+            except json.JSONDecodeError:
+                reply = text_out
+            return {"transcript": transcript, "reply": reply, "stt_ms": stt_ms}
+
+        sub_url = self.llm_config.subscription_url.strip()
+        if sub_url:
+            headers: Dict[str, str] = {}
+            if self.llm_config.session_token.strip():
+                headers["Authorization"] = f"Bearer {self.llm_config.session_token.strip()}"
+            if self.http_poster is not None:
+                data = self.http_poster(sub_url, headers, payload)
+            else:
+                from backend.live_gateway import _default_http_json_post
+
+                data = await loop.run_in_executor(
+                    None, _default_http_json_post, sub_url, headers, payload
+                )
+            reply = str(data.get("reply") or data.get("text") or "")
+            return {"transcript": transcript, "reply": reply, "stt_ms": stt_ms}
+
+        return {"transcript": transcript, "reply": "Subscription reply ready.", "stt_ms": stt_ms}
 
 
 def build_sse_event(event: str, data: dict) -> str:
@@ -312,6 +605,10 @@ class VoiceGatewayService:
         audio_sink_router: Optional[Callable[[str, str, bytes, int, str], None]] = None,
         llm_config: Optional[LLMConfig] = None,
         discord_sink: Optional[DiscordVoiceSink] = None,
+        stt_adapter: Optional[WhisperSTTAdapter] = None,
+        gemini_tts: Optional[GeminiTTSAdapter] = None,
+        kokoro_tts: Optional[KokoroTTSAdapter] = None,
+        subscription_brain: Optional[SubscriptionBrainAdapter] = None,
     ):
         self.verifier = verifier or BearerTokenVerifier.from_env_or_file()
         self.auth_required = auth_required or bool(self.verifier.device_tokens)
@@ -327,6 +624,13 @@ class VoiceGatewayService:
         self.tts_synthesizer = tts_synthesizer
         self.llm_config = llm_config or LLMConfig.from_env_or_file()
         self.discord_sink = discord_sink or DiscordVoiceSink(llm_config=self.llm_config)
+        self.stt_adapter = stt_adapter or WhisperSTTAdapter(llm_config=self.llm_config)
+        self.gemini_tts = gemini_tts or GeminiTTSAdapter(llm_config=self.llm_config)
+        self.kokoro_tts = kokoro_tts or KokoroTTSAdapter(llm_config=self.llm_config)
+        self.subscription_brain = subscription_brain or SubscriptionBrainAdapter(
+            llm_config=self.llm_config,
+            stt_adapter=self.stt_adapter,
+        )
         self.audio_sink_router = audio_sink_router
         self.routed_audio_events: List[Dict[str, Any]] = []
         self.turn_timings: List[Dict[str, Any]] = []
@@ -383,6 +687,10 @@ class VoiceGatewayService:
     def _synthesize_sentence_pcm(self, sentence_text: str) -> bytes:
         if self.tts_synthesizer is not None:
             return self.tts_synthesizer(sentence_text, self.mock_sample_rate)
+        if self.llm_config.tts_engine == "gemini":
+            return self.gemini_tts.synthesize(sentence_text, self.mock_sample_rate)
+        if self.llm_config.tts_engine == "kokoro":
+            return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
         return generate_synthetic_pcm(duration_s=0.25, sample_rate=self.mock_sample_rate)
 
     def parse_multipart_data(
@@ -446,10 +754,13 @@ class VoiceGatewayService:
         }
 
     async def _invoke_turn_handler(self, parsed_turn: Dict[str, Any]) -> Dict[str, Any]:
-        if inspect.iscoroutinefunction(self.turn_handler):
-            return await self.turn_handler(parsed_turn)
+        handler = self.turn_handler
+        if handler is None and self.llm_config.auth_mode == "subscription":
+            handler = self.subscription_brain
+        if inspect.iscoroutinefunction(handler) or inspect.iscoroutinefunction(getattr(handler, "__call__", None)):
+            return await handler(parsed_turn)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.turn_handler, parsed_turn)
+        return await loop.run_in_executor(None, handler, parsed_turn)
 
     async def generate_sse_stream(
         self,
@@ -468,13 +779,25 @@ class VoiceGatewayService:
 
         has_images = bool(parsed_turn.get("image_bytes") or parsed_turn.get("burst_images"))
         has_prompt = parsed_turn.get("prompt") is not None
+        active_handler = self.turn_handler or (
+            self.subscription_brain if self.llm_config.auth_mode == "subscription" else None
+        )
 
         # Pre-check voiced audio duration for audio-only turns without a custom turn_handler
-        if self.turn_handler is None:
+        if active_handler is None:
             if parsed_turn.get("audio_bytes") and has_prompt:
                 transcript_text = parsed_turn["prompt"]
             elif parsed_turn.get("audio_bytes"):
-                transcript_text = "What is the status?"
+                if (
+                    self.llm_config.stt_engine in ("whisper_http", "faster_whisper")
+                    or self.stt_adapter.local_transcriber is not None
+                ):
+                    loop = asyncio.get_running_loop()
+                    transcript_text = await loop.run_in_executor(
+                        None, self.stt_adapter.transcribe, parsed_turn["audio_bytes"]
+                    )
+                else:
+                    transcript_text = "What is the status?"
             elif has_prompt:
                 transcript_text = parsed_turn["prompt"]
             elif parsed_turn.get("burst_images"):
@@ -666,8 +989,18 @@ class VoiceGatewayService:
         reply_text = cap_reply_words(reply_text, max_words=self.llm_config.reply_cap_words)
         first_text_ms = int((time.monotonic() - t_start) * 1000)
 
+        active_tts_engine = self.llm_config.tts_engine or "kokoro"
+        active_voice_name = self.llm_config.voice_name or DEFAULT_VOICE_NAME
+
         yield build_sse_event("state", {"state": "synthesizing"})
-        yield build_sse_event("reply", {"reply": reply_text, "tts_engine": "kokoro"})
+        yield build_sse_event(
+            "reply",
+            {
+                "reply": reply_text,
+                "tts_engine": active_tts_engine,
+                "voice_name": active_voice_name,
+            },
+        )
         await asyncio.sleep(0.005)
 
         yield build_sse_event("state", {"state": "speaking"})
@@ -713,7 +1046,8 @@ class VoiceGatewayService:
                     {
                         "text": sent_text,
                         "sentence_index": idx,
-                        "engine": "kokoro",
+                        "engine": active_tts_engine,
+                        "voice_name": active_voice_name,
                         "format": "pcm",
                         "sample_rate": self.mock_sample_rate,
                         "channels": 1,
@@ -804,6 +1138,17 @@ def create_app(
             "service": "gotchi-voice-gateway",
             "live_mode_enabled": live_srv.is_enabled(),
             "llm_config": srv.llm_config.to_public_dict(),
+        }
+
+    @app.get("/api/config/voices")
+    def get_voice_options():
+        return {
+            "ok": True,
+            "default_voice": DEFAULT_VOICE_NAME,
+            "active_voice": srv.llm_config.voice_name,
+            "active_tts_engine": srv.llm_config.tts_engine,
+            "gemini_hd_voices": list(GEMINI_HD_VOICES),
+            "kokoro_voices": list(KOKORO_VOICES),
         }
 
     @app.get("/api/config/llm")

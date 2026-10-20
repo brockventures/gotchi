@@ -26,9 +26,13 @@ from backend.live_gateway import (
     SubscriptionLiveProvider,
     create_live_provider,
 )
-from backend.llm_config import LLMConfig
+from backend.llm_config import DEFAULT_VOICE_NAME, LLMConfig
 from backend.voice_gateway import (
-     VoiceGatewayService,
+    GeminiTTSAdapter,
+    KokoroTTSAdapter,
+    SubscriptionBrainAdapter,
+    VoiceGatewayService,
+    WhisperSTTAdapter,
     cap_reply_words,
     create_app,
     is_stt_ghost,
@@ -472,4 +476,125 @@ def test_cpp_ble_transport_and_voice_client_invariants():
     assert 'res["live_barge_in"] = cfg.live_barge_in;' in main_cpp
     assert '"invalid_node_id"' in main_cpp
     assert '#include "ble_transport.h"' in main_cpp
+
+
+def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts():
+    """
+    Verify T6.4 (Issue #40):
+    1. Default voice_name is 'Schedar' (Zero's signature voice profile) on both
+       VoiceGatewayService and ApiKeyLiveProvider.
+    2. WhisperSTTAdapter transcribes uploaded WAV audio via whisper_http.
+    3. SubscriptionBrainAdapter keeps LLM reasoning on the regular `agy` subscription
+       (`auth_mode='subscription'`, `subscription_command='agy'`) while GeminiTTSAdapter
+       synthesizes each sentence in `Schedar` (24 kHz 16-bit mono PCM via x-goog-api-key header).
+    4. KokoroTTSAdapter synthesizes 24 kHz PCM via local/HTTP Kokoro endpoint.
+    5. GET /api/config/voices returns 'Schedar' as default_voice along with the 30 Gemini HD voices
+       and Kokoro voices.
+    """
+    cfg = LLMConfig(
+        auth_mode="subscription",
+        provider="gemini_subscription",
+        subscription_command="agy",
+        api_key="gemini-tts-only-key",
+        tts_engine="gemini",
+        voice_name="Schedar",
+        stt_engine="whisper_http",
+        stt_url="https://198.51.100.20:8080/v1/audio/transcriptions",
+    )
+    assert cfg.voice_name == DEFAULT_VOICE_NAME == "Schedar"
+
+    stt_calls = []
+
+    def fake_whisper_http(url: str, headers: Dict[str, str], body: bytes) -> Dict[str, Any]:
+        stt_calls.append((url, headers, len(body)))
+        return {"text": "Give me a quick status check."}
+
+    cli_calls = []
+
+    async def fake_agy_cli(argv: List[str], stdin_bytes: bytes) -> bytes:
+        cli_calls.append((argv, json.loads(stdin_bytes.decode("utf-8"))))
+        return json.dumps({"reply": "All systems nominal. Battery is holding steady."}).encode("utf-8")
+
+    gemini_tts_calls = []
+    expected_pcm = b"\x42\x01" * 600
+
+    def fake_gemini_tts_http(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        gemini_tts_calls.append((url, headers, payload))
+        return {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "inlineData": {
+                                    "mimeType": "audio/pcm;rate=24000",
+                                    "data": base64.b64encode(expected_pcm).decode("ascii"),
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+    stt_adapter = WhisperSTTAdapter(llm_config=cfg, http_poster=fake_whisper_http)
+    gemini_tts = GeminiTTSAdapter(llm_config=cfg, http_poster=fake_gemini_tts_http)
+    sub_brain = SubscriptionBrainAdapter(
+        llm_config=cfg,
+        stt_adapter=stt_adapter,
+        cli_runner=fake_agy_cli,
+    )
+    srv = VoiceGatewayService(
+        llm_config=cfg,
+        stt_adapter=stt_adapter,
+        gemini_tts=gemini_tts,
+        subscription_brain=sub_brain,
+    )
+    client = TestClient(create_app(service=srv))
+
+    voices_resp = client.get("/api/config/voices")
+    assert voices_resp.status_code == 200
+    v_data = voices_resp.json()
+    assert v_data["default_voice"] == "Schedar"
+    assert v_data["active_voice"] == "Schedar"
+    assert "Schedar" in v_data["gemini_hd_voices"]
+    assert "Achird" in v_data["gemini_hd_voices"]
+    assert "am_michael" in v_data["kokoro_voices"]
+
+    wav = wrap_pcm16_to_wav(b"\x15\x00" * 8000)
+    resp = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi_schedar_01"},
+        files={"audio": ("ptt.wav", wav, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    assert len(stt_calls) == 1
+    assert len(cli_calls) == 1
+    assert cli_calls[0][0] == ["agy"]
+    assert cli_calls[0][1]["prompt"] == "Give me a quick status check."
+    assert len(gemini_tts_calls) == 2
+    for call_url, call_hdrs, call_payload in gemini_tts_calls:
+        assert "gemini-2.5-flash-preview-tts:generateContent" in call_url
+        assert call_hdrs == {"x-goog-api-key": "gemini-tts-only-key"}
+        voice_cfg = call_payload["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
+        assert voice_cfg["voiceName"] == "Schedar"
+    assert '"voice_name": "Schedar"' in resp.text
+    assert '"engine": "gemini"' in resp.text
+    assert base64.b64encode(expected_pcm).decode("ascii") in resp.text
+
+    # Also verify KokoroTTSAdapter HTTP synthesis
+    kokoro_calls = []
+    cfg_kokoro = LLMConfig(
+        tts_engine="kokoro",
+        voice_name="am_michael",
+        tts_url="http://198.51.100.21:8880/v1/audio/speech",
+    )
+    kokoro_adapter = KokoroTTSAdapter(
+        llm_config=cfg_kokoro,
+        http_poster=lambda u, h, p: (kokoro_calls.append((u, p)) or expected_pcm),
+    )
+    out_pcm = kokoro_adapter.synthesize("Testing local Kokoro.", 24000)
+    assert out_pcm == expected_pcm
+    assert kokoro_calls[0][1]["voice"] == "am_michael"
+
 

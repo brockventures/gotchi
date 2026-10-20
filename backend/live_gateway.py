@@ -285,6 +285,13 @@ class ApiKeyLiveProvider(UpstreamLiveProvider):
                 "model": model_path,
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {
+                                "voiceName": self.config.voice_name,
+                            }
+                        }
+                    },
                 },
             }
         }
