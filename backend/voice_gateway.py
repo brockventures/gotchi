@@ -430,9 +430,14 @@ class VoiceGatewayService:
         if not audio_bytes and not image_bytes and not burst_images:
             raise ValueError("Interaction must contain at least non-empty audio or image payload")
 
+        mode = str(form_data.get("mode") or "interact").strip().lower()
+        if mode not in ("interact", "journal"):
+            raise ValueError(f"Invalid mode '{mode}'; expected interact | journal")
+
         return {
             "node_id": node_id,
             "session_id": str(session_id),
+            "mode": mode,
             "prompt": str(prompt) if prompt is not None else None,
             "audio_out_mode": str(audio_out_mode),
             "audio_bytes": audio_bytes,
@@ -769,12 +774,14 @@ class VoiceGatewayService:
 def create_app(
     service: Optional[VoiceGatewayService] = None,
     live_service: Optional[Any] = None,
+    journal_service: Optional[Any] = None,
 ) -> "FastAPI":
-    """Factory to create FastAPI instance with /api/voice/interact, /api/live/ws, and /api/config/llm."""
+    """Factory to create FastAPI instance with /api/voice/interact, /api/live/ws, /api/journal/*, and /api/config/llm."""
     if FastAPI is None:
         raise RuntimeError("FastAPI is not installed")
 
     from backend.live_gateway import LiveGatewayService, register_live_routes
+    from backend.journal_service import JournalService, register_journal_routes
 
     app = FastAPI(title="Gotchi Reference Voice Gateway")
     srv = service or VoiceGatewayService()
@@ -783,6 +790,12 @@ def create_app(
         auth_required=srv.auth_required,
         llm_config=srv.llm_config,
     )
+    journal_srv = journal_service or JournalService(
+        verifier=srv.verifier,
+        auth_required=srv.auth_required,
+        min_voiced_ms=srv.llm_config.min_voiced_ms,
+    )
+    app.state.journal_service = journal_srv
 
     @app.get("/health")
     def health():
@@ -842,6 +855,25 @@ def create_app(
         except Exception as e:
             return JSONResponse(status_code=400, content={"error": "bad_request", "message": f"Multipart parse error: {e}"})
 
+        if parsed_turn.get("mode") == "journal":
+            j_res = journal_srv.ingest_segment(
+                node_id=parsed_turn["node_id"],
+                audio_bytes=parsed_turn.get("audio_bytes"),
+                transcript=parsed_turn.get("prompt"),
+                session_id=parsed_turn.get("session_id"),
+                transport="ble_or_wifi_interact",
+            )
+
+            async def _journal_sse() -> AsyncGenerator[str, None]:
+                yield build_sse_event("status", {"status": "journal_logged", "journal": j_res})
+                yield build_sse_event("done", {"mode": "journal", "journal": j_res})
+
+            return StreamingResponse(
+                _journal_sse(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
+
         generator = srv.generate_sse_stream(parsed_turn)
         return StreamingResponse(
             generator,
@@ -854,4 +886,5 @@ def create_app(
         )
 
     register_live_routes(app, live_srv)
+    register_journal_routes(app, journal_srv)
     return app

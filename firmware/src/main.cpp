@@ -62,6 +62,10 @@ struct GotchiConfig {
     bool     live_mode = false;       // F19: Go Live mode off by default (configurable via set_config)
     bool     live_barge_in = false;   // T6.1: Go Live full-duplex AEC + speech barge-in off by default until bench delay calibration
     uint32_t live_silence_ms = 15000; // F19: 15s silence ends Go Live session
+    bool     journal_mode = false;    // F24: Passive All-Day Journal mode off by default (configurable via set_config)
+    uint32_t journal_seg_max_ms = 30000;   // F24: Max 30s per passive journal speech segment
+    uint32_t journal_silence_ms = 2000;    // F24: 2.0s trailing silence closes a journal segment
+    uint32_t journal_min_voiced_ms = 1000; // F24: Minimum 1.0s voiced duration to upload a journal segment
     String default_image_prompt = "Describe what you see in this snapshot briefly.";
 } cfg;
 
@@ -249,6 +253,10 @@ void loadConfig() {
     cfg.live_mode            = prefs.getBool("live_mode", cfg.live_mode);
     cfg.live_barge_in        = prefs.getBool("live_barge_in", cfg.live_barge_in);
     cfg.live_silence_ms      = prefs.getUInt("live_sil_ms", cfg.live_silence_ms);
+    cfg.journal_mode         = prefs.getBool("journal_mode", cfg.journal_mode);
+    cfg.journal_seg_max_ms   = prefs.getUInt("jrn_seg_ms", cfg.journal_seg_max_ms);
+    cfg.journal_silence_ms   = prefs.getUInt("jrn_sil_ms", cfg.journal_silence_ms);
+    cfg.journal_min_voiced_ms= prefs.getUInt("jrn_min_ms", cfg.journal_min_voiced_ms);
     cfg.default_image_prompt = prefs.getString("img_prompt", cfg.default_image_prompt);
     prefs.end();
     if (cfg.ptt_max_ms > 120000) cfg.ptt_max_ms = 120000;
@@ -281,6 +289,10 @@ void saveConfig() {
     prefs.putBool("live_mode", cfg.live_mode);
     prefs.putBool("live_barge_in", cfg.live_barge_in);
     prefs.putUInt("live_sil_ms", cfg.live_silence_ms);
+    prefs.putBool("journal_mode", cfg.journal_mode);
+    prefs.putUInt("jrn_seg_ms", cfg.journal_seg_max_ms);
+    prefs.putUInt("jrn_sil_ms", cfg.journal_silence_ms);
+    prefs.putUInt("jrn_min_ms", cfg.journal_min_voiced_ms);
     prefs.putString("img_prompt", cfg.default_image_prompt);
     prefs.end();
     applyPrerollPolicy();
@@ -324,6 +336,10 @@ String handleJsonRpc(const String& jsonLine) {
         res["live_mode"] = cfg.live_mode;
         res["live_barge_in"] = cfg.live_barge_in;
         res["live_silence_ms"] = cfg.live_silence_ms;
+        res["journal_mode"] = cfg.journal_mode;
+        res["journal_seg_max_ms"] = cfg.journal_seg_max_ms;
+        res["journal_silence_ms"] = cfg.journal_silence_ms;
+        res["journal_min_voiced_ms"] = cfg.journal_min_voiced_ms;
         res["default_image_prompt"] = cfg.default_image_prompt;
         samplePowerAndBatteryTelemetry(true);
         res["usb_host_connected"] = isUsbDataHostConnected();
@@ -389,6 +405,10 @@ String handleJsonRpc(const String& jsonLine) {
         if (req["live_mode"].is<bool>()) cfg.live_mode = req["live_mode"].as<bool>();
         if (req["live_barge_in"].is<bool>()) cfg.live_barge_in = req["live_barge_in"].as<bool>();
         if (req["live_silence_ms"].is<uint32_t>()) cfg.live_silence_ms = req["live_silence_ms"].as<uint32_t>();
+        if (req["journal_mode"].is<bool>()) cfg.journal_mode = req["journal_mode"].as<bool>();
+        if (req["journal_seg_max_ms"].is<uint32_t>()) cfg.journal_seg_max_ms = req["journal_seg_max_ms"].as<uint32_t>();
+        if (req["journal_silence_ms"].is<uint32_t>()) cfg.journal_silence_ms = req["journal_silence_ms"].as<uint32_t>();
+        if (req["journal_min_voiced_ms"].is<uint32_t>()) cfg.journal_min_voiced_ms = req["journal_min_voiced_ms"].as<uint32_t>();
         if (req["default_image_prompt"].is<const char*>()) {
             cfg.default_image_prompt = req["default_image_prompt"].as<String>();
         }
@@ -924,6 +944,89 @@ static void runPttTurn() {
     dispatchVoiceOrSnap(wav, s_staged_jpeg_active, false);
 }
 
+// ============================================================================
+// V1 All-Day Journal Mode (`journal_mode`, default false — PRD F24 / T3.5)
+//   - BLE-Only Low-Power State: When bonded to the phone over BLE on battery power
+//     (`gotchi_ble::isBlePeerConnected() && !isExternalPowerConnected()`), shuts down the
+//     ESP32-S3 Wi-Fi radio completely (`WiFi.mode(WIFI_OFF)`), drops CPU frequency to 80 MHz,
+//     and keeps the e-paper display & MAX98357A speaker in 0 uA / <1 uA deep sleep.
+//   - Duty-Cycled Acoustic Sniff: Probes a 16 ms (256-sample) PDM slice in internal SRAM every
+//     120 ms while silent. When ambient speech crosses `cfg.vad_rms_lsb`, transitions into
+//     silent segment capture (`up to journal_seg_max_ms = 30s`, closing after `journal_silence_ms = 2s`
+//     of trailing silence) and uploads via BLE (`mode: "journal"`) or Wi-Fi without waking the
+//     speaker or e-paper screen. Any button press (`BTN_TOP` / `BTN_BOT`) immediately preempts
+//     passive journal capture with zero user latency.
+// ============================================================================
+static bool     s_wifi_disabled_for_ble_lp = false;
+static uint32_t s_last_journal_sniff_ts    = 0;
+
+static void manageBleLowPowerWiFi() {
+    bool want_ble_lp = (cfg.journal_mode || cfg.audio_out_mode == "ble_phone") &&
+                       gotchi_ble::isBlePeerConnected() &&
+                       !isExternalPowerConnected();
+    if (want_ble_lp && !s_wifi_disabled_for_ble_lp) {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        setCpuFrequencyMhz(80);
+        s_wifi_disabled_for_ble_lp = true;
+        gotchi_log::RingLogger.info("power", "BLE low-power mode active: WiFi_OFF + 80 MHz CPU");
+    } else if (!want_ble_lp && s_wifi_disabled_for_ble_lp) {
+        setCpuFrequencyMhz(240);
+        s_wifi_disabled_for_ble_lp = false;
+        if (cfg.wifi_ssid.length() > 0) {
+            WiFi.mode(WIFI_STA);
+            WiFi.begin(cfg.wifi_ssid.c_str(), cfg.wifi_psk.c_str());
+        }
+        gotchi_log::RingLogger.info("power", "Restored 240 MHz CPU and Wi-Fi STA from BLE low-power mode");
+    }
+}
+
+static void pollJournalMode() {
+    if (!cfg.journal_mode) return;
+    uint32_t now = millis();
+    if (now - s_last_journal_sniff_ts < 120) return;
+    s_last_journal_sniff_ts = now;
+
+    // 16 ms acoustic probe in internal SRAM
+    int16_t probe[256];
+    float probe_rms = 0.0f;
+    size_t n = gotchi_audio::readLivePcmChunk(probe, 256, &probe_rms);
+    const float vad_thresh = (float)cfg.vad_rms_lsb / 32768.0f;
+    if (n == 0 || probe_rms < vad_thresh) {
+        return;
+    }
+
+    // Speech detected -> record passive journal segment until journal_silence_ms or journal_seg_max_ms
+    if (!gotchi_audio::beginPttRecording()) return;
+    uint32_t seg_start = millis();
+    uint32_t last_voice_ts = seg_start;
+    uint32_t voiced_ms = 20;
+
+    while (millis() - seg_start < cfg.journal_seg_max_ms) {
+        // Preempt immediately if user presses Top (PTT) or Bottom (Camera) button
+        if (digitalRead(PIN_BTN_TOP_PTT) == LOW || digitalRead(PIN_BTN_BOT_MOD) == LOW) {
+            gotchi_log::RingLogger.info("journal", "Passive journal segment preempted by button press");
+            return;
+        }
+        gotchi_audio::pollPttRecording();
+        httpServer.handleClient();
+
+        float recent_rms = gotchi_audio::getRecentRms(1600);
+        if (recent_rms >= vad_thresh) {
+            last_voice_ts = millis();
+            voiced_ms += 10;
+        } else if (millis() - last_voice_ts >= cfg.journal_silence_ms) {
+            break;
+        }
+        delay(10);
+    }
+
+    gotchi_audio::WavView wav = gotchi_audio::finishPttRecording();
+    if (voiced_ms >= cfg.journal_min_voiced_ms && wav.length > 44) {
+        gotchi_voice::uploadJournalSegment(wav, cfg.voice_url, cfg.node_id, cfg.bearer_token);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     gotchi_log::RingLogger.init(true);
@@ -1038,7 +1141,12 @@ void loop() {
     }
 
     samplePowerAndBatteryTelemetry();
+    manageBleLowPowerWiFi();
     applyPrerollPolicy();
-    gotchi_audio::pumpPreroll();
+    if (cfg.journal_mode) {
+        pollJournalMode();
+    } else {
+        gotchi_audio::pumpPreroll();
+    }
     delay(2);
 }

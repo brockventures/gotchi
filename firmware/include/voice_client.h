@@ -45,4 +45,10 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
               const ImageAttachment* image = nullptr, AbortPollFn abort_poll = nullptr,
               InteractResult* out_result = nullptr, const String& audio_out_mode = "speaker");
 
+// Silently uploads a passive All-Day Journal speech segment (`mode="journal"`, F24 / T3.5)
+// over BLE (when bonded to the phone relay with Wi-Fi off) or Wi-Fi HTTP without waking
+// the speaker or refreshing the e-paper display.
+bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
+                          const String& node_id, const String& bearer_token = "");
+
 } // namespace gotchi_voice
