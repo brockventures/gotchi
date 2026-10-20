@@ -642,6 +642,22 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert ":9098" not in android_readme_text
     assert "http://host:8080/api/voice/interact" in live_h_text
     assert "http://100.64.0.1:8080" in android_readme_text
+    kotlin_srv_text = (
+        REPO_ROOT
+        / "android-ble-forwarder"
+        / "app"
+        / "src"
+        / "main"
+        / "java"
+        / "ventures"
+        / "brock"
+        / "gotchi"
+        / "forwarder"
+        / "GotchiBleRelayService.kt"
+    ).read_text(encoding="utf-8")
+    assert ":9098" not in kotlin_srv_text
+    assert 'DEFAULT_GATEWAY_URL = "http://100.64.0.1:8080"' in kotlin_srv_text
+
 
 
 
