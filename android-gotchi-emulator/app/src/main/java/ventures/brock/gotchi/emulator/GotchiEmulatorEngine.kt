@@ -332,8 +332,7 @@ class GotchiEmulatorEngine(
                     val line = reader.readLine() ?: break
                     if (line.isEmpty()) {
                         if (dataLines.isNotEmpty()) {
-                            handleSseEvent(curEvent, dataLines.joinToString("
-"), safeAudioOut)
+                            handleSseEvent(curEvent, dataLines.joinToString("\n"), safeAudioOut)
                             dataLines.clear()
                         }
                         curEvent = "message"
