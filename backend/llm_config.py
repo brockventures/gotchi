@@ -176,12 +176,12 @@ class LLMConfig:
     discord_voice_webhook_url: str = ""
     voice_name: str = DEFAULT_VOICE_NAME
     tts_engine: str = "kokoro"
-    tts_model: str = "gemini-2.5-flash-preview-tts"
+    tts_model: str = "gemini-3.8-flash-tts"
     tts_url: str = ""
     stt_engine: str = "mock"
     stt_url: str = ""
     stt_model: str = "whisper-1"
-    reply_cap_words: int = 60
+    reply_cap_words: int = 0
     filler_delay_ms: int = 1200
     second_filler_delay_ms: int = 5000
     min_voiced_ms: int = 400
@@ -224,8 +224,8 @@ class LLMConfig:
             validate_subscription_command(self.subscription_command)
         if self.discord_voice_webhook_url.strip():
             validate_discord_webhook_url(self.discord_voice_webhook_url)
-        if self.reply_cap_words <= 0:
-            raise ValueError("reply_cap_words must be positive")
+        if self.reply_cap_words < 0:
+            raise ValueError("reply_cap_words must be non-negative (0 disables word cap)")
         if self.filler_delay_ms < 0 or self.second_filler_delay_ms < 0:
             raise ValueError("filler_delay_ms values must be non-negative")
         if self.min_voiced_ms < 0:
@@ -359,7 +359,7 @@ class LLMConfig:
             "GOTCHI_TTS_ENGINE", file_data.get("tts_engine", "kokoro")
         )
         tts_model = os.environ.get(
-            "GOTCHI_TTS_MODEL", file_data.get("tts_model", "gemini-2.5-flash-preview-tts")
+            "GOTCHI_TTS_MODEL", file_data.get("tts_model", "gemini-3.8-flash-tts")
         )
         tts_url = os.environ.get("GOTCHI_TTS_URL", file_data.get("tts_url", ""))
         stt_engine = os.environ.get(
@@ -370,7 +370,7 @@ class LLMConfig:
             "GOTCHI_STT_MODEL", file_data.get("stt_model", "whisper-1")
         )
         reply_cap_words = int(
-            os.environ.get("GOTCHI_REPLY_CAP_WORDS", file_data.get("reply_cap_words", 60))
+            os.environ.get("GOTCHI_REPLY_CAP_WORDS", file_data.get("reply_cap_words", 0))
         )
         filler_delay_ms = int(
             os.environ.get("GOTCHI_FILLER_DELAY_MS", file_data.get("filler_delay_ms", 1200))

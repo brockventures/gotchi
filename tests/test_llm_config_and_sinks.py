@@ -577,7 +577,7 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert cli_calls[0][1]["prompt"] == "Give me a quick status check."
     assert len(gemini_tts_calls) == 2
     for call_url, call_hdrs, call_payload in gemini_tts_calls:
-        assert "gemini-2.5-flash-preview-tts:generateContent" in call_url
+        assert "gemini-3.8-flash-tts:generateContent" in call_url
         assert call_hdrs == {"x-goog-api-key": "gemini-tts-only-key"}
         voice_cfg = call_payload["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]
         assert voice_cfg["voiceName"] == "Schedar"
@@ -680,3 +680,51 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert KokoroTTSAdapter.AM_SCHEDAR_STYLE_PATH.exists()
     prd_md_text = (REPO_ROOT / "docs" / "PRD.md").read_text(encoding="utf-8")
     assert "mirrormere" not in prd_md_text.lower()
+
+    # 9. Verify uncapped default reply_cap_words=0, WAV chunk-walker, SSE sentence streaming, and abbreviation splitting
+    from backend.voice_gateway import (
+        PCM_CHUNK_FLOOR,
+        consume_streaming_sse,
+        extract_pcm_from_wav_or_raw,
+        slice_pcm_chunks,
+    )
+
+    default_cfg = LLMConfig()
+    assert default_cfg.reply_cap_words == 0
+    assert default_cfg.tts_model == "gemini-3.8-flash-tts"
+    long_90_words = " ".join([f"w{i}" for i in range(90)])
+    assert cap_reply_words(long_90_words, max_words=default_cfg.reply_cap_words) == long_90_words
+
+    assert split_into_sentences("Dr. Smith checked v2.5 logs. Everything looks clean!") == [
+        "Dr. Smith checked v2.5 logs.",
+        "Everything looks clean!",
+    ]
+
+    raw_pcm_payload = b"\x11\x22" * 3000  # 6000 bytes
+    wav_wrapped = wrap_pcm16_to_wav(raw_pcm_payload)
+    assert extract_pcm_from_wav_or_raw(wav_wrapped) == raw_pcm_payload
+    assert extract_pcm_from_wav_or_raw(raw_pcm_payload) == raw_pcm_payload
+    chunks = slice_pcm_chunks(raw_pcm_payload, chunk_floor=PCM_CHUNK_FLOOR)
+    assert len(chunks) == 2
+    assert len(chunks[0]) == 4800
+    assert len(chunks[1]) == 1200
+
+    sse_sample = (
+        'event: status\ndata: {"status": "Checking logs"}\n\n'
+        'event: sentence\ndata: {"text": "First streamed sentence."}\n\n'
+        'event: sentence\ndata: {"text": "Second streamed sentence."}\n\n'
+        'event: reply\ndata: {"reply": "First streamed sentence. Second streamed sentence."}\n\n'
+        'event: done\ndata: {}\n\n'
+    )
+    seen_statuses: List[str] = []
+    seen_sentences: List[str] = []
+    final_rep, parsed_sents = consume_streaming_sse(
+        sse_sample,
+        on_status=seen_statuses.append,
+        on_sentence=seen_sentences.append,
+    )
+    assert seen_statuses == ["Checking logs"]
+    assert seen_sentences == ["First streamed sentence.", "Second streamed sentence."]
+    assert parsed_sents == ["First streamed sentence.", "Second streamed sentence."]
+    assert final_rep == "First streamed sentence. Second streamed sentence."
+
