@@ -13,8 +13,8 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`docs/MIRRORMERE_VOICE_CLIENT.md`**: Verified Mirrormere `POST /api/voice/interact` SSE event contract (`state`, `audio_chunk` `24 kHz` base64 PCM, error codes) and `client/eink-node/` refresh policy audit.
 - **`docs/TASKS.md`**: Active engineering task board and milestone ownership across **Zero**, **Amos**, **Ryan**, and **Mike**.
 - **`firmware/`**: ESP32-S3 PlatformIO project (`seeed_xiao_esp32s3`) including `log_buffer`, `voice_client`, `live_client`, `ble_framing`, `audio_hal`, `camera_hal`, and `epd_panel`. Build with: `pio run -d firmware -e seeed_xiao_esp32s3`.
-- **`backend/`**: Reference voice & live gateways and companion codecs (`voice_gateway.py`, `live_gateway.py`, `ble_framing.py`, `gateway_auth.py`).
-- **`tests/`**: Automated unit and firmware contract verification suite (`pytest tests/test_log_buffer.py tests/test_audio_routing.py tests/test_live_gateway.py tests/test_ble_framing.py`).
+- **`backend/`**: Reference voice, live, and all-day journal gateways and companion codecs (`voice_gateway.py`, `live_gateway.py`, `journal_service.py`, `ble_framing.py`, `gateway_auth.py`).
+- **`tests/`**: Automated unit and firmware contract verification suite (`pytest tests/test_log_buffer.py tests/test_audio_routing.py tests/test_live_gateway.py tests/test_ble_framing.py tests/test_journal_mode.py`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.
 - **`cad/`** *(V1 two-part case + button cap)*: parametric Blender script generating STL, `.blend` and renders; see [`cad/README.md`](cad/README.md). Run: `blender -b --python cad/build_case.py -- --out cad`.
 

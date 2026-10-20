@@ -55,6 +55,9 @@ Tracked across **Ryan**, **Mike (Arbiter)**, **Amos**, and **Zero**. Status mark
   - [x] Support mid-session BTN_BOT single snapshot and 5-frame burst base64 JSON injection, BTN_TOP single-press exit, HTTP/Serial RPC polling during active sessions, and configurable `live_silence_ms` (15s default) VAD auto-timeout.
   - [x] Implement `backend/live_gateway.py` with `BearerTokenVerifier` enforcement, malformed payload handling, pluggable upstream provider adapter, and unit tests (`tests/test_live_gateway.py`).
   - [x] Implement user-customizable LLM provider configuration (`backend/llm_config.py`, `GET/PUT/POST /api/config/llm` protected by `GOTCHI_ADMIN_TOKEN`) supporting `mock` (default), metered `api_key` (`ApiKeyLiveProvider`), and gateway-preconfigured `subscription` account bridges (`SubscriptionLiveProvider`) (`tests/test_llm_config_and_sinks.py`, PR #35 / PR #36).
+- [x] **T3.5 — V1 All-Day Journal Mode (`journal_mode`, default `false`) & BLE-Only Low-Power State (`F24`)** (`Zero`, `Ryan`)
+  - [x] Firmware (`firmware/src/main.cpp`, `firmware/src/voice_client.cpp`): configurable `journal_mode` (`false` by default via `set_config` / NVS), automatic `WiFi.mode(WIFI_OFF)` + `80 MHz` CPU downclock when bonded over BLE on battery (`manageBleLowPowerWiFi`), 16 ms / 120 ms duty-cycled SRAM acoustic VAD probe (`pollJournalMode`), immediate preemption on `BTN_TOP` / `BTN_BOT` press, and silent background segment dispatch (`uploadJournalSegment`).
+  - [x] Reference gateway (`backend/journal_service.py`, `backend/voice_gateway.py`, `tests/test_journal_mode.py`): `POST /api/journal/ingest` + `mode="journal"` on `/api/voice/interact`, Whisper ghost filtering, conversation episode stitching, automated follow-up task extraction (`extract_followup_tasks`), `GET /api/journal/entries`, `POST /api/journal/summarize`, and `PATCH /api/journal/tasks/{task_id}`.
 
 ---
 

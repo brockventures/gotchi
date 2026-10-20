@@ -696,4 +696,101 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     return done;
 }
 
+bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
+                          const String& node_id, const String& bearer_token) {
+    if (!wav.data || wav.length == 0) return false;
+
+    // Priority 1: BLE companion link (allows Wi-Fi radio to stay powered off all day)
+    if (gotchi_ble::isBlePeerConnected()) {
+        if (!gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::AUDIO_CHUNK, wav.data, wav.length, 0)) {
+            gotchi_log::RingLogger.warn("journal", "BLE journal AUDIO_CHUNK send failed");
+            return false;
+        }
+        JsonDocument commitDoc;
+        commitDoc["node_id"] = node_id;
+        commitDoc["hub_url"] = url;
+        commitDoc["mode"] = "journal";
+        commitDoc["audio_out_mode"] = "ble_phone";
+        String commitJson;
+        serializeJson(commitDoc, commitJson);
+        bool ok = gotchi_ble::sendFramedPayload(
+            gotchi_ble::FrameType::TURN_COMMIT,
+            (const uint8_t*)commitJson.c_str(),
+            commitJson.length(),
+            0
+        );
+        if (ok) {
+            gotchi_log::RingLogger.info("journal", "Dispatched journal segment over BLE");
+        }
+        return ok;
+    }
+
+    // Priority 2: Direct Wi-Fi HTTP upload when connected
+    if (WiFi.status() != WL_CONNECTED) {
+        return false;
+    }
+
+    String host, path;
+    uint16_t port = 80;
+    if (!parseUrl(url, host, port, path)) {
+        return false;
+    }
+
+    char session[28];
+    snprintf(session, sizeof(session), "jseg-%lu", (unsigned long)millis());
+
+    String pre = "--";
+    pre += BOUNDARY;
+    pre += "\r\nContent-Disposition: form-data; name=\"audio\"; filename=\"journal.wav\"\r\n";
+    pre += "Content-Type: audio/wav\r\n\r\n";
+
+    String post = "\r\n--";
+    post += BOUNDARY;
+    post += "\r\nContent-Disposition: form-data; name=\"node_id\"\r\n\r\n";
+    post += node_id;
+    post += "\r\n--";
+    post += BOUNDARY;
+    post += "\r\nContent-Disposition: form-data; name=\"session_id\"\r\n\r\n";
+    post += session;
+    post += "\r\n--";
+    post += BOUNDARY;
+    post += "\r\nContent-Disposition: form-data; name=\"mode\"\r\n\r\njournal\r\n--";
+    post += BOUNDARY;
+    post += "--\r\n";
+
+    size_t content_len = pre.length() + wav.length + post.length();
+
+    String head = "POST " + path + " HTTP/1.1\r\n";
+    head += "Host: " + host;
+    if (port != 80) head += ":" + String(port);
+    head += "\r\nContent-Type: multipart/form-data; boundary=";
+    head += BOUNDARY;
+    head += "\r\nContent-Length: " + String((unsigned long)content_len) + "\r\n";
+    head += "X-Gotchi-Node: " + node_id + "\r\n";
+    if (bearer_token.length() > 0) {
+        head += "Authorization: Bearer " + bearer_token + "\r\n";
+    }
+    head += "Connection: close\r\n\r\n";
+
+    WiFiClient client;
+    if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
+        return false;
+    }
+    bool sent = writeAll(client, (const uint8_t*)head.c_str(), head.length()) &&
+                writeAll(client, (const uint8_t*)pre.c_str(), pre.length());
+    for (size_t off = 0; sent && off < wav.length; off += UPLOAD_CHUNK) {
+        size_t n = wav.length - off < UPLOAD_CHUNK ? wav.length - off : UPLOAD_CHUNK;
+        sent = writeAll(client, wav.data + off, n);
+    }
+    sent = sent && writeAll(client, (const uint8_t*)post.c_str(), post.length());
+    if (sent) {
+        Reader rd(client);
+        char line[128];
+        rd.readLine(line, sizeof(line));
+        gotchi_log::RingLogger.info("journal", "Uploaded journal segment over Wi-Fi");
+    }
+    client.stop();
+    return sent;
+}
+
 } // namespace gotchi_voice
