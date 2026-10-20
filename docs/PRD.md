@@ -106,4 +106,4 @@ Checks the robots owe:
 
 - iOS BLE relay is not prioritised (Mike).
 - Continuous wake-word / tiny audio-intent classifier is V1.1 (`docs/TASKS.md` T5.2).
-- V2 hardware upgrades (`V2.1` ambient listening LED glow, `V2.2` `OV5640` 5MP autofocus camera, `V2.3` `<100 µA` neural wake co-processor, `V2.4` `MAX17048` I2C fuel gauge IC on `V2.5` custom carrier PCB & magnetic dock) are tracked in `docs/TASKS.md`.
+- V2 hardware upgrades (`V2.1` ambient listening LED glow [Issue #44], `V2.2` `OV5640` 5MP autofocus camera [Issue #48], `V2.3` `<100 µA` `Syntiant NDP120` neural wake/VAD co-processor, `V2.4` `MAX17048` I2C fuel gauge IC, and `V2.5` `48 × 33 mm` JLCPCB SMD-assembled Module-on-Carrier PCB & magnetic dock [Issue #57] shaving `5–6 mm` off enclosure thickness) are tracked in `docs/TASKS.md`.
