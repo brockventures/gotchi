@@ -28,7 +28,7 @@ Configure the target gateway URL, per-device bearer token, and audio routing mod
 ```bash
 adb shell am start-foreground-service \
   -n ventures.brock.gotchi.forwarder/.GotchiBleRelayService \
-  --es gateway_url "http://100.64.0.1:9098" \
+  --es gateway_url "http://100.64.0.1:8080" \
   --es bearer_token "<YOUR_DEVICE_TOKEN>" \
   --es node_id "gotchi-pocket-01" \
   --es audio_out_mode "ble_phone"

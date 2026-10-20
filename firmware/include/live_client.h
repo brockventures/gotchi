@@ -49,7 +49,7 @@ using SnapshotCallback = bool (*)(size_t slot_idx, CapturedFrameView* out_frame)
 using BurstCallback = size_t (*)(CapturedFrameView* out_frames, size_t max_frames);
 using PollTickCallback = void (*)();
 
-// Converts an HTTP/WS voice_url (e.g. "http://host:9098/api/voice/interact")
+// Converts an HTTP/WS voice_url (e.g. "http://host:8080/api/voice/interact")
 // into host, port, and "/api/live/ws" path.
 bool parseLiveUrl(const String& url, String& host, uint16_t& port, String& ws_path);
 
