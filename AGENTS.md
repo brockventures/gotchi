@@ -16,6 +16,7 @@ This repository is co-maintained by human engineers (**Mike / Arbiter**, **Ryan*
 - **`backend/`**: Reference voice, live, and all-day journal gateways and companion codecs (`voice_gateway.py`, `live_gateway.py`, `journal_service.py`, `ble_framing.py`, `gateway_auth.py`).
 - **`tests/`**: Automated unit and firmware contract verification suite (`pytest tests/test_log_buffer.py tests/test_audio_routing.py tests/test_live_gateway.py tests/test_ble_framing.py tests/test_journal_mode.py`).
 - **`android-ble-forwarder/`** *(scaffolded in Milestone M3)*: Headless Android BLE-to-Tailscale companion relay service.
+- **`android-gotchi-emulator/`**: Standalone forked Android Pocket Emulator app (`ventures.brock.gotchi.emulator`) emulating the 200x200 1-bit e-paper display, `BTN_TOP` PTT/Go Live, `BTN_BOT` camera snap/5-frame burst, and live gateway streaming.
 - **`cad/`** *(V1 two-part case + button cap)*: parametric Blender script generating STL, `.blend` and renders; see [`cad/README.md`](cad/README.md). Run: `blender -b --python cad/build_case.py -- --out cad`.
 
 ---
