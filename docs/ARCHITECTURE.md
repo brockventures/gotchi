@@ -27,24 +27,25 @@
                        |
                        v
 +-------------------------------------------------------------------+
-|                   MIRRORMERE / DISCORD BACKEND HUB                |
+|             GOTCHI VOICE & LIVE BACKEND GATEWAY                   |
+|        (backend/voice_gateway.py & backend/live_gateway.py)       |
 |                                                                   |
 |  • POST /api/voice/interact (multipart/form-data -> SSE stream)   |
-|  • Whisper STT -> Agent Brain -> Kokoro TTS                       |
+|  • Whisper STT -> Agent Brain -> Gemini Schedar / Kokoro TTS      |
 |  • Optional Discord Voice Channel Audio Output (AirPods Backdoor) |
 +-------------------------------------------------------------------+
 ```
 
 ---
 
-## 2. Mirrormere Backend Wire Contract (`POST /api/voice/interact`)
+## 2. GOTCHI Voice Gateway Wire Contract (`POST /api/voice/interact`)
 
-As verified by **Amos** against `repos/mirrormere/api/openapi.yaml`, the Mirrormere hub already exposes the exact voice interaction endpoint GOTCHI needs with zero backend changes required for V1 local operation:
+GOTCHI runs its own backend gateway (`backend/voice_gateway.py`), implementing the `POST /api/voice/interact` multipart-to-SSE wire format (inspired by Mirrormere's voice pipeline design):
 
 ### Request (`multipart/form-data`)
 ```http
 POST /api/voice/interact HTTP/1.1
-Host: <mirrormere-hub>:8080
+Host: <gotchi-gateway>:8080
 Authorization: Bearer <device-token>
 Content-Type: multipart/form-data; boundary=---GotchiBoundary
 
@@ -87,7 +88,7 @@ To give Ryan zero-touch connectivity when walking out of home Wi-Fi range withou
    - **Priority 3 (Phone Hotspot Fallback — iOS / Universal):** If BLE relay is unavailable, wake Wi-Fi and connect to the configured mobile hotspot (`Maximize Compatibility` 2.4 GHz on iPhone).
 2. **Android Foreground Service (`android-ble-forwarder/`):**
    - Minimal headless Kotlin service (~250 lines) running an persistent BLE Central manager.
-   - Reassembles incoming audio/snapshot frames from GOTCHI, attaches the device's bearer token, and dispatches `POST /api/voice/interact` over the phone's active **Tailscale** interface to the Mirrormere hub.
+   - Reassembles incoming audio/snapshot frames from GOTCHI, attaches the device's bearer token, and dispatches `POST /api/voice/interact` over the phone's active **Tailscale** interface to the GOTCHI voice gateway (`backend/voice_gateway.py`).
    - Streams the hub's SSE response events back down the BLE channel to GOTCHI (and optionally plays TTS audio directly to Bluetooth earbuds paired to the phone).
 
 ---

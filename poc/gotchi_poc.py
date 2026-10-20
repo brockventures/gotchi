@@ -3,8 +3,8 @@
 GOTCHI V1 — Bench POC Client & 200x200 1-Bit E-Paper Sprite Engine
 ==================================================================
 Runs on Raspberry Pi Zero W (driving the attached Waveshare e-ink panel or saving 200x200
-1-bit framebuffers for webcam verification) and talks directly to Mirrormere's
-`POST /api/voice/interact` SSE pipeline using Amos's ambient mic.
+1-bit framebuffers for webcam verification) and talks to GOTCHI's `backend/voice_gateway.py`
+`POST /api/voice/interact` SSE pipeline.
 
 Features:
 - Exact 200x200 1-bit monochrome companion sprite renderer matching the Waveshare 1.54" V2

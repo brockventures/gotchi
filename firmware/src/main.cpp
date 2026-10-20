@@ -37,9 +37,9 @@ static Preferences prefs;
 static WebServer httpServer(80);
 
 struct GotchiConfig {
-    String hub_url = "http://mirrormere.local:8080";
-    // Voice gateway URL (Mirrormere or Zero gateway; set per device via set_config).
-    String voice_url = "http://mirrormere.local:9098/api/voice/interact";
+    String hub_url = "http://gotchi.local:8080";
+    // Voice gateway URL (GOTCHI backend/voice_gateway.py or Zero gateway; set per device via set_config).
+    String voice_url = "http://gotchi.local:8080/api/voice/interact";
     String live_url = "";             // Optional dedicated Go Live WS URL (falls back to voice_url when empty)
     String node_id = "gotchi-v1-01";
     String wake_mode = "ptt";         // "ptt" | "wake_word"

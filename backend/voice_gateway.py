@@ -635,6 +635,8 @@ class VoiceGatewayService:
         self.routed_audio_events: List[Dict[str, Any]] = []
         self.turn_timings: List[Dict[str, Any]] = []
         self.interactions_count = 0
+        self.tts_fallback_cooldown_s: float = 600.0
+        self._gemini_tts_backoff_until: float = 0.0
 
     def verify_admin_auth(self, headers: Mapping[str, str]) -> Tuple[bool, int, Dict[str, Any]]:
         """
@@ -688,7 +690,19 @@ class VoiceGatewayService:
         if self.tts_synthesizer is not None:
             return self.tts_synthesizer(sentence_text, self.mock_sample_rate)
         if self.llm_config.tts_engine == "gemini":
-            return self.gemini_tts.synthesize(sentence_text, self.mock_sample_rate)
+            now = time.monotonic()
+            if now < self._gemini_tts_backoff_until:
+                return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
+            try:
+                return self.gemini_tts.synthesize(sentence_text, self.mock_sample_rate)
+            except Exception as exc:
+                logger.warning(
+                    "Gemini TTS failed (%s); falling back to local Kokoro TTS for %.0fs",
+                    exc,
+                    self.tts_fallback_cooldown_s,
+                )
+                self._gemini_tts_backoff_until = now + self.tts_fallback_cooldown_s
+                return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
         if self.llm_config.tts_engine == "kokoro":
             return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
         return generate_synthetic_pcm(duration_s=0.25, sample_rate=self.mock_sample_rate)

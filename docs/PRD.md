@@ -4,9 +4,9 @@ Status: V1 baseline synced against `main` (`PR #1`–`PR #50`). Every requiremen
 
 ## 1. Goal
 
-A pocket e-ink companion. The user holds a button and speaks. The device sends the speech to a voice backend over the Mirrormere wire protocol and plays the spoken reply, showing a character face that reflects what it is doing.
+A pocket e-ink companion. The user holds a button and speaks. The device sends the speech to GOTCHI's voice gateway (`backend/voice_gateway.py`, using the `POST /api/voice/interact` SSE wire format inspired by Mirrormere) and plays the spoken reply, showing a character face that reflects what it is doing.
 
-GOTCHI uses no Mirrormere hardware. The Pi Zero panel and the Pi gateway on the bench may be used to test software, and for nothing else; the locked V1 bill of materials is the hardware goal, changed only by what testing shows (Mike, #gotchi 2026-10-19 09:27 and 09:29). Which backend a unit talks to is set per unit with `voice_url`.
+GOTCHI uses neither Mirrormere hardware nor the Mirrormere backend hub (Mirrormere is a source of design ideas and wire-format inspiration only). The locked V1 bill of materials is the hardware goal, changed only by what testing shows (Mike, #gotchi 2026-10-19 09:27 and 09:29). Which backend a unit talks to is set per unit with `voice_url`.
 
 Sources: `README.md`; Mike and Ryan in #gotchi, 2026-10-18.
 
@@ -85,7 +85,7 @@ Ryan wants the unit to support a live voice session, with the setting under Mike
 Source: Mike, #gotchi 2026-10-19 14:23. Facts below come from `services/mirrormere-voice-gateway/gateway.py`, `specs/2026-10-02-lammen-voice-pipeline.md`, `specs/2026-10-16-gap-fill-topical-openers.md` and the ear client config in `specs/2026-10-16-ear-bargein-merge/`.
 
 - **Spoken filler while the brain thinks:** Implemented in `backend/voice_gateway.py` (`filler_first_ms = 1200`, `filler_second_ms = 5000`, PR #36).
-- **First sentence plays first:** Per-sentence `tts_synthesizer` streaming and real `WhisperSTTAdapter`, `GeminiTTSAdapter` (defaulting to Zero's `"Schedar"` voice profile), `KokoroTTSAdapter`, and `SubscriptionBrainAdapter` (`agy` / `claude` CLI subscription bridge) are implemented in `backend/voice_gateway.py` (`T6.4` / Issue #40).
+- **First sentence plays first:** Per-sentence `tts_synthesizer` streaming and real `WhisperSTTAdapter`, `GeminiTTSAdapter` (defaulting to Zero's `"Schedar"` voice profile, with automatic 10-minute cooldown fallback to local `KokoroTTSAdapter` on any cloud error), `KokoroTTSAdapter`, and `SubscriptionBrainAdapter` (`agy` / `claude` CLI subscription bridge) are implemented in `backend/voice_gateway.py` (`T6.4` / Issue #40).
 - **Cap spoken reply length:** Implemented via configurable `reply_cap_words = 60` in `backend/voice_gateway.py` (PR #36).
 - **Filter speech-to-text ghosts:** Implemented in `backend/voice_gateway.py` (`min_voiced_ms = 400` + known Whisper hallucination phrase filter, PR #36).
 - **Silence length:** `vad_silence_ms` defaults to Ryan's confirmed `1500 ms` (`1.5 s`); bench comparison against `800 ms`, `1.0 s`, and `ESP-SR` neural VAD is tracked in `docs/TASKS.md` T6.2 (Issue #38).

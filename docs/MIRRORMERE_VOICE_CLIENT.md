@@ -1,6 +1,8 @@
-# Mirrormere voice client spec and e-ink audit (T3.1, T2.6)
+# GOTCHI Voice Wire-Format Reference & E-Ink Refresh Notes (T3.1, T2.6)
 
-Sources read 2026-10-18 in `azylman/mirrormere` at `8bcb2ca`: `api/openapi.yaml`,
+> **Scope Note:** GOTCHI's backend is its own `backend/voice_gateway.py` (with each unit pointing `voice_url` at its configured gateway, e.g. `http://gotchi.local:8080/api/voice/interact`). Mirrormere (`azylman/mirrormere`) served strictly as a design inspiration and wire-format / e-ink refresh reference—never as GOTCHI's runtime backend.
+
+Sources read 2026-10-18 in `azylman/mirrormere` at `8bcb2ca` for wire-format & e-ink inspiration: `api/openapi.yaml`,
 `internal/voice/hub.go`, `internal/voice/coordinator.go`, `internal/server/voice.go`,
 `client/eink-node/`. File and line facts below come from those; anything else is marked unchecked.
 
@@ -51,13 +53,9 @@ on error or HTTP error: show error sprite, keep the clip out of the retry path
 
 Memory note (unchecked on hardware): the 8 MB PSRAM should hold a few seconds of 16-bit 16 kHz audio (32 KB/s).
 
-## 2. Auth and remote access (T3.2): gap, no implementation here
+## 2. Auth and remote access (T3.2)
 
-The OpenAPI contract has no device token or auth scheme. The hub is LAN-only today.
-Hotspot or BLE-relayed traffic therefore needs a gateway in front of the hub that checks a
-per-device bearer token. The hub is another repo (`azylman/mirrormere`) that keeps its core
-generic, so the gateway belongs in this repo or in deployment config, not in that core.
-Not built. Decide where it runs before building.
+Per-device bearer token authentication (`Authorization: Bearer <token>`) and admin configuration auth (`X-Gotchi-Admin-Token` / `GOTCHI_ADMIN_TOKEN`) are implemented directly in GOTCHI's `backend/gateway_auth.py` and `backend/voice_gateway.py`.
 
 ## 3. `client/eink-node` audit (T2.6)
 
@@ -76,13 +74,12 @@ the 1.54" SSD1681 and cannot be reused as is. The ideas below carry over:
 - **Event filtering** (`sse.py`): `voice.state` is in `IGNORED_EVENTS` there so voice does not flash the panel. A device that is itself the voice node needs the opposite choice; it must redraw on its own state.
 - **Buttons** (`buttons.py`): GPIO 5 and 6 are Raspberry Pi pins in that daemon; nothing carries over.
 
-## 4. Live gateway (2026-10-18)
+## 4. GOTCHI Gateway Endpoint & `sentence` Event Contract
 
-Endpoint, event names, and the `sentence` keys were checked live on 2026-10-18. Payload details not in that check are marked as such. The LAN address of the gateway is kept out of this repo (AGENTS.md §4); the device takes it from `voice_url` (`set_config`).
+GOTCHI's `backend/voice_gateway.py` implements the SSE wire contract below. Each unit takes its target address from `voice_url` (`set_config`).
 
-- **Endpoint:** `POST http://<gateway-host>:9098/api/voice/interact`, the voice gateway on port **9098**. The firmware default `voice_url` is `http://mirrormere.local:9098/api/voice/interact`.
-- **Hub port `:8082` returns `503 "voice hub is disabled"`** while the voice hub is disabled. Do not target it.
-- **Request:** `multipart/form-data` with `audio` (`ptt.wav`, `audio/wav`, 16 kHz mono 16-bit WAV), `node_id`, `session_id`.
+- **Endpoint:** `POST http://<gotchi-gateway>:8080/api/voice/interact` (`backend/voice_gateway.py`). The firmware default `voice_url` is `http://gotchi.local:8080/api/voice/interact`.
+- **Request:** `multipart/form-data` with `audio` (`ptt.wav`, `audio/wav`, 16 kHz mono 16-bit WAV), `node_id`, `session_id` (plus optional `image` or `image_0`..`image_4` and `prompt`).
 - **Response:** `200 text/event-stream`.
 
 Events seen in live turns (order not recorded):

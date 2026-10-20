@@ -600,4 +600,42 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert out_pcm == expected_pcm
     assert kokoro_calls[0][1]["voice"] == "am_michael"
 
+    # 6. Verify automatic cloud-to-local Kokoro TTS fallback + 10-minute (600s) cooldown
+    failing_gemini_calls = []
+
+    def failing_gemini_poster(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
+        failing_gemini_calls.append(url)
+        raise RuntimeError("Gemini TTS 503 outage")
+
+    fallback_kokoro_calls = []
+    srv_fallback = VoiceGatewayService(
+        llm_config=cfg,
+        gemini_tts=GeminiTTSAdapter(llm_config=cfg, http_poster=failing_gemini_poster),
+        kokoro_tts=KokoroTTSAdapter(
+            llm_config=cfg_kokoro,
+            http_poster=lambda u, h, p: (fallback_kokoro_calls.append(p["input"]) or expected_pcm),
+        ),
+    )
+    pcm1 = srv_fallback._synthesize_sentence_pcm("First sentence triggers fallback.")
+    pcm2 = srv_fallback._synthesize_sentence_pcm("Second sentence uses 10m cooldown.")
+    assert pcm1 == expected_pcm
+    assert pcm2 == expected_pcm
+    assert len(failing_gemini_calls) == 1  # Second call skipped cloud due to 600s cooldown
+    assert fallback_kokoro_calls == [
+        "First sentence triggers fallback.",
+        "Second sentence uses 10m cooldown.",
+    ]
+
+    # 7. Verify stale mirrormere.local defaults and Mirrormere hub backend claims are scrubbed
+    main_cpp_text = (REPO_ROOT / "firmware" / "src" / "main.cpp").read_text(encoding="utf-8")
+    portal_cpp_text = (REPO_ROOT / "firmware" / "src" / "onboarding_portal.cpp").read_text(encoding="utf-8")
+    arch_md_text = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    wire_md_text = (REPO_ROOT / "docs" / "MIRRORMERE_VOICE_CLIENT.md").read_text(encoding="utf-8")
+    assert "mirrormere.local" not in main_cpp_text
+    assert "mirrormere.local" not in portal_cpp_text
+    assert "http://gotchi.local:8080/api/voice/interact" in main_cpp_text
+    assert "MIRRORMERE / DISCORD BACKEND HUB" not in arch_md_text
+    assert "mirrormere.local:9098" not in wire_md_text
+
+
 
