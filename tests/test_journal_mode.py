@@ -158,11 +158,14 @@ def test_firmware_journal_mode_and_ble_low_power_contracts():
     assert 'if (req["journal_mode"].is<bool>()) cfg.journal_mode = req["journal_mode"].as<bool>();' in main_cpp
     assert 'if (req["ble_disable_wifi"].is<bool>()) cfg.ble_disable_wifi = req["ble_disable_wifi"].as<bool>();' in main_cpp
 
-    # BLE-connected default behavior turns off Wi-Fi and drops CPU clock to 80 MHz
+    # BLE-connected default behavior turns off Wi-Fi and drops CPU clock to 80 MHz,
+    # and ScopedCpuBoost shifts back to 240 MHz during active voice/camera/live/journal turns.
     assert "manageBleLowPowerWiFi()" in main_cpp
+    assert "struct ScopedCpuBoost" in main_cpp
     assert "bool want_ble_lp = cfg.ble_disable_wifi && gotchi_ble::isBlePeerConnected();" in main_cpp
     assert "WiFi.mode(WIFI_OFF);" in main_cpp
     assert "setCpuFrequencyMhz(80);" in main_cpp
+    assert "setCpuFrequencyMhz(240);" in main_cpp
     assert "if (WiFi.status() != WL_CONNECTED && !gotchi_ble::isBlePeerConnected())" in main_cpp
 
     # Passive journal loop & upload helper

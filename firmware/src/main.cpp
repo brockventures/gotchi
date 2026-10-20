@@ -434,6 +434,7 @@ String handleJsonRpc(const String& jsonLine) {
         // Baseline idle 2.4 GHz Wi-Fi RSSI before energizing Class-D amp + camera DVP bus
         bool wifi_conn = (WiFi.status() == WL_CONNECTED);
         int rssi_idle_dbm = wifi_conn ? (int)WiFi.RSSI() : 0;
+        if (s_wifi_disabled_for_ble_lp) setCpuFrequencyMhz(240);
 
         // Drive MAX98357A Class-D speaker chime while capturing a test JPEG frame and
         // sampling active Wi-Fi RSSI to detect near-field coupling or Class-D EMI desense.
@@ -452,6 +453,7 @@ String handleJsonRpc(const String& jsonLine) {
             esp_camera_fb_return(fb);
         }
         gotchi_audio::muteSpeaker();
+        if (s_wifi_disabled_for_ble_lp) setCpuFrequencyMhz(80);
 
         int rssi_drop_db = wifi_conn ? (rssi_idle_dbm - rssi_active_dbm) : 0;
         bool rf_desense_warn = wifi_conn && (rssi_drop_db > 2);
@@ -965,6 +967,22 @@ static void runPttTurn() {
 static bool     s_wifi_disabled_for_ble_lp = false;
 static uint32_t s_last_journal_sniff_ts    = 0;
 
+// Dynamically boosts CPU clock to 240 MHz during active voice, camera, live, or journal-upload
+// bursts so JPEG DMA, base64 audio decoding, and NLMS AEC run at full speed, then drops back to
+// 80 MHz as soon as the device returns to idle in BLE low-power mode.
+struct ScopedCpuBoost {
+    ScopedCpuBoost() {
+        if (s_wifi_disabled_for_ble_lp) {
+            setCpuFrequencyMhz(240);
+        }
+    }
+    ~ScopedCpuBoost() {
+        if (s_wifi_disabled_for_ble_lp) {
+            setCpuFrequencyMhz(80);
+        }
+    }
+};
+
 static void manageBleLowPowerWiFi() {
     // Default V1 behavior (`ble_disable_wifi == true`): whenever bonded & connected to the phone
     // over BLE (`gotchi_ble::isBlePeerConnected()`), turn off the Wi-Fi radio completely (`WIFI_OFF`)
@@ -1003,7 +1021,9 @@ static void pollJournalMode() {
         return;
     }
 
-    // Speech detected -> record passive journal segment until journal_silence_ms or journal_seg_max_ms
+    // Speech detected -> boost CPU to 240 MHz while recording & uploading passive journal segment,
+    // then automatically drop back to 80 MHz via ScopedCpuBoost when returning to idle sniff.
+    ScopedCpuBoost boost;
     if (!gotchi_audio::beginPttRecording()) return;
     uint32_t seg_start = millis();
     uint32_t last_voice_ts = seg_start;
@@ -1123,18 +1143,21 @@ void loop() {
     // Launch Go Live session if triggered by double-tap or whole-utterance "Go Live" command (F19/F21)
     if (s_enter_live_pending) {
         s_enter_live_pending = false;
+        ScopedCpuBoost boost;
         runLiveSession();
         return;
     }
 
     // Top button (speaking only, F13): start Hybrid / Tap-to-Talk / Hold-to-Talk / Double-Tap Live
     if (btnStable(PIN_BTN_TOP_PTT, true)) {
+        ScopedCpuBoost boost;
         runPttTurn();
         return;
     }
 
     // Bottom button (camera only, F14/F20): short press = 1 photo on release; long press = 5-photo burst over 3s
     if (btnStable(PIN_BTN_BOT_MOD, true)) {
+        ScopedCpuBoost boost;
         handleCameraButtonIdle();
         return;
     }
@@ -1142,6 +1165,7 @@ void loop() {
     // If staged camera snapshot(s) weren't paired with a voice prompt within `snap_window_ms` (3s),
     // dispatch standalone with `default_image_prompt` and no `audio` part.
     if (s_staged_jpeg_active && (millis() - s_staged_jpeg_ts >= cfg.snap_window_ms)) {
+        ScopedCpuBoost boost;
         gotchi_audio::WavView no_audio_wav{nullptr, 0};
         dispatchVoiceOrSnap(no_audio_wav, true, true);
         return;
