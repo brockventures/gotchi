@@ -19,7 +19,8 @@ import android.view.View
  *
  * Emulates the exact 200x200 pixel layout from `poc/gotchi_poc.py` and `firmware/src/epd_panel.cpp`:
  * - 9 states: `idle`, `listening`, `transcribing`, `thinking`, `synthesizing`, `speaking`, `error`, `busy`, `offline`.
- * - Dual skins: `gotchi` (vector companion face) and `zero` (1-bit pre-baked sprites in `assets/zero_skin/`).
+ * - Three skins: `gotchi` (vector companion face), `zero` (1-bit pre-baked sprites in `assets/zero_skin/`),
+ *   and `amos` (1-bit pre-baked sprites in `assets/amos_skin/`; pairs with the amber chassis).
  * - Realistic warm e-ink substrate (`#EAE6DC`) and carbon pigment (`#141418`) with flush optical cover-glass sheen.
  * - `RefreshTracker` partial/full refresh policy (`maxConsecutivePartials = 8`, `fullRefreshMinutes = 15.0`).
  */
@@ -79,7 +80,7 @@ class GotchiEpaperView(context: Context) : View(context) {
         var audioBytesReceived: Int = 0,
         var lastSampleRate: Int = 24000,
         var batteryPct: Int = 96,
-        var skin: String = "zero", // "zero" | "gotchi"
+        var skin: String = "zero", // "zero" | "amos" | "gotchi"
         var lastRefreshMode: String = "full"
     )
 
@@ -129,8 +130,8 @@ class GotchiEpaperView(context: Context) : View(context) {
         val st = if (uiState.state in VALID_STATES) uiState.state else "idle"
         val badge = if (uiState.lastRefreshMode == "full") "FULL" else "PART"
 
-        if (uiState.skin == "zero") {
-            val assetPath = "zero_skin/zero_${st}_200x200_1bit.png"
+        if (uiState.skin == "zero" || uiState.skin == "amos") {
+            val assetPath = "${uiState.skin}_skin/${uiState.skin}_${st}_200x200_1bit.png"
             runCatching {
                 context.assets.open(assetPath).use { stream ->
                     BitmapFactory.decodeStream(stream)?.let { rawBmp ->
@@ -159,7 +160,7 @@ class GotchiEpaperView(context: Context) : View(context) {
         paint.color = EINK_PAPER_COLOR
         paint.typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         paint.textSize = 10.5f
-        val prefix = if (uiState.skin == "zero") "ZERO" else "GOTCHI"
+        val prefix = when (uiState.skin) { "zero" -> "ZERO"; "amos" -> "AMOS"; else -> "GOTCHI" }
         c.drawText("$prefix // ${st.uppercase()}", 5f, 14f, paint)
         c.drawText("${uiState.batteryPct}% $badge", 136f, 14f, paint)
 
