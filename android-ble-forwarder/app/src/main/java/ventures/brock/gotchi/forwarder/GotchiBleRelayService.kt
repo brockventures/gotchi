@@ -1,5 +1,6 @@
 package ventures.brock.gotchi.forwarder
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
@@ -19,10 +20,16 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.location.Location
+import android.location.LocationManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelUuid
@@ -34,6 +41,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -42,25 +51,40 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * Headless Android Foreground Service for GOTCHI V1 BLE-to-Tailscale Relay (F18 / T4.2).
+ * Headless Android Foreground Service for GOTCHI V1 "Smart Pipe" BLE Companion Relay (F18 / T4.2).
+ *
+ * Transport-agnostic upstream connectivity: connects over standard HTTPS (`443` via Cloudflare Tunnel /
+ * reverse proxy), plain LAN HTTP (`:8765`), or optional VPN — Tailscale is NOT required on the phone.
  *
  * Responsibilities:
  * 1. Scans and auto-bonds to the GOTCHI BLE GATT UART service (`6E400001-B5A3-F393-E0A9-E50E24DCCA9E`),
  *    requesting BLE 5.0 2M PHY and 512-byte ATT MTU.
  * 2. Reassembles binary-framed PTT uplink streams (`AUDIO_CHUNK`, `IMAGE_FRAME` 0..4, `TURN_COMMIT`)
  *    validated via CRC-16/CCITT header checks and IEEE 802.3 CRC-32 payload trailers.
- * 3. Relays assembled voice/vision turns over Tailscale (`POST /api/voice/interact`) with
- *    `Authorization: Bearer <token>` and `audio_out_mode` metadata.
- * 4. Streams returned SSE events (`state`, `transcript`, `reply`, `audio_chunk`, `done`, `error`)
- *    back down BLE as fragmented `SSE_EVENT` frames so GOTCHI updates its e-paper sprite and speaker.
- * 5. When `audio_out_mode == "ble_phone"`, decodes 24 kHz 16-bit mono PCM `audio_chunk` payloads
- *    and plays them locally on the phone / Bluetooth earbuds via Android `AudioTrack` while still
- *    forwarding sprite `state` / `done` events to GOTCHI.
+ * 3. Smart Pipe 4-Bit IMA ADPCM Transcoding (4x BLE air-time reduction):
+ *    - Automatically transcodes incoming `FLAG_ADPCM` / `GAD1` (`64 kbps` @ 16 kHz) BLE audio into
+ *      standard 16-bit mono RIFF WAV for `POST /api/voice/interact`.
+ *    - When `audio_out_mode == "speaker"` over BLE, transcodes downstream 24 kHz 16-bit PCM TTS chunks
+ *      into 4-bit IMA ADPCM (`GAD1`, `"format": "adpcm"`, `96 kbps`) before writing to `CHAR_RX`.
+ * 4. Dead-Zone Store-and-Forward Spooling:
+ *    - Buffers `journal` segments and offline turns locally in `filesDir/offline_spool` (up to 64 items)
+ *      whenever the phone is in a cellular/Wi-Fi dead zone or the gateway is temporarily unreachable,
+ *      acknowledging GOTCHI with `"status": "offline_queued"` and automatically replaying queued turns
+ *      when network connectivity returns.
+ * 5. Optional Coarse GPS Metadata Tagging:
+ *    - Attaches cached passive/network coarse coordinates (`lat`, `lon`, `location_accuracy_m`) from
+ *      `LocationManager.getLastKnownLocation` to `/api/voice/interact` multipart requests when
+ *      `ACCESS_COARSE_LOCATION` is granted (zero active GPS polling drain).
+ * 6. When `audio_out_mode == "ble_phone"`, decodes 24 kHz 16-bit mono PCM `audio_chunk` / `sentence`
+ *    payloads and plays them locally on the phone / Bluetooth earbuds via Android `AudioTrack` while
+ *    still forwarding sprite `state` / `done` events to GOTCHI.
  */
 @SuppressLint("MissingPermission")
 class GotchiBleRelayService : Service() {
@@ -84,9 +108,13 @@ class GotchiBleRelayService : Service() {
         const val DEFAULT_GATEWAY_URL = "http://gotchi.local:8765"
         const val DEFAULT_NODE_ID = "gotchi-v1"
         const val DEFAULT_AUDIO_OUT_MODE = "speaker"
+
+        const val OFFLINE_SPOOL_DIR = "offline_spool"
+        const val MAX_OFFLINE_SPOOL_ITEMS = 64
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val spoolMutex = Mutex()
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(90, TimeUnit.SECONDS)
@@ -95,15 +123,26 @@ class GotchiBleRelayService : Service() {
 
     private val reassembler = BleReassembler()
     private val audioStreamBuffer = ByteArrayOutputStream()
+    private var audioStreamIsAdpcm: Boolean = false
     private val imageFrames = mutableMapOf<Int, ByteArray>()
     private var downlinkSeqNum: Int = 0
     private var negotiatedMaxPayload: Int = BleFramingCodec.DEFAULT_MAX_PAYLOAD
     private var activeGatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
+    private var networkCallbackRegistered: Boolean = false
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            serviceScope.launch {
+                drainOfflineSpool()
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         startForegroundWithNotification("Scanning for GOTCHI over BLE...")
+        registerConnectivityWatcher()
         startBleScan()
     }
 
@@ -116,17 +155,66 @@ class GotchiBleRelayService : Service() {
             it.getStringExtra(KEY_AUDIO_OUT_MODE)?.let { mode -> prefs.putString(KEY_AUDIO_OUT_MODE, mode) }
             prefs.apply()
         }
+        serviceScope.launch {
+            drainOfflineSpool()
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterConnectivityWatcher()
         activeGatt?.close()
         activeGatt = null
         serviceScope.cancel()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun registerConnectivityWatcher() {
+        if (networkCallbackRegistered) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        runCatching {
+            cm.registerDefaultNetworkCallback(networkCallback)
+            networkCallbackRegistered = true
+        }
+    }
+
+    private fun unregisterConnectivityWatcher() {
+        if (!networkCallbackRegistered) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        runCatching {
+            cm.unregisterNetworkCallback(networkCallback)
+        }
+        networkCallbackRegistered = false
+    }
+
+    internal fun isNetworkAvailable(): Boolean {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    internal fun readCoarseLocationMeta(): JSONObject? {
+        if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return null
+        }
+        val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+        val candidates = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        var best: Location? = null
+        for (provider in candidates) {
+            val loc = runCatching { lm.getLastKnownLocation(provider) }.getOrNull() ?: continue
+            if (best == null || loc.time > best.time) {
+                best = loc
+            }
+        }
+        val chosen = best ?: return null
+        return JSONObject()
+            .put("lat", chosen.latitude)
+            .put("lon", chosen.longitude)
+            .put("location_accuracy_m", chosen.accuracy.toDouble())
+    }
 
     private fun startForegroundWithNotification(statusText: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -205,6 +293,7 @@ class GotchiBleRelayService : Service() {
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 reassembler.resetSequenceTracking()
                 audioStreamBuffer.reset()
+                audioStreamIsAdpcm = false
                 imageFrames.clear()
                 rxCharacteristic = null
             }
@@ -243,6 +332,14 @@ class GotchiBleRelayService : Service() {
         }
     }
 
+    internal fun transcodeUplinkAudioIfNeeded(rawAudioBytes: ByteArray, isAdpcmFlagged: Boolean): ByteArray {
+        if (rawAudioBytes.isEmpty()) return rawAudioBytes
+        if (isAdpcmFlagged || ImaAdpcmCodec.isGad1Container(rawAudioBytes)) {
+            return ImaAdpcmCodec.decodeGad1OrAdpcmToWav(rawAudioBytes, defaultSampleRate = 16000)
+        }
+        return rawAudioBytes
+    }
+
     internal fun handleIncomingBlePacket(rawPacket: ByteArray) {
         try {
             val completed = reassembler.pushPacket(rawPacket) ?: return
@@ -258,6 +355,10 @@ class GotchiBleRelayService : Service() {
                         audioStreamBuffer.size() == 0
                     ) {
                         audioStreamBuffer.reset()
+                        audioStreamIsAdpcm = false
+                    }
+                    if ((completed.flags and BleFramingCodec.FLAG_ADPCM) != 0) {
+                        audioStreamIsAdpcm = true
                     }
                     audioStreamBuffer.write(completed.payload)
                 }
@@ -268,17 +369,22 @@ class GotchiBleRelayService : Service() {
                     val commitMeta = if (completed.payload.isNotEmpty()) {
                         runCatching { JSONObject(String(completed.payload, Charsets.UTF_8)) }.getOrNull()
                     } else null
-                    val wavBytes = audioStreamBuffer.toByteArray()
+                    val rawAudioBytes = audioStreamBuffer.toByteArray()
+                    val isAdpcm = audioStreamIsAdpcm
                     val capturedImages = imageFrames.toSortedMap()
                     audioStreamBuffer.reset()
+                    audioStreamIsAdpcm = false
                     imageFrames.clear()
+                    val wavBytes = transcodeUplinkAudioIfNeeded(rawAudioBytes, isAdpcm)
+                    val locationMeta = readCoarseLocationMeta()
                     serviceScope.launch {
-                        forwardTurnToGateway(wavBytes, capturedImages, commitMeta)
+                        forwardTurnToGateway(wavBytes, capturedImages, commitMeta, locationMeta)
                     }
                 }
                 BleFramingCodec.FrameType.CANCEL -> {
                     reassembler.reset()
                     audioStreamBuffer.reset()
+                    audioStreamIsAdpcm = false
                     imageFrames.clear()
                 }
                 else -> Unit
@@ -293,11 +399,118 @@ class GotchiBleRelayService : Service() {
         }
     }
 
+    internal suspend fun spoolTurnForOfflineReplay(
+        wavBytes: ByteArray,
+        images: Map<Int, ByteArray>,
+        commitMeta: JSONObject?,
+        locationMeta: JSONObject?
+    ): File? = spoolMutex.withLock {
+        val dir = File(filesDir, OFFLINE_SPOOL_DIR)
+        if (!dir.exists() && !dir.mkdirs()) return@withLock null
+
+        val existing = dir.listFiles { f -> f.name.endsWith(".json") }
+            ?.sortedBy { it.name }
+            ?: emptyList()
+        if (existing.size >= MAX_OFFLINE_SPOOL_ITEMS) {
+            existing.take(existing.size - MAX_OFFLINE_SPOOL_ITEMS + 1).forEach { it.delete() }
+        }
+
+        val ts = System.currentTimeMillis()
+        val itemFile = File(dir, "spool_${ts}_${UUID.randomUUID().toString().take(6)}.json")
+        val imagesObj = JSONObject()
+        for ((idx, bytes) in images) {
+            imagesObj.put(idx.toString(), Base64.encodeToString(bytes, Base64.NO_WRAP))
+        }
+        val envelope = JSONObject()
+            .put("queued_at_ms", ts)
+            .put("wav_b64", Base64.encodeToString(wavBytes, Base64.NO_WRAP))
+            .put("images", imagesObj)
+            .put("commit_meta", commitMeta ?: JSONObject())
+        if (locationMeta != null) {
+            envelope.put("location_meta", locationMeta)
+        }
+        itemFile.writeText(envelope.toString(), Charsets.UTF_8)
+        itemFile
+    }
+
+    internal suspend fun drainOfflineSpool() = spoolMutex.withLock {
+        if (!isNetworkAvailable()) return@withLock
+        val dir = File(filesDir, OFFLINE_SPOOL_DIR)
+        val queuedFiles = dir.listFiles { f -> f.name.endsWith(".json") }
+            ?.sortedBy { it.name }
+            ?: return@withLock
+
+        for (file in queuedFiles) {
+            val ok = runCatching {
+                val obj = JSONObject(file.readText(Charsets.UTF_8))
+                val wavB64 = obj.optString("wav_b64", "")
+                val wavBytes = if (wavB64.isNotEmpty()) Base64.decode(wavB64, Base64.DEFAULT) else ByteArray(0)
+                val imagesObj = obj.optJSONObject("images")
+                val images = mutableMapOf<Int, ByteArray>()
+                imagesObj?.keys()?.forEach { key ->
+                    val idx = key.toIntOrNull() ?: return@forEach
+                    val b64 = imagesObj.optString(key, "")
+                    if (b64.isNotEmpty()) {
+                        images[idx] = Base64.decode(b64, Base64.DEFAULT)
+                    }
+                }
+                val commitMeta = obj.optJSONObject("commit_meta")
+                val locationMeta = obj.optJSONObject("location_meta")
+                executeGatewayPost(
+                    wavBytes = wavBytes,
+                    images = images,
+                    commitMeta = commitMeta,
+                    locationMeta = locationMeta,
+                    isReplay = true
+                )
+            }.getOrDefault(false)
+
+            if (ok) {
+                file.delete()
+            } else {
+                break
+            }
+        }
+    }
+
     private suspend fun forwardTurnToGateway(
         wavBytes: ByteArray,
         images: Map<Int, ByteArray>,
-        commitMeta: JSONObject?
+        commitMeta: JSONObject?,
+        locationMeta: JSONObject? = null
     ) {
+        if (!isNetworkAvailable()) {
+            spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
+            emitOfflineQueuedToBle()
+            return
+        }
+
+        val delivered = executeGatewayPost(
+            wavBytes = wavBytes,
+            images = images,
+            commitMeta = commitMeta,
+            locationMeta = locationMeta,
+            isReplay = false
+        )
+        if (delivered) {
+            drainOfflineSpool()
+        }
+    }
+
+    private fun emitOfflineQueuedToBle() {
+        val statusEvt = "event: status\ndata: {\"status\":\"offline_queued\",\"spooled\":true}\n\n"
+        val doneEvt = "event: done\ndata: {\"offline_queued\":true,\"spooled\":true}\n\n"
+        sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, statusEvt.toByteArray(Charsets.UTF_8))
+        sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, doneEvt.toByteArray(Charsets.UTF_8))
+    }
+
+    private suspend fun executeGatewayPost(
+        wavBytes: ByteArray,
+        images: Map<Int, ByteArray>,
+        commitMeta: JSONObject?,
+        locationMeta: JSONObject?,
+        isReplay: Boolean
+    ): Boolean {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val gatewayUrl = (commitMeta?.optString("hub_url")?.takeIf { it.isNotBlank() }
             ?: prefs.getString(KEY_GATEWAY_URL, DEFAULT_GATEWAY_URL)
@@ -309,10 +522,32 @@ class GotchiBleRelayService : Service() {
         val audioOutMode = commitMeta?.optString("audio_out_mode")?.takeIf { it.isNotBlank() }
             ?: prefs.getString(KEY_AUDIO_OUT_MODE, DEFAULT_AUDIO_OUT_MODE)
             ?: DEFAULT_AUDIO_OUT_MODE
+        val mode = commitMeta?.optString("mode")?.takeIf { it.isNotBlank() } ?: "interact"
+        val prompt = commitMeta?.optString("prompt")?.takeIf { it.isNotBlank() }
 
         val multipart = MultipartBody.Builder().setType(MultipartBody.FORM)
             .addFormDataPart("node_id", nodeId)
             .addFormDataPart("audio_out_mode", audioOutMode)
+            .addFormDataPart("mode", mode)
+
+        if (!prompt.isNullOrBlank()) {
+            multipart.addFormDataPart("prompt", prompt)
+        }
+
+        val lat = commitMeta?.optDouble("lat")?.takeIf { !it.isNaN() }
+            ?: locationMeta?.optDouble("lat")?.takeIf { !it.isNaN() }
+        val lon = commitMeta?.optDouble("lon")?.takeIf { !it.isNaN() }
+            ?: locationMeta?.optDouble("lon")?.takeIf { !it.isNaN() }
+        val acc = commitMeta?.optDouble("location_accuracy_m")?.takeIf { !it.isNaN() }
+            ?: locationMeta?.optDouble("location_accuracy_m")?.takeIf { !it.isNaN() }
+
+        if (lat != null && lon != null) {
+            multipart.addFormDataPart("lat", lat.toString())
+            multipart.addFormDataPart("lon", lon.toString())
+            if (acc != null) {
+                multipart.addFormDataPart("location_accuracy_m", acc.toString())
+            }
+        }
 
         if (wavBytes.isNotEmpty()) {
             multipart.addFormDataPart(
@@ -345,18 +580,25 @@ class GotchiBleRelayService : Service() {
             reqBuilder.header("Authorization", "Bearer $bearerToken")
         }
 
-        try {
+        return try {
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val errPayload = JSONObject()
-                        .put("event", "error")
-                        .put("status", response.code)
-                        .toString()
-                    sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
-                    return
+                    if (response.code in listOf(502, 503, 504) && !isReplay) {
+                        spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
+                        emitOfflineQueuedToBle()
+                        return false
+                    }
+                    if (!isReplay) {
+                        val errPayload = JSONObject()
+                            .put("event", "error")
+                            .put("status", response.code)
+                            .toString()
+                        sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
+                    }
+                    return false
                 }
 
-                val body = response.body ?: return
+                val body = response.body ?: return true
                 val reader = BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8))
                 var currentEvent = "message"
                 val dataLines = mutableListOf<String>()
@@ -366,7 +608,9 @@ class GotchiBleRelayService : Service() {
                     if (line.isEmpty()) {
                         if (dataLines.isNotEmpty()) {
                             val rawData = dataLines.joinToString("\n")
-                            handleSseEvent(currentEvent, rawData, audioOutMode)
+                            if (!isReplay) {
+                                handleSseEvent(currentEvent, rawData, audioOutMode)
+                            }
                             dataLines.clear()
                         }
                         currentEvent = "message"
@@ -376,21 +620,54 @@ class GotchiBleRelayService : Service() {
                         dataLines.add(line.removePrefix("data:").trim())
                     }
                 }
+                true
             }
+        } catch (e: IOException) {
+            if (!isReplay) {
+                spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
+                emitOfflineQueuedToBle()
+            }
+            false
         } catch (e: Exception) {
-            val errPayload = JSONObject()
-                .put("event", "error")
-                .put("detail", e.message ?: "gateway_unreachable")
-                .toString()
-            sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
+            if (!isReplay) {
+                val errPayload = JSONObject()
+                    .put("event", "error")
+                    .put("detail", e.message ?: "gateway_unreachable")
+                    .toString()
+                sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
+            }
+            false
         }
     }
 
+    internal fun transcodeDownlinkAudioEventToAdpcm(eventType: String, rawData: String): String {
+        if (eventType != "sentence" && eventType != "audio_chunk") return rawData
+        return runCatching {
+            val obj = JSONObject(rawData)
+            val fmt = obj.optString("format", "pcm")
+            if (fmt == "adpcm") return@runCatching rawData
+            val key = when {
+                obj.has("audio_b64") -> "audio_b64"
+                obj.has("data") -> "data"
+                obj.has("pcm_b64") -> "pcm_b64"
+                else -> return@runCatching rawData
+            }
+            val b64 = obj.optString(key, "")
+            if (b64.isEmpty()) return@runCatching rawData
+            val sampleRate = obj.optInt("sample_rate", 24000)
+            val pcmBytes = Base64.decode(b64, Base64.DEFAULT)
+            val gad1Bytes = ImaAdpcmCodec.encodePcmToGad1(pcmBytes, sampleRate)
+            obj.put("format", "adpcm")
+            obj.put(key, Base64.encodeToString(gad1Bytes, Base64.NO_WRAP))
+            obj.toString()
+        }.getOrDefault(rawData)
+    }
+
     private suspend fun handleSseEvent(eventType: String, rawData: String, audioOutMode: String) {
-        if (eventType == "audio_chunk" && audioOutMode == "ble_phone") {
+        if ((eventType == "audio_chunk" || eventType == "sentence") && audioOutMode == "ble_phone") {
             runCatching {
                 val obj = JSONObject(rawData)
-                val b64 = obj.optString("pcm_b64", obj.optString("audio_b64", ""))
+                val b64 = obj.optString("pcm_b64", obj.optString("audio_b64", obj.optString("data", "")))
                 val sampleRate = obj.optInt("sample_rate", 24000)
                 if (b64.isNotEmpty()) {
                     val pcmBytes = Base64.decode(b64, Base64.DEFAULT)
@@ -400,7 +677,13 @@ class GotchiBleRelayService : Service() {
             return
         }
 
-        val sseEnvelope = "event: $eventType\ndata: $rawData\n\n"
+        val outboundData = if ((eventType == "sentence" || eventType == "audio_chunk") && audioOutMode == "speaker") {
+            transcodeDownlinkAudioEventToAdpcm(eventType, rawData)
+        } else {
+            rawData
+        }
+
+        val sseEnvelope = "event: $eventType\ndata: $outboundData\n\n"
         sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, sseEnvelope.toByteArray(Charsets.UTF_8))
         delay(2)
     }

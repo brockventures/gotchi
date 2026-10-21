@@ -245,7 +245,8 @@ bool sendFramedPayload(
     const uint8_t* payload,
     size_t payload_len,
     uint8_t frame_index,
-    bool requires_ack
+    bool requires_ack,
+    FrameFlags extra_flags
 ) {
 #if defined(ARDUINO)
     if (!s_peer_connected || !s_tx_char) {
@@ -266,7 +267,7 @@ bool sendFramedPayload(
             chunk_len = (payload_len - offset) < max_chunk ? (payload_len - offset) : max_chunk;
         }
 
-        FrameFlags flags = FrameFlags::NONE;
+        FrameFlags flags = extra_flags;
         if (idx == 0) flags = flags | FrameFlags::FIRST_CHUNK;
         if (idx + 1 == total_chunks) flags = flags | FrameFlags::LAST_CHUNK;
         if (requires_ack) flags = flags | FrameFlags::REQUIRES_ACK;

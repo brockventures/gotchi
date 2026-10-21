@@ -144,6 +144,31 @@ def test_gateway_journal_http_and_ble_interact_routes():
     assert sum_resp["ok"] is True
     assert sum_resp["open_task_count"] == 2
 
+    # 4. Smart Pipe BLE ADPCM (GAD1) upload + coarse GPS location metadata tagging on /api/voice/interact
+    from backend.ble_framing import encode_wav_to_adpcm
+
+    gad1_audio = encode_wav_to_adpcm(wav, default_sample_rate=16000)
+    resp3 = client.post(
+        "/api/voice/interact",
+        data={
+            "node_id": "gotchi-v1-01",
+            "mode": "journal",
+            "prompt": "Remind me to check the trailhead parking pass.",
+            "lat": "37.7749",
+            "lon": "-122.4194",
+            "location_accuracy_m": "18.5",
+        },
+        files={"audio": ("utterance.wav", gad1_audio, "audio/wav")},
+    )
+    assert resp3.status_code == 200
+    assert "journal_logged" in resp3.text
+
+    entries_after = client.get("/api/journal/entries", params={"node_id": "gotchi-v1-01"}).json()
+    assert entries_after["segment_count"] == 3
+    latest_seg = entries_after["segments"][-1]
+    assert latest_seg["location"] == {"lat": 37.7749, "lon": -122.4194, "accuracy_m": 18.5}
+
+
 
 def test_firmware_journal_mode_and_ble_low_power_contracts():
     main_cpp = (REPO_ROOT / "firmware" / "src" / "main.cpp").read_text(encoding="utf-8")

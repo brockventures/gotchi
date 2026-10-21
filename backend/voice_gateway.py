@@ -45,6 +45,7 @@ try:
 except ImportError:
     FastAPI = None
 
+from backend.ble_framing import ADPCM_HEADER_SIZE, ADPCM_MAGIC, decode_adpcm_to_wav
 from backend.gateway_auth import BearerTokenVerifier
 from backend.llm_config import (
     DEFAULT_VOICE_NAME,
@@ -816,6 +817,8 @@ class SubscriptionBrainAdapter:
             payload["burst_images_b64"] = [
                 base64.b64encode(img).decode("ascii") for img in parsed_turn["burst_images"]
             ]
+        if parsed_turn.get("location"):
+            payload["location"] = parsed_turn["location"]
 
         cmd = self.llm_config.subscription_command.strip()
         if cmd:
@@ -1242,6 +1245,8 @@ class VoiceGatewayService:
             raw_audio = _read_part_bytes(form_data["audio"])
             if raw_audio is None or len(raw_audio) == 0:
                 raise ValueError("Uploaded 'audio' part is empty (0 bytes)")
+            if len(raw_audio) >= ADPCM_HEADER_SIZE and raw_audio[:4] == ADPCM_MAGIC:
+                raw_audio = decode_adpcm_to_wav(raw_audio)
             audio_bytes = raw_audio
 
         image_bytes: Optional[bytes] = None
@@ -1267,6 +1272,27 @@ class VoiceGatewayService:
         if mode not in ("interact", "journal"):
             raise ValueError(f"Invalid mode '{mode}'; expected interact | journal")
 
+        location: Optional[Dict[str, float]] = None
+        raw_lat = form_data.get("lat")
+        raw_lon = form_data.get("lon")
+        if raw_lat is not None and raw_lon is not None and str(raw_lat).strip() != "" and str(raw_lon).strip() != "":
+            try:
+                lat_val = float(str(raw_lat).strip())
+                lon_val = float(str(raw_lon).strip())
+            except ValueError as exc:
+                raise ValueError("Invalid 'lat' or 'lon' coordinate value") from exc
+            if not (-90.0 <= lat_val <= 90.0) or not (-180.0 <= lon_val <= 180.0):
+                raise ValueError("Coordinates out of range: lat must be [-90, 90], lon must be [-180, 180]")
+            location = {"lat": round(lat_val, 6), "lon": round(lon_val, 6)}
+            raw_acc = form_data.get("location_accuracy_m")
+            if raw_acc is not None and str(raw_acc).strip() != "":
+                try:
+                    acc_val = float(str(raw_acc).strip())
+                    if acc_val >= 0.0:
+                        location["accuracy_m"] = round(acc_val, 1)
+                except ValueError:
+                    pass
+
         return {
             "node_id": node_id,
             "session_id": str(session_id),
@@ -1276,6 +1302,7 @@ class VoiceGatewayService:
             "audio_bytes": audio_bytes,
             "image_bytes": image_bytes,
             "burst_images": burst_images,
+            "location": location,
         }
 
     async def _invoke_turn_handler(self, parsed_turn: Dict[str, Any]) -> Dict[str, Any]:
@@ -2018,6 +2045,7 @@ def create_app(
                 transcript=parsed_turn.get("prompt"),
                 session_id=parsed_turn.get("session_id"),
                 transport="ble_or_wifi_interact",
+                location=parsed_turn.get("location"),
             )
             if not j_res.get("ghost_filtered"):
                 j_log = await srv.turn_log_sink.adispatch({

@@ -111,6 +111,7 @@ class JournalService:
         session_id: Optional[str] = None,
         timestamp_s: Optional[float] = None,
         transport: str = "wifi",
+        location: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         """
         Ingests a single VAD-triggered journal segment from GOTCHI, filters ghosts,
@@ -156,7 +157,7 @@ class JournalService:
             }
 
         iso_ts = dt.datetime.fromtimestamp(now_s, tz=dt.timezone.utc).isoformat()
-        segment_entry = {
+        segment_entry: Dict[str, Any] = {
             "segment_id": seg_id,
             "node_id": clean_node,
             "timestamp": now_s,
@@ -165,6 +166,8 @@ class JournalService:
             "voiced_ms": round(voiced_ms, 1),
             "transcript": text,
         }
+        if location:
+            segment_entry["location"] = dict(location)
         node_segments = self.segments.setdefault(clean_node, [])
         node_segments.append(segment_entry)
 
@@ -180,6 +183,8 @@ class JournalService:
             ep["transcripts"].append(text)
             ep["full_text"] = " ".join(ep["transcripts"])
             ep["total_voiced_ms"] = round(float(ep["total_voiced_ms"]) + voiced_ms, 1)
+            if location and not ep.get("location"):
+                ep["location"] = dict(location)
         else:
             ep = {
                 "episode_id": f"ep-{int(now_s * 1000)}-{uuid.uuid4().hex[:4]}",
@@ -191,6 +196,8 @@ class JournalService:
                 "full_text": text,
                 "total_voiced_ms": round(voiced_ms, 1),
             }
+            if location:
+                ep["location"] = dict(location)
             node_episodes.append(ep)
 
         # Extract follow-up tasks & deduplicate against existing open tasks for this node
@@ -223,6 +230,7 @@ class JournalService:
             "ghost_filtered": False,
             "voiced_ms": round(voiced_ms, 1),
             "transcript": text,
+            "location": segment_entry.get("location"),
             "tasks_extracted": new_tasks,
         }
 
@@ -318,6 +326,23 @@ def register_journal_routes(app: "FastAPI", journal_srv: JournalService) -> None
             return journal_srv.verifier.verify(headers, client_ip=client_ip)
         return True, 200, {}
 
+    def _parse_location(raw_lat: Any, raw_lon: Any, raw_acc: Any = None) -> Optional[Dict[str, float]]:
+        if raw_lat is None or raw_lon is None or str(raw_lat).strip() == "" or str(raw_lon).strip() == "":
+            return None
+        lat_val = float(str(raw_lat).strip())
+        lon_val = float(str(raw_lon).strip())
+        if not (-90.0 <= lat_val <= 90.0) or not (-180.0 <= lon_val <= 180.0):
+            raise ValueError("Coordinates out of range: lat must be [-90, 90], lon must be [-180, 180]")
+        loc: Dict[str, float] = {"lat": round(lat_val, 6), "lon": round(lon_val, 6)}
+        if raw_acc is not None and str(raw_acc).strip() != "":
+            try:
+                acc_val = float(str(raw_acc).strip())
+                if acc_val >= 0.0:
+                    loc["accuracy_m"] = round(acc_val, 1)
+            except ValueError:
+                pass
+        return loc
+
     @app.post("/api/journal/ingest")
     async def journal_ingest(request: Request):
         ok, code, err = _check_auth(request)
@@ -335,12 +360,14 @@ def register_journal_routes(app: "FastAPI", journal_srv: JournalService) -> None
                 audio_b64 = body.get("audio_b64")
                 import base64 as _b64
                 audio_bytes = _b64.b64decode(audio_b64) if audio_b64 else None
+                location = _parse_location(body.get("lat"), body.get("lon"), body.get("location_accuracy_m"))
                 res = journal_srv.ingest_segment(
                     node_id=node_id,
                     audio_bytes=audio_bytes,
                     transcript=transcript,
                     session_id=session_id,
                     transport=transport,
+                    location=location,
                 )
             else:
                 form = await request.form()
@@ -349,12 +376,14 @@ def register_journal_routes(app: "FastAPI", journal_srv: JournalService) -> None
                 session_id = form.get("session_id")
                 transport = str(form.get("transport") or "wifi")
                 audio_bytes = _read_part_bytes(form["audio"]) if "audio" in form else None
+                location = _parse_location(form.get("lat"), form.get("lon"), form.get("location_accuracy_m"))
                 res = journal_srv.ingest_segment(
                     node_id=node_id,
                     audio_bytes=audio_bytes,
                     transcript=str(transcript) if transcript is not None else None,
                     session_id=str(session_id) if session_id is not None else None,
                     transport=transport,
+                    location=location,
                 )
             return JSONResponse(status_code=200, content=res)
         except ValueError as ve:

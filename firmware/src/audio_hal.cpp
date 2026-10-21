@@ -1,4 +1,5 @@
 #include "audio_hal.h"
+#include "ble_framing.h"
 #include "pins.h"
 #include <driver/i2s.h>
 #include <freertos/FreeRTOS.h>
@@ -479,6 +480,44 @@ bool playBase64PcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_ra
         ok = playPcmChunk(reinterpret_cast<const int16_t*>(decoded), out_len / sizeof(int16_t), sample_rate);
     }
     free(decoded);
+    return ok;
+}
+
+bool playBase64AdpcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate) {
+    if (!b64_data || b64_len == 0) return true;
+    if (s_abort_check && s_abort_check()) {
+        muteSpeaker();
+        return false;
+    }
+    size_t max_adpcm = (b64_len * 3) / 4 + 4;
+    uint8_t* adpcm_buf = (uint8_t*)(psramFound() ? ps_malloc(max_adpcm) : malloc(max_adpcm));
+    if (!adpcm_buf) return false;
+
+    size_t adpcm_len = 0;
+    int rc = mbedtls_base64_decode(adpcm_buf, max_adpcm, &adpcm_len, (const unsigned char*)b64_data, b64_len);
+    if (rc != 0 || adpcm_len == 0) {
+        free(adpcm_buf);
+        return false;
+    }
+
+    size_t max_samples = adpcm_len * 2;
+    int16_t* pcm_buf = (int16_t*)(psramFound()
+        ? ps_malloc(max_samples * sizeof(int16_t))
+        : malloc(max_samples * sizeof(int16_t)));
+    if (!pcm_buf) {
+        free(adpcm_buf);
+        return false;
+    }
+
+    uint32_t decoded_sr = sample_rate;
+    size_t sample_count = gotchi_ble::decodeAdpcmToPcm(adpcm_buf, adpcm_len, pcm_buf, max_samples, &decoded_sr);
+    free(adpcm_buf);
+
+    bool ok = false;
+    if (sample_count > 0) {
+        ok = playPcmChunk(pcm_buf, sample_count, decoded_sr);
+    }
+    free(pcm_buf);
     return ok;
 }
 

@@ -2,7 +2,7 @@
 
 **Pocket E-Ink AI Companion & Agent-Configurable Hardware Node**
 
-`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and the **Waveshare 1.54" (200x200) E-Paper Module V2** (`SKU 12955` / Amazon `B0728BJTZC`, `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh). It captures push-to-talk (PTT) audio and camera snapshots (using the included stock `OV2640`/`OV3660` camera or optional `OV5640` 5MP autofocus upgrade), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Gemini Schedar / Kokoro TTS) to GOTCHI's own **voice gateway** (`backend/voice_gateway.py`, configurable per unit via `voice_url`) over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android BLE-to-Tailscale forwarder**.
+`gotchi` (working names: **GOTCHI** / **SPRITE**) is a compact, low-power pocket hardware companion (~38g assembled) built around the **Seeed Studio XIAO ESP32S3 Sense** and the **Waveshare 1.54" (200x200) E-Paper Module V2** (`SKU 12955` / Amazon `B0728BJTZC`, `SSD1681`, 2 gray levels B/W, `0.3s` partial / `2.0s` full refresh). It captures push-to-talk (PTT) audio and camera snapshots (using the included stock `OV2640`/`OV3660` camera or optional `OV5640` 5MP autofocus upgrade), plays voice responses through an onboard I2S micro-speaker (`MAX98357A`) or paired phone/Discord voice channel, and delegates heavy inference (Whisper STT, vision, LLM reasoning, and Gemini Schedar / Kokoro TTS) to GOTCHI's own **voice gateway** (`backend/voice_gateway.py`, configurable per unit via `voice_url`) over home Wi-Fi, an iPhone/Android Wi-Fi hotspot, or a headless **Android Smart-Pipe BLE Companion Relay** over standard HTTPS (`443` Cloudflare Tunnel / reverse proxy — zero Tailscale required) or LAN.
 
 ---
 
@@ -33,10 +33,11 @@
 
 ## 2. Transport & Audio Routing Modes
 
-1. **Home Wi-Fi (Direct LAN / Tailscale):**
-   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) to the GOTCHI voice gateway (`backend/voice_gateway.py`), receiving SSE state events and `24 kHz` PCM TTS audio chunks.
-2. **Android Walk-Out-The-Door Roaming (Headless BLE-to-Tailscale Forwarder):**
-   - Bonds over **BLE 5.0 (`L2CAP CoC` / GATT)** (`~2–5 mA` idle draw) to a lightweight headless Android background service on Ryan's Pixel, forwarding audio/snapshots over Tailscale without toggling the phone's Wi-Fi hotspot.
+1. **Home Wi-Fi (Direct LAN or HTTPS Reverse Proxy):**
+   - Connects directly to 2.4 GHz Wi-Fi and streams `16 kHz` mono PCM WAV (`POST /api/voice/interact`) over LAN (`:8765`) or HTTPS (`443` via Cloudflare Tunnel / reverse proxy — no Tailscale required) to the GOTCHI voice gateway (`backend/voice_gateway.py`), receiving SSE state events and `24 kHz` PCM TTS audio chunks.
+2. **Android Walk-Out-The-Door Roaming (Headless Smart-Pipe BLE Companion Relay):**
+   - Bonds over **BLE 5.0 (`L2CAP CoC` / GATT)** (`~2–5 mA` idle draw) to `GotchiBleRelayService` on Ryan's Pixel without toggling the phone's Wi-Fi hotspot or requiring Tailscale.
+   - Offloads **4-bit IMA ADPCM transcoding** (`64 kbps` uplink / `96 kbps` downlink — **4x** BLE air-time reduction), **dead-zone store-and-forward spooling** (`offline_spool/`), and optional **passive coarse GPS tagging** (`lat`, `lon`, `location_accuracy_m`) while keeping all STT, LLM, and TTS unified on the gateway.
 3. **iOS / Universal On-The-Go Mode (2.4 GHz Hotspot + Discord Backdoor):**
    - Connects to an iPhone Personal Hotspot (`Maximize Compatibility` enabled for 2.4 GHz).
    - Plays replies out loud via the onboard `MAX98357A` speaker by default, or routes voice responses into AirPods via a private 1-on-1 Discord voice channel (or lock-screen PWA audio stream) with zero iOS app maintenance.

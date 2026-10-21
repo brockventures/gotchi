@@ -83,6 +83,7 @@ def test_android_manifest_permissions_and_foreground_service():
     required_permissions = {
         "android.permission.BLUETOOTH_SCAN",
         "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE",
         "android.permission.INTERNET",
@@ -163,3 +164,24 @@ def test_gotchi_ble_relay_service_capabilities():
     # Local phone/earbud playback when audio_out_mode == "ble_phone"
     assert 'audioOutMode == "ble_phone"' in service_src
     assert "playPcmOnPhoneSpeaker" in service_src
+
+    # Smart Pipe offload capabilities:
+    # 1. 4-bit IMA ADPCM uplink & downlink transcoding
+    codec_src = CODEC_PATH.read_text(encoding="utf-8")
+    assert "object ImaAdpcmCodec" in codec_src
+    assert "decodeGad1OrAdpcmToWav" in codec_src
+    assert "encodePcmToGad1" in codec_src
+    assert "transcodeUplinkAudioIfNeeded" in service_src
+    assert "transcodeDownlinkAudioEventToAdpcm" in service_src
+
+    # 2. Dead-zone store-and-forward offline spooling
+    assert "spoolTurnForOfflineReplay" in service_src
+    assert "drainOfflineSpool" in service_src
+    assert '"offline_queued"' in service_src
+
+    # 3. Passive coarse GPS location metadata tagging
+    assert "readCoarseLocationMeta" in service_src
+    assert 'addFormDataPart("lat"' in service_src
+    assert 'addFormDataPart("lon"' in service_src
+    assert 'addFormDataPart("location_accuracy_m"' in service_src
+

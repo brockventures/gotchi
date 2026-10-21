@@ -5,10 +5,11 @@ import java.nio.ByteOrder
 import java.util.zip.CRC32
 
 /**
- * GOTCHI V1 BLE GATT / L2CAP CoC Binary Framing Codec (F18 / T4.1 / T4.2).
+ * GOTCHI V1 BLE GATT / L2CAP CoC Binary Framing & 4-Bit IMA ADPCM Codec (F18 / T4.1 / T4.2).
  *
- * Matches the 16-byte little-endian PacketHeader and 4-byte IEEE 802.3 CRC32 trailer
- * defined in firmware/include/ble_framing.h and backend/ble_framing.py.
+ * Matches the 16-byte little-endian PacketHeader, 4-byte IEEE 802.3 CRC32 trailer, and
+ * 12-byte `GAD1` 4-bit IMA ADPCM audio container defined in firmware/include/ble_framing.h
+ * and backend/ble_framing.py.
  */
 object BleFramingCodec {
     const val MAGIC: Int = 0x4742 // 'GB' little-endian
@@ -26,6 +27,7 @@ object BleFramingCodec {
     const val FLAG_LAST_CHUNK: Int = 0x02
     const val FLAG_SINGLE_CHUNK: Int = 0x03 // FIRST_CHUNK | LAST_CHUNK
     const val FLAG_REQUIRES_ACK: Int = 0x04
+    const val FLAG_ADPCM: Int = 0x08 // 4-bit IMA ADPCM compressed audio payload (GAD1)
 
     enum class FrameType(val id: Int) {
         AUDIO_CHUNK(0x01),
@@ -217,6 +219,170 @@ object BleFramingCodec {
             seq = (seq + 1) and 0xFFFF
         }
         return Pair(packets, seq)
+    }
+}
+
+/**
+ * 4-Bit IMA ADPCM Smart Pipe Codec (`GAD1` container <-> 16-bit mono RIFF WAV / PCM).
+ * Matches `encode_ima_adpcm` / `decode_ima_adpcm` in `backend/ble_framing.py` and
+ * `encodeImaAdpcm` / `decodeImaAdpcm` in `firmware/src/ble_framing.cpp`.
+ */
+object ImaAdpcmCodec {
+    const val GAD1_HEADER_BYTES: Int = 12
+    private val GAD1_MAGIC = byteArrayOf('G'.code.toByte(), 'A'.code.toByte(), 'D'.code.toByte(), '1'.code.toByte())
+
+    private val INDEX_TABLE = intArrayOf(
+        -1, -1, -1, -1, 2, 4, 6, 8,
+        -1, -1, -1, -1, 2, 4, 6, 8
+    )
+
+    private val STEP_TABLE = intArrayOf(
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+        19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+        50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+        130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+        337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+        876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+        2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+        5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+        15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+    )
+
+    fun isGad1Container(data: ByteArray): Boolean {
+        return data.size >= GAD1_HEADER_BYTES &&
+            data[0] == GAD1_MAGIC[0] &&
+            data[1] == GAD1_MAGIC[1] &&
+            data[2] == GAD1_MAGIC[2] &&
+            data[3] == GAD1_MAGIC[3]
+    }
+
+    fun encodePcm16(pcmBytes: ByteArray): ByteArray {
+        val numSamples = pcmBytes.size / 2
+        if (numSamples <= 0) return ByteArray(0)
+        val inBuf = ByteBuffer.wrap(pcmBytes, 0, numSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
+        val out = ByteArray((numSamples + 1) / 2)
+        var predictor = 0
+        var stepIndex = 0
+
+        fun encodeSample(sample: Int): Int {
+            val step = STEP_TABLE[stepIndex]
+            var diff = sample - predictor
+            var nibble = 0
+            if (diff < 0) {
+                nibble = 8
+                diff = -diff
+            }
+            if (diff >= step) {
+                nibble = nibble or 4
+                diff -= step
+            }
+            if (diff >= (step shr 1)) {
+                nibble = nibble or 2
+                diff -= (step shr 1)
+            }
+            if (diff >= (step shr 2)) {
+                nibble = nibble or 1
+            }
+
+            var vpdiff = step shr 3
+            if ((nibble and 4) != 0) vpdiff += step
+            if ((nibble and 2) != 0) vpdiff += (step shr 1)
+            if ((nibble and 1) != 0) vpdiff += (step shr 2)
+
+            predictor = if ((nibble and 8) != 0) predictor - vpdiff else predictor + vpdiff
+            predictor = predictor.coerceIn(-32768, 32767)
+            stepIndex = (stepIndex + INDEX_TABLE[nibble and 0x0F]).coerceIn(0, 88)
+            return nibble and 0x0F
+        }
+
+        var i = 0
+        while (i < numSamples) {
+            val lo = encodeSample(inBuf.short.toInt())
+            val hi = if (i + 1 < numSamples) encodeSample(inBuf.short.toInt()) else 0
+            out[i / 2] = ((lo and 0x0F) or ((hi and 0x0F) shl 4)).toByte()
+            i += 2
+        }
+        return out
+    }
+
+    fun decodeToPcm16(adpcmBytes: ByteArray, numSamples: Int = adpcmBytes.size * 2): ByteArray {
+        if (adpcmBytes.isEmpty() || numSamples <= 0) return ByteArray(0)
+        val target = minOf(numSamples, adpcmBytes.size * 2)
+        val outBuf = ByteBuffer.allocate(target * 2).order(ByteOrder.LITTLE_ENDIAN)
+        var predictor = 0
+        var stepIndex = 0
+        var written = 0
+
+        fun decodeNibble(nibble: Int): Short {
+            val step = STEP_TABLE[stepIndex]
+            var vpdiff = step shr 3
+            if ((nibble and 4) != 0) vpdiff += step
+            if ((nibble and 2) != 0) vpdiff += (step shr 1)
+            if ((nibble and 1) != 0) vpdiff += (step shr 2)
+
+            predictor = if ((nibble and 8) != 0) predictor - vpdiff else predictor + vpdiff
+            predictor = predictor.coerceIn(-32768, 32767)
+            stepIndex = (stepIndex + INDEX_TABLE[nibble and 0x0F]).coerceIn(0, 88)
+            return predictor.toShort()
+        }
+
+        for (b in adpcmBytes) {
+            if (written >= target) break
+            val unsigned = b.toInt() and 0xFF
+            outBuf.putShort(decodeNibble(unsigned and 0x0F))
+            written++
+            if (written >= target) break
+            outBuf.putShort(decodeNibble((unsigned shr 4) and 0x0F))
+            written++
+        }
+        return outBuf.array()
+    }
+
+    fun encodePcmToGad1(pcmBytes: ByteArray, sampleRate: Int = 24000): ByteArray {
+        val numSamples = pcmBytes.size / 2
+        val adpcm = encodePcm16(pcmBytes)
+        val out = ByteBuffer.allocate(GAD1_HEADER_BYTES + adpcm.size).order(ByteOrder.LITTLE_ENDIAN)
+        out.put(GAD1_MAGIC)
+        out.putInt(sampleRate)
+        out.putInt(numSamples)
+        out.put(adpcm)
+        return out.array()
+    }
+
+    fun decodeGad1OrAdpcmToWav(payload: ByteArray, defaultSampleRate: Int = 16000): ByteArray {
+        val sampleRate: Int
+        val pcmBytes: ByteArray
+        if (isGad1Container(payload)) {
+            val hdr = ByteBuffer.wrap(payload, 4, 8).order(ByteOrder.LITTLE_ENDIAN)
+            val parsedSr = hdr.int
+            val numSamples = hdr.int
+            sampleRate = if (parsedSr in 4000..96000) parsedSr else defaultSampleRate
+            val rawAdpcm = payload.copyOfRange(GAD1_HEADER_BYTES, payload.size)
+            pcmBytes = decodeToPcm16(rawAdpcm, numSamples)
+        } else {
+            sampleRate = defaultSampleRate
+            pcmBytes = decodeToPcm16(payload)
+        }
+        return wrapPcmInWav(pcmBytes, sampleRate)
+    }
+
+    fun wrapPcmInWav(pcmBytes: ByteArray, sampleRate: Int = 16000): ByteArray {
+        val out = ByteBuffer.allocate(44 + pcmBytes.size).order(ByteOrder.LITTLE_ENDIAN)
+        out.put("RIFF".toByteArray(Charsets.US_ASCII))
+        out.putInt(36 + pcmBytes.size)
+        out.put("WAVE".toByteArray(Charsets.US_ASCII))
+        out.put("fmt ".toByteArray(Charsets.US_ASCII))
+        out.putInt(16)
+        out.putShort(1) // PCM
+        out.putShort(1) // Mono
+        out.putInt(sampleRate)
+        out.putInt(sampleRate * 2)
+        out.putShort(2) // BlockAlign
+        out.putShort(16) // BitsPerSample
+        out.put("data".toByteArray(Charsets.US_ASCII))
+        out.putInt(pcmBytes.size)
+        out.put(pcmBytes)
+        return out.array()
     }
 }
 
