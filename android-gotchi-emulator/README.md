@@ -26,6 +26,16 @@ Standalone Android hardware emulator app (`ventures.brock.gotchi.emulator`), for
 
 ---
 
+## Quickstart Sideload (Pre-Compiled APK)
+
+A pre-compiled debug APK is committed directly at [`android-gotchi-emulator/releases/gotchi-emulator-debug.apk`](releases/gotchi-emulator-debug.apk) and published on [GitHub Releases (`v0.1.0`)](https://github.com/brockventures/gotchi/releases/tag/v0.1.0) so you can sideload without installing the Android SDK or Gradle:
+
+```bash
+adb install -r android-gotchi-emulator/releases/gotchi-emulator-debug.apk
+```
+
+---
+
 ## Runtime Configuration via ADB Intent
 
 ```bash
