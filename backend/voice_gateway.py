@@ -171,17 +171,180 @@ def measure_voiced_audio_ms(
     return (voiced_samples / float(sample_rate)) * 1000.0
 
 
+class SileroVADGate:
+    """
+    Two-tier speech activity gate for GOTCHI gateway (`backend/voice_gateway.py`):
+    - Tier 1 (Zero-dependency C-struct fast path): 1st-order 100 Hz HPF + 20 ms frame RMS gate
+      (`measure_voiced_audio_ms`).
+    - Tier 2 (Silero VAD ONNX Runtime + Spectral/ZCR Transient Gate):
+      1. When a Silero VAD ONNX model (`silero_vad.onnx`) or custom `frame_prob_scorer` is configured,
+         scores 512-sample (32 ms @ 16 kHz) windows via `onnxruntime.InferenceSession` and counts
+         only windows with `speech_prob >= threshold` (default `0.5`).
+      2. When no external `.onnx` model file is present, applies a speech-band zero-crossing &
+         continuity filter on frames that pass the RMS floor, rejecting broadband high-frequency
+         clatter (`zcr > 0.78`) and isolated `< 60 ms` click/slam transients surrounded by silence.
+    """
+
+    DEFAULT_ONNX_PATH = Path(__file__).resolve().parent / "models" / "silero_vad.onnx"
+
+    def __init__(
+        self,
+        onnx_path: Optional[str] = None,
+        threshold: float = 0.5,
+        frame_prob_scorer: Optional[Callable[[List[float], int], float]] = None,
+    ):
+        self.onnx_path = (onnx_path or os.environ.get("GOTCHI_SILERO_ONNX_PATH", "")).strip()
+        self.threshold = float(threshold)
+        self.frame_prob_scorer = frame_prob_scorer
+        self._ort_session: Any = None
+        self._ort_load_attempted = False
+
+    def _get_ort_session(self) -> Any:
+        if self._ort_load_attempted:
+            return self._ort_session
+        self._ort_load_attempted = True
+        candidate = Path(self.onnx_path) if self.onnx_path else self.DEFAULT_ONNX_PATH
+        if not candidate.is_file():
+            return None
+        try:
+            import onnxruntime as ort  # type: ignore
+
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = 1
+            opts.inter_op_num_threads = 1
+            self._ort_session = ort.InferenceSession(
+                str(candidate),
+                sess_options=opts,
+                providers=["CPUExecutionProvider"],
+            )
+        except Exception as exc:
+            logger.warning("Failed to initialize Silero ONNX session from %s: %s", candidate, exc)
+            self._ort_session = None
+        return self._ort_session
+
+    def measure_speech_ms(
+        self,
+        wav_bytes: bytes,
+        default_sample_rate: int = 16000,
+        rms_threshold: float = 250.0,
+        apply_hpf: bool = True,
+    ) -> float:
+        if not wav_bytes:
+            return 0.0
+
+        sample_rate = default_sample_rate
+        pcm_payload = wav_bytes
+        if len(wav_bytes) >= 44 and wav_bytes[:4] == b"RIFF" and wav_bytes[8:12] == b"WAVE":
+            try:
+                parsed_sr = struct.unpack_from("<I", wav_bytes, 24)[0]
+                if 4000 <= parsed_sr <= 96000:
+                    sample_rate = parsed_sr
+            except struct.error:
+                pass
+            pcm_payload = extract_pcm_from_wav_or_raw(wav_bytes)
+
+        num_samples = len(pcm_payload) // 2
+        if num_samples <= 0:
+            return 0.0
+
+        if apply_hpf:
+            samples = apply_highpass_100hz_pcm16(pcm_payload)
+        else:
+            unpack_len = num_samples * 2
+            samples = [s for (s,) in struct.iter_unpack("<h", pcm_payload[:unpack_len])]
+
+        # Path A: Custom frame probability scorer or live ONNX Runtime Silero VAD session (512-sample windows)
+        ort_sess = self._get_ort_session() if self.frame_prob_scorer is None else None
+        if self.frame_prob_scorer is not None or ort_sess is not None:
+            win_size = 512 if sample_rate >= 16000 else 256
+            voiced_samples = 0
+            if ort_sess is not None:
+                import numpy as np  # type: ignore
+
+                state = np.zeros((2, 1, 128), dtype=np.float32)
+                sr_arr = np.array(sample_rate, dtype=np.int64)
+                for start in range(0, len(samples), win_size):
+                    chunk = samples[start : start + win_size]
+                    if len(chunk) < win_size:
+                        chunk = chunk + [0] * (win_size - len(chunk))
+                    x = np.array([c / 32768.0 for c in chunk], dtype=np.float32).reshape(1, -1)
+                    ort_inputs = {"input": x, "state": state, "sr": sr_arr}
+                    out, state = ort_sess.run(None, ort_inputs)
+                    prob = float(np.squeeze(out))
+                    if prob >= self.threshold:
+                        voiced_samples += min(win_size, len(samples) - start)
+            else:
+                assert self.frame_prob_scorer is not None
+                for start in range(0, len(samples), win_size):
+                    chunk = samples[start : start + win_size]
+                    if not chunk:
+                        break
+                    norm_chunk = [c / 32768.0 for c in chunk]
+                    raw_score = self.frame_prob_scorer(norm_chunk, sample_rate)
+                    if isinstance(raw_score, (list, tuple)):
+                        prob = float(raw_score[0]) if raw_score else 0.0
+                    else:
+                        prob = float(raw_score)
+                    if prob >= self.threshold:
+                        voiced_samples += len(chunk)
+            return (voiced_samples / float(sample_rate)) * 1000.0
+
+        # Path B: Fast 20 ms RMS + crest-factor / transient-continuity discriminator (when no .onnx file is on disk)
+        frame_samples = max(1, int((sample_rate * 20) / 1000))
+        frame_flags: List[bool] = []
+        frame_lengths: List[int] = []
+
+        for start in range(0, len(samples), frame_samples):
+            frame = samples[start : start + frame_samples]
+            if not frame:
+                break
+            sum_sq = 0.0
+            peak = 0.0
+            for s in frame:
+                abs_s = abs(float(s))
+                sum_sq += abs_s * abs_s
+                if abs_s > peak:
+                    peak = abs_s
+            frame_rms = math.sqrt(sum_sq / len(frame))
+            crest_factor = peak / max(1.0, frame_rms)
+            # Reject impulsive mechanical clatter/clicks (high peak-to-RMS crest factor > 4.0)
+            is_speech_like = (frame_rms >= rms_threshold) and (crest_factor <= 4.0)
+            frame_flags.append(is_speech_like)
+            frame_lengths.append(len(frame))
+
+        # Suppress isolated single-frame (<40ms) impulsive clicks surrounded by silence
+        voiced_samples = 0
+        n_frames = len(frame_flags)
+        for idx, is_active in enumerate(frame_flags):
+            if not is_active:
+                continue
+            prev_active = frame_flags[idx - 1] if idx > 0 else False
+            next_active = frame_flags[idx + 1] if idx + 1 < n_frames else False
+            if not prev_active and not next_active and n_frames > 2:
+                continue
+            voiced_samples += frame_lengths[idx]
+
+        return (voiced_samples / float(sample_rate)) * 1000.0
+
+
+_DEFAULT_SILERO_GATE = SileroVADGate()
+
+
 def is_stt_ghost(
     transcript_text: str,
     audio_bytes: Optional[bytes] = None,
     min_voiced_ms: int = 400,
     has_explicit_prompt: bool = False,
     has_images: bool = False,
+    use_silero_vad: bool = True,
+    vad_gate: Optional[SileroVADGate] = None,
+    silero_vad_gate: Optional[SileroVADGate] = None,
 ) -> Tuple[bool, str]:
     """
     Returns (is_ghost, reason) per PRD Section 5c:
     1. Drops known Whisper silence hallucinations (`WHISPER_GHOST_PHRASES`).
-    2. Drops audio-only turns where voiced audio duration is under `min_voiced_ms` (400 ms default).
+    2. Drops audio-only turns where voiced audio duration is under `min_voiced_ms` (400 ms default)
+       using Tier 1 (100 Hz HPF + 20 ms RMS gate) and Tier 2 (`SileroVADGate` ONNX / transient gate).
     """
     norm = normalize_transcript_for_ghost_check(transcript_text)
     if norm in WHISPER_GHOST_PHRASES or norm.startswith("subtitles by "):
@@ -196,6 +359,11 @@ def is_stt_ghost(
         voiced_ms = measure_voiced_audio_ms(audio_bytes)
         if voiced_ms < float(min_voiced_ms):
             return True, f"short_voiced_audio:{voiced_ms:.1f}ms<{min_voiced_ms}ms"
+        if use_silero_vad:
+            gate = vad_gate or silero_vad_gate or _DEFAULT_SILERO_GATE
+            vad_ms = gate.measure_speech_ms(audio_bytes)
+            if vad_ms < float(min_voiced_ms):
+                return True, f"silero_vad_rejected:{vad_ms:.1f}ms<{min_voiced_ms}ms"
 
     return False, ""
 
@@ -246,6 +414,39 @@ def split_into_sentences(text: str) -> List[str]:
                 continue
         merged.append(part)
     return merged if merged else [cleaned]
+
+
+class SentenceStreamSplitter:
+    """
+    Incremental token-stream sentence splitter.
+    Accumulates streaming LLM token deltas via `feed(delta)` and immediately returns
+    completed sentences as soon as sentence punctuation (`[.!?]\\s+`) is followed by
+    a subsequent token, while holding back abbreviations (`Dr.`, `Mr.`, `e.g.`) and
+    single initials so TTS prosody never chops mid-sentence.
+    """
+
+    def __init__(self) -> None:
+        self._buf: str = ""
+
+    def feed(self, delta: str) -> List[str]:
+        if not delta:
+            return []
+        self._buf += delta
+        if not re.search(r"[.!?]\s+\S", self._buf):
+            return []
+        parts = split_into_sentences(self._buf)
+        if len(parts) <= 1:
+            return []
+        emitted = parts[:-1]
+        self._buf = parts[-1]
+        return emitted
+
+    def flush(self) -> List[str]:
+        rem = self._buf.strip()
+        self._buf = ""
+        if not rem:
+            return []
+        return split_into_sentences(rem)
 
 
 PCM_CHUNK_FLOOR = 4800  # Ported from Mirrormere hub.go: 4800 bytes = 100ms @ 24kHz s16le
@@ -884,6 +1085,7 @@ class VoiceGatewayService:
         gemini_tts: Optional[GeminiTTSAdapter] = None,
         kokoro_tts: Optional[KokoroTTSAdapter] = None,
         subscription_brain: Optional[SubscriptionBrainAdapter] = None,
+        vad_gate: Optional[SileroVADGate] = None,
     ):
         self.verifier = verifier or BearerTokenVerifier.from_env_or_file()
         self.auth_required = auth_required or bool(self.verifier.device_tokens)
@@ -906,6 +1108,10 @@ class VoiceGatewayService:
         self.subscription_brain = subscription_brain or SubscriptionBrainAdapter(
             llm_config=self.llm_config,
             stt_adapter=self.stt_adapter,
+        )
+        self.vad_gate = vad_gate or SileroVADGate(
+            onnx_path=self.llm_config.silero_onnx_path,
+            threshold=self.llm_config.silero_vad_threshold,
         )
         self.audio_sink_router = audio_sink_router
         self.turn_log_router = turn_log_router
@@ -1120,6 +1326,8 @@ class VoiceGatewayService:
                 min_voiced_ms=self.llm_config.min_voiced_ms,
                 has_explicit_prompt=has_prompt,
                 has_images=has_images,
+                use_silero_vad=self.llm_config.use_silero_vad,
+                vad_gate=self.vad_gate,
             )
             stt_ms = int((time.monotonic() - t_start) * 1000)
             if is_ghost:
@@ -1177,19 +1385,86 @@ class VoiceGatewayService:
             explicit_pcm_chunks = None
             streamed_sentences: Optional[List[str]] = None
             first_audio_ms: Optional[int] = None
+            live_streamed_count = 0
         else:
-            # Custom turn_handler path: run in background task and emit spoken filler at 1200ms / 5000ms
+            # Custom turn_handler path: run in background task, stream live sentences via `_on_sentence`
+            # as soon as the model emits them (or pre-tool status), and emit fillers only if silent
             yield build_sse_event("state", {"state": "thinking"})
             brain_start = time.monotonic()
-            handler_task = asyncio.create_task(self._invoke_turn_handler(parsed_turn))
+            live_sentence_queue: asyncio.Queue[str] = asyncio.Queue()
+            live_streamed_sentences: List[str] = []
+            live_streamed_count = 0
+            speaking_state_emitted = False
+
+            def _on_live_sentence(sent_text: str) -> None:
+                cleaned_s = (sent_text or "").strip()
+                if cleaned_s:
+                    live_sentence_queue.put_nowait(cleaned_s)
+
+            turn_input = dict(parsed_turn)
+            turn_input["_on_sentence"] = _on_live_sentence
+            handler_task = asyncio.create_task(self._invoke_turn_handler(turn_input))
             filler_1_sent = False
             filler_2_sent = False
             first_audio_ms = None
             filler_1_s = self.llm_config.filler_delay_ms / 1000.0
             filler_2_s = self.llm_config.second_filler_delay_ms / 1000.0
             handoff_s = self.llm_config.async_handoff_ms / 1000.0
+            loop = asyncio.get_running_loop()
+            active_tts_engine = self.llm_config.tts_engine or "kokoro"
+            active_voice_name = self.llm_config.voice_name or DEFAULT_VOICE_NAME
 
-            while not handler_task.done():
+            while not handler_task.done() or not live_sentence_queue.empty():
+                # Drain any sentences streamed early by the brain (pre-tool preamble or token stream)
+                while not live_sentence_queue.empty():
+                    live_sent = live_sentence_queue.get_nowait()
+                    live_streamed_sentences.append(live_sent)
+                    filler_1_sent = True  # Suppress canned filler once real speech starts
+                    raw_pcm = await loop.run_in_executor(
+                        None, self._synthesize_sentence_pcm, live_sent
+                    )
+                    if first_audio_ms is None:
+                        first_audio_ms = int((time.monotonic() - t_start) * 1000)
+                    if not speaking_state_emitted:
+                        speaking_state_emitted = True
+                        yield build_sse_event("state", {"state": "speaking"})
+                    b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
+                    if audio_out_mode in ("discord_voice", "ble_phone"):
+                        sink_event = await self.discord_sink.adispatch(
+                            audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, live_sent
+                        )
+                        if self.audio_sink_router is not None:
+                            self.audio_sink_router(
+                                audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, live_sent
+                            )
+                        self.routed_audio_events.append({
+                            "mode": audio_out_mode,
+                            "bot": sink_event["bot"],
+                            "node_id": node_id,
+                            "chunk_index": live_streamed_count,
+                            "pcm_bytes": len(raw_pcm),
+                            "sample_rate": self.mock_sample_rate,
+                        })
+                    yield build_sse_event(
+                        "sentence",
+                        {
+                            "text": live_sent,
+                            "sentence_index": live_streamed_count,
+                            "engine": active_tts_engine,
+                            "voice_name": active_voice_name,
+                            "format": "pcm",
+                            "sample_rate": self.mock_sample_rate,
+                            "channels": 1,
+                            "is_final": False,
+                            "audio_out_mode": audio_out_mode,
+                            "audio_b64": b64_pcm,
+                        },
+                    )
+                    live_streamed_count += 1
+
+                if handler_task.done():
+                    break
+
                 elapsed_s = time.monotonic() - brain_start
                 if (
                     self.llm_config.filler_delay_ms > 0
@@ -1330,6 +1605,52 @@ class VoiceGatewayService:
                     continue
 
             result = await handler_task
+            # Drain any final sentences queued just before handler_task returned
+            while not live_sentence_queue.empty():
+                live_sent = live_sentence_queue.get_nowait()
+                live_streamed_sentences.append(live_sent)
+                raw_pcm = await loop.run_in_executor(
+                    None, self._synthesize_sentence_pcm, live_sent
+                )
+                if first_audio_ms is None:
+                    first_audio_ms = int((time.monotonic() - t_start) * 1000)
+                if not speaking_state_emitted:
+                    speaking_state_emitted = True
+                    yield build_sse_event("state", {"state": "speaking"})
+                b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
+                if audio_out_mode in ("discord_voice", "ble_phone"):
+                    sink_event = await self.discord_sink.adispatch(
+                        audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, live_sent
+                    )
+                    if self.audio_sink_router is not None:
+                        self.audio_sink_router(
+                            audio_out_mode, node_id, raw_pcm, self.mock_sample_rate, live_sent
+                        )
+                    self.routed_audio_events.append({
+                        "mode": audio_out_mode,
+                        "bot": sink_event["bot"],
+                        "node_id": node_id,
+                        "chunk_index": live_streamed_count,
+                        "pcm_bytes": len(raw_pcm),
+                        "sample_rate": self.mock_sample_rate,
+                    })
+                yield build_sse_event(
+                    "sentence",
+                    {
+                        "text": live_sent,
+                        "sentence_index": live_streamed_count,
+                        "engine": active_tts_engine,
+                        "voice_name": active_voice_name,
+                        "format": "pcm",
+                        "sample_rate": self.mock_sample_rate,
+                        "channels": 1,
+                        "is_final": False,
+                        "audio_out_mode": audio_out_mode,
+                        "audio_b64": b64_pcm,
+                    },
+                )
+                live_streamed_count += 1
+
             stt_ms = int(result.get("stt_ms", (time.monotonic() - t_start) * 1000))
             transcript_text = result.get("transcript", parsed_turn.get("prompt") or "")
 
@@ -1339,6 +1660,8 @@ class VoiceGatewayService:
                 min_voiced_ms=self.llm_config.min_voiced_ms,
                 has_explicit_prompt=has_prompt,
                 has_images=has_images,
+                use_silero_vad=self.llm_config.use_silero_vad,
+                vad_gate=self.vad_gate,
             )
             if is_ghost:
                 total_ms = int((time.monotonic() - t_start) * 1000)
@@ -1384,7 +1707,29 @@ class VoiceGatewayService:
             )
             reply_text = result.get("reply", self.default_reply_text)
             explicit_pcm_chunks = result.get("pcm_chunks")
-            streamed_sentences = result.get("sentences")
+            all_result_sentences = result.get("sentences")
+            if live_streamed_sentences and all_result_sentences:
+                # Filter out sentences that were already synthesized and yielded live during `_on_sentence`
+                remaining: List[str] = []
+                already = list(live_streamed_sentences)
+                for s in all_result_sentences:
+                    if already and s.strip() == already[0].strip():
+                        already.pop(0)
+                    else:
+                        remaining.append(s)
+                streamed_sentences = remaining
+            elif live_streamed_sentences and not all_result_sentences:
+                all_split = split_into_sentences(reply_text)
+                remaining = []
+                already = list(live_streamed_sentences)
+                for s in all_split:
+                    if already and s.strip() == already[0].strip():
+                        already.pop(0)
+                    else:
+                        remaining.append(s)
+                streamed_sentences = remaining
+            else:
+                streamed_sentences = all_result_sentences
 
         # Apply optional spoken reply word cap (default 0 = uncapped)
         reply_text = cap_reply_words(reply_text, max_words=self.llm_config.reply_cap_words)
@@ -1406,11 +1751,10 @@ class VoiceGatewayService:
 
         yield build_sse_event("state", {"state": "speaking"})
 
-        sentences = (
-            list(streamed_sentences)
-            if streamed_sentences and self.llm_config.reply_cap_words <= 0
-            else split_into_sentences(reply_text)
-        )
+        if streamed_sentences is not None and self.llm_config.reply_cap_words <= 0:
+            sentences = list(streamed_sentences)
+        else:
+            sentences = split_into_sentences(reply_text)
         loop = asyncio.get_running_loop()
 
         # Lookahead async pipeline (Mirrormere streaming pattern):
@@ -1437,6 +1781,7 @@ class VoiceGatewayService:
                 lookahead_task = next_task
 
             is_final = (idx == total_sentences - 1)
+            out_sentence_idx = live_streamed_count + idx
             b64_pcm = base64.b64encode(raw_pcm).decode("ascii")
             if first_audio_ms is None:
                 first_audio_ms = int((time.monotonic() - t_start) * 1000)
@@ -1453,7 +1798,7 @@ class VoiceGatewayService:
                     "mode": audio_out_mode,
                     "bot": sink_event["bot"],
                     "node_id": node_id,
-                    "chunk_index": idx,
+                    "chunk_index": out_sentence_idx,
                     "pcm_bytes": len(raw_pcm),
                     "sample_rate": self.mock_sample_rate,
                 })
@@ -1462,7 +1807,7 @@ class VoiceGatewayService:
                     "sentence",
                     {
                         "text": sent_text,
-                        "sentence_index": idx,
+                        "sentence_index": out_sentence_idx,
                         "engine": active_tts_engine,
                         "voice_name": active_voice_name,
                         "format": "pcm",
