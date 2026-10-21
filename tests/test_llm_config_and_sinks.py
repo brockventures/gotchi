@@ -906,11 +906,17 @@ def test_silero_vad_gate_and_live_sentence_stream_splitter():
     sr = 16000
     n_500ms = int(sr * 0.5)
 
+    # 1. Bundled backend/models/silero_vad.onnx is present and loads into onnxruntime.InferenceSession
+    assert SileroVADGate.DEFAULT_ONNX_PATH.is_file()
+    strict_onnx_gate = SileroVADGate(allow_synthetic_test_tones=False)
+    assert strict_onnx_gate._get_ort_session() is not None
+
     # 1a. High-crest-factor mechanical clatter (12000 spike once every 320-sample 20ms frame -> RMS ~670 >= 250, crest_factor ~17.9 > 4.0)
     one_frame_clatter = [12000, -12000] + [0] * 318
     clatter_samples = one_frame_clatter * 25  # 25 frames = 500 ms
     clatter_pcm = struct.pack(f"<{len(clatter_samples)}h", *clatter_samples)
     clatter_wav = wrap_pcm16_to_wav(clatter_pcm, sample_rate=sr)
+    assert strict_onnx_gate.measure_speech_ms(clatter_wav) == 0.0
     is_g_clatter, reason_clatter = is_stt_ghost(
         "Random clatter transcript",
         audio_bytes=clatter_wav,
