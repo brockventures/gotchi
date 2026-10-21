@@ -551,12 +551,26 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
     if ((WiFi.status() != WL_CONNECTED || audio_out_mode == "ble_phone") && gotchi_ble::isBlePeerConnected()) {
-        return interactOverBle(wav, url, node_id, ui, cb, image, out_result, audio_out_mode);
+        if (interactOverBle(wav, url, node_id, ui, cb, image, out_result, audio_out_mode)) {
+            return true;
+        }
+        // Clean failover: if BLE dropped mid-turn (e.g. phone walked out of range) and Wi-Fi is connected,
+        // fall through to direct Wi-Fi HTTP upload and route audio to the onboard speaker.
+        if (WiFi.status() != WL_CONNECTED || s_active_abort_kind != InteractResult::DONE) {
+            return false;
+        }
+        gotchi_log::RingLogger.info("ble", "BLE turn failed; failing over to direct Wi-Fi + onboard speaker");
     }
     if (WiFi.status() != WL_CONNECTED) {
         setFailure(ui, UiState::OFFLINE, "wifi", "NO WIFI", cb);
         return false;
     }
+
+    // If audio_out_mode was configured for `ble_phone` but the phone is out of range / disconnected,
+    // automatically fail over audio playback to Gotchi's onboard `speaker` so the reply is audible.
+    const String effective_audio_out_mode = (audio_out_mode == "ble_phone" && !gotchi_ble::isBlePeerConnected())
+        ? String("speaker")
+        : audio_out_mode;
 
     char session[24];
     snprintf(session, sizeof(session), "gotchi-%lu", (unsigned long)millis());
@@ -614,11 +628,11 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         post += "\r\nContent-Disposition: form-data; name=\"prompt\"\r\n\r\n";
         post += image->default_prompt;
     }
-    if (audio_out_mode.length() > 0) {
+    if (effective_audio_out_mode.length() > 0) {
         post += "\r\n--";
         post += BOUNDARY;
         post += "\r\nContent-Disposition: form-data; name=\"audio_out_mode\"\r\n\r\n";
-        post += audio_out_mode;
+        post += effective_audio_out_mode;
     }
     post += "\r\n--";
     post += BOUNDARY;
@@ -743,7 +757,7 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
         return false;
     }
 
-    const bool mute_local = (audio_out_mode == "discord_voice" || audio_out_mode == "ble_phone");
+    const bool mute_local = (effective_audio_out_mode == "discord_voice" || effective_audio_out_mode == "ble_phone");
     gotchi_audio::setPlaybackAbortCheck(checkAbortFlag);
     bool done = streamEvents(rd, buf, ui, cb, mute_local);
     gotchi_audio::setPlaybackAbortCheck(nullptr);
@@ -767,30 +781,29 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
 
     // Priority 1: BLE companion link (allows Wi-Fi radio to stay powered off all day)
     if (gotchi_ble::isBlePeerConnected()) {
-        if (!sendBleAudioCompressedOrRaw(wav)) {
-            gotchi_log::RingLogger.warn("journal", "BLE journal AUDIO_CHUNK send failed");
-            return false;
+        if (sendBleAudioCompressedOrRaw(wav)) {
+            JsonDocument commitDoc;
+            commitDoc["node_id"] = node_id;
+            commitDoc["hub_url"] = url;
+            commitDoc["mode"] = "journal";
+            commitDoc["audio_out_mode"] = "ble_phone";
+            String commitJson;
+            serializeJson(commitDoc, commitJson);
+            bool ok = gotchi_ble::sendFramedPayload(
+                gotchi_ble::FrameType::TURN_COMMIT,
+                (const uint8_t*)commitJson.c_str(),
+                commitJson.length(),
+                0
+            );
+            if (ok) {
+                gotchi_log::RingLogger.info("journal", "Dispatched journal segment over BLE");
+                return true;
+            }
         }
-        JsonDocument commitDoc;
-        commitDoc["node_id"] = node_id;
-        commitDoc["hub_url"] = url;
-        commitDoc["mode"] = "journal";
-        commitDoc["audio_out_mode"] = "ble_phone";
-        String commitJson;
-        serializeJson(commitDoc, commitJson);
-        bool ok = gotchi_ble::sendFramedPayload(
-            gotchi_ble::FrameType::TURN_COMMIT,
-            (const uint8_t*)commitJson.c_str(),
-            commitJson.length(),
-            0
-        );
-        if (ok) {
-            gotchi_log::RingLogger.info("journal", "Dispatched journal segment over BLE");
-        }
-        return ok;
+        gotchi_log::RingLogger.warn("journal", "BLE journal send failed; falling back to Wi-Fi if connected");
     }
 
-    // Priority 2: Direct Wi-Fi HTTP upload when connected
+    // Priority 2: Direct Wi-Fi HTTP upload when connected (or on BLE failover)
     if (WiFi.status() != WL_CONNECTED) {
         return false;
     }

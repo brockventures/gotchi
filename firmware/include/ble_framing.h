@@ -28,7 +28,7 @@ constexpr size_t BLE_MAX_PAYLOAD = 512 - BLE_HEADER_SIZE - BLE_TRAILER_SIZE; // 
 constexpr size_t BLE_L2CAP_MAX_PAYLOAD = 2048; // Supported for L2CAP CoC
 
 constexpr uint32_t ADPCM_MAGIC = 0x31444147; // "GAD1" in little-endian
-constexpr size_t ADPCM_HEADER_SIZE = 12;     // magic (4B) + sample_rate (4B) + num_samples (4B)
+constexpr size_t ADPCM_HEADER_SIZE = 16;     // magic (4B) + sample_rate (4B) + num_samples (4B) + predictor (i16) + step_index (u8) + reserved (u8)
 
 enum class FrameType : uint8_t {
     AUDIO_CHUNK = 0x01,
@@ -77,10 +77,26 @@ uint16_t calcCrc16(const uint8_t* data, size_t length);
 uint32_t calcCrc32(const uint8_t* data, size_t length);
 
 // 4-bit IMA ADPCM Codec (4:1 audio compression over BLE)
-size_t encodeImaAdpcm(const int16_t* pcm, size_t num_samples, uint8_t* out_adpcm, size_t out_cap);
-size_t decodeImaAdpcm(const uint8_t* adpcm, size_t adpcm_len, size_t num_samples, int16_t* out_pcm, size_t out_max_samples);
+size_t encodeImaAdpcm(
+    const int16_t* pcm,
+    size_t num_samples,
+    uint8_t* out_adpcm,
+    size_t out_cap,
+    int32_t initial_predictor = 0,
+    int32_t initial_step_index = 0
+);
+size_t decodeImaAdpcm(
+    const uint8_t* adpcm,
+    size_t adpcm_len,
+    size_t num_samples,
+    int16_t* out_pcm,
+    size_t out_max_samples,
+    int32_t initial_predictor = 0,
+    int32_t initial_step_index = 0
+);
 
-// Encodes a 16-bit mono RIFF WAV buffer into a 12-byte `GAD1` header + 4-bit IMA ADPCM nibbles.
+// Encodes a 16-bit mono RIFF WAV buffer into a 16-byte `GAD1` header + 4-bit IMA ADPCM nibbles.
+// Seeds initial_predictor to the first sample to prevent start-of-chunk transient pops.
 // Returns total encoded bytes written to `out_buf`, or 0 on error.
 size_t encodeWavToAdpcm(const uint8_t* wav_data, size_t wav_len, uint8_t* out_buf, size_t out_cap);
 

@@ -10,8 +10,8 @@ Satisfies:
 - Fragmentation into MTU-bounded chunks and stateful reassembly enforcing both
   chunk_idx and seq_num continuity.
 - 4-bit IMA ADPCM audio compression (4:1 ratio; 64 kbps @ 16 kHz uplink / 96 kbps @ 24 kHz downlink)
-  with 12-byte `GAD1` container header (`magic="GAD1"`, `sample_rate`, `num_samples`) for Smart Pipe
-  BLE relay transcoding between ESP32-S3 and `GotchiBleRelayService`.
+  with 16-byte `GAD1` container header (`magic="GAD1"`, `sample_rate`, `num_samples`,
+  `initial_predictor`, `initial_step_index`, `reserved`) eliminating start-of-chunk transient pops.
 """
 
 import enum
@@ -26,7 +26,7 @@ BLE_DEFAULT_MTU = 512
 BLE_MAX_CHUNK_PAYLOAD = BLE_DEFAULT_MTU - BLE_HEADER_SIZE - BLE_TRAILER_SIZE  # 492 bytes
 
 ADPCM_MAGIC = b"GAD1"
-ADPCM_HEADER_SIZE = 12  # <4sII: "GAD1", sample_rate (uint32), num_samples (uint32)
+ADPCM_HEADER_SIZE = 16  # <4sIIhBB: "GAD1", sample_rate (u32), num_samples (u32), predictor (i16), step_index (u8), reserved (u8)
 
 IMA_INDEX_TABLE: Tuple[int, ...] = (
     -1, -1, -1, -1, 2, 4, 6, 8,
@@ -136,18 +136,31 @@ def _decode_ima_nibble(nibble: int, predictor: int, step_index: int) -> Tuple[in
     return predictor, step_index
 
 
-def encode_ima_adpcm(pcm_bytes: bytes) -> bytes:
+def encode_ima_adpcm_with_state(
+    pcm_bytes: bytes,
+    initial_predictor: Optional[int] = None,
+    initial_step_index: int = 0,
+) -> Tuple[bytes, int, int, int, int]:
     """
-    Compresses 16-bit signed little-endian mono PCM into 4-bit IMA ADPCM nibbles (4:1 ratio).
-    Low nibble holds sample 2*i; high nibble holds sample 2*i + 1.
+    Compresses 16-bit signed little-endian mono PCM into 4-bit IMA ADPCM nibbles.
+    When `initial_predictor` is None, seeds predictor to `samples[0]` so sample 0 reconstructs
+    with zero start-of-chunk transient pop.
+    Returns `(adpcm_bytes, init_predictor, init_step_index, final_predictor, final_step_index)`.
     """
     num_samples = len(pcm_bytes) // 2
     if num_samples <= 0:
-        return b""
+        init_p = int(initial_predictor or 0)
+        init_idx = max(0, min(88, int(initial_step_index)))
+        return b"", init_p, init_idx, init_p, init_idx
+
     samples = struct.unpack(f"<{num_samples}h", pcm_bytes[: num_samples * 2])
+    init_p = int(samples[0] if initial_predictor is None else initial_predictor)
+    init_p = max(-32768, min(32767, init_p))
+    init_idx = max(0, min(88, int(initial_step_index)))
+
     out = bytearray((num_samples + 1) // 2)
-    predictor = 0
-    step_index = 0
+    predictor = init_p
+    step_index = init_idx
 
     for i in range(0, num_samples, 2):
         nib_lo, predictor, step_index = _encode_ima_sample(samples[i], predictor, step_index)
@@ -157,12 +170,35 @@ def encode_ima_adpcm(pcm_bytes: bytes) -> bytes:
             nib_hi = 0
         out[i // 2] = (nib_lo & 0x0F) | ((nib_hi & 0x0F) << 4)
 
-    return bytes(out)
+    return bytes(out), init_p, init_idx, predictor, step_index
 
 
-def decode_ima_adpcm(adpcm_bytes: bytes, num_samples: Optional[int] = None) -> bytes:
+def encode_ima_adpcm(
+    pcm_bytes: bytes,
+    initial_predictor: int = 0,
+    initial_step_index: int = 0,
+) -> bytes:
     """
-    Decompresses 4-bit IMA ADPCM nibbles back into 16-bit signed little-endian mono PCM.
+    Compresses 16-bit signed little-endian mono PCM into 4-bit IMA ADPCM nibbles (4:1 ratio).
+    Low nibble holds sample 2*i; high nibble holds sample 2*i + 1.
+    """
+    adpcm_bytes, _, _, _, _ = encode_ima_adpcm_with_state(
+        pcm_bytes,
+        initial_predictor=initial_predictor,
+        initial_step_index=initial_step_index,
+    )
+    return adpcm_bytes
+
+
+def decode_ima_adpcm(
+    adpcm_bytes: bytes,
+    num_samples: Optional[int] = None,
+    initial_predictor: int = 0,
+    initial_step_index: int = 0,
+) -> bytes:
+    """
+    Decompresses 4-bit IMA ADPCM nibbles back into 16-bit signed little-endian mono PCM,
+    starting from `(initial_predictor, initial_step_index)`.
     """
     if not adpcm_bytes:
         return b""
@@ -172,8 +208,8 @@ def decode_ima_adpcm(adpcm_bytes: bytes, num_samples: Optional[int] = None) -> b
         return b""
 
     out_samples: List[int] = []
-    predictor = 0
-    step_index = 0
+    predictor = max(-32768, min(32767, int(initial_predictor)))
+    step_index = max(0, min(88, int(initial_step_index)))
 
     for byte_val in adpcm_bytes:
         nib_lo = byte_val & 0x0F
@@ -236,29 +272,61 @@ def _wrap_pcm_in_wav(pcm_bytes: bytes, sample_rate: int = 16000) -> bytes:
     return header + pcm_bytes
 
 
-def encode_wav_to_adpcm(wav_or_pcm: bytes, default_sample_rate: int = 16000) -> bytes:
+def encode_wav_to_adpcm(
+    wav_or_pcm: bytes,
+    default_sample_rate: int = 16000,
+    initial_predictor: Optional[int] = None,
+    initial_step_index: int = 0,
+) -> bytes:
     """
     Encodes a 16-bit mono WAV (or raw PCM buffer) into a `GAD1` 4-bit IMA ADPCM container:
-    12-byte header (`GAD1`, `sample_rate: u32`, `num_samples: u32`) + packed ADPCM nibbles.
+    16-byte header (`GAD1`, `sample_rate: u32`, `num_samples: u32`, `initial_predictor: i16`,
+    `initial_step_index: u8`, `reserved: u8`) + packed ADPCM nibbles.
+    Seeds `initial_predictor` from the first sample when not explicitly provided so start-of-chunk
+    transient error is zero.
     """
     pcm_bytes, sample_rate = _extract_wav_pcm_and_rate(wav_or_pcm, default_sample_rate=default_sample_rate)
     num_samples = len(pcm_bytes) // 2
-    adpcm_payload = encode_ima_adpcm(pcm_bytes)
-    header = struct.pack("<4sII", ADPCM_MAGIC, int(sample_rate), int(num_samples))
+    adpcm_payload, init_pred, init_idx, _, _ = encode_ima_adpcm_with_state(
+        pcm_bytes,
+        initial_predictor=initial_predictor,
+        initial_step_index=initial_step_index,
+    )
+    header = struct.pack(
+        "<4sIIhBB",
+        ADPCM_MAGIC,
+        int(sample_rate),
+        int(num_samples),
+        int(init_pred),
+        int(init_idx) & 0xFF,
+        0,
+    )
     return header + adpcm_payload
 
 
 def decode_adpcm_to_wav(adpcm_container: bytes, default_sample_rate: int = 16000) -> bytes:
     """
-    Decodes a `GAD1` 4-bit IMA ADPCM container (or raw ADPCM stream) into a standard
-    44-byte RIFF/WAVE 16-bit signed little-endian mono PCM file for `/api/voice/interact`.
+    Decodes a `GAD1` 4-bit IMA ADPCM container (16-byte header with predictor/step state,
+    legacy 12-byte header, or raw ADPCM stream) into a standard 44-byte RIFF/WAVE 16-bit
+    signed little-endian mono PCM file for `/api/voice/interact`.
     """
-    if len(adpcm_container) >= ADPCM_HEADER_SIZE and adpcm_container[:4] == ADPCM_MAGIC:
-        _, sample_rate, num_samples = struct.unpack("<4sII", adpcm_container[:ADPCM_HEADER_SIZE])
+    if len(adpcm_container) >= 12 and adpcm_container[:4] == ADPCM_MAGIC:
+        _, sample_rate, num_samples = struct.unpack("<4sII", adpcm_container[:12])
         if not (4000 <= sample_rate <= 96000):
             sample_rate = default_sample_rate
-        raw_adpcm = adpcm_container[ADPCM_HEADER_SIZE:]
-        pcm_bytes = decode_ima_adpcm(raw_adpcm, num_samples=num_samples)
+        adpcm_bytes_needed = (num_samples + 1) // 2
+        if len(adpcm_container) >= ADPCM_HEADER_SIZE and (len(adpcm_container) - ADPCM_HEADER_SIZE) >= adpcm_bytes_needed:
+            init_pred, init_idx, _ = struct.unpack("<hBB", adpcm_container[12:ADPCM_HEADER_SIZE])
+            raw_adpcm = adpcm_container[ADPCM_HEADER_SIZE:]
+        else:
+            init_pred, init_idx = 0, 0
+            raw_adpcm = adpcm_container[12:]
+        pcm_bytes = decode_ima_adpcm(
+            raw_adpcm,
+            num_samples=num_samples,
+            initial_predictor=init_pred,
+            initial_step_index=init_idx,
+        )
     else:
         sample_rate = default_sample_rate
         pcm_bytes = decode_ima_adpcm(adpcm_container)
