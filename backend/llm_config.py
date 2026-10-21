@@ -188,6 +188,9 @@ class LLMConfig:
     second_filler_delay_ms: int = 5000
     async_handoff_ms: int = 0
     min_voiced_ms: int = 400
+    use_silero_vad: bool = True
+    silero_vad_threshold: float = 0.5
+    silero_onnx_path: str = ""
 
     def validate(self) -> None:
         if self.auth_mode not in VALID_AUTH_MODES:
@@ -244,6 +247,8 @@ class LLMConfig:
             raise ValueError("async_handoff_ms must be non-negative (0 disables async handoff)")
         if self.min_voiced_ms < 0:
             raise ValueError("min_voiced_ms must be non-negative")
+        if not (0.0 <= float(self.silero_vad_threshold) <= 1.0):
+            raise ValueError("silero_vad_threshold must be between 0.0 and 1.0")
 
     def to_public_dict(self) -> Dict[str, Any]:
         """Returns safe, redacted dictionary representation (never leaks raw keys/tokens)."""
@@ -272,17 +277,24 @@ class LLMConfig:
             "second_filler_delay_ms": self.second_filler_delay_ms,
             "async_handoff_ms": self.async_handoff_ms,
             "min_voiced_ms": self.min_voiced_ms,
+            "use_silero_vad": bool(self.use_silero_vad),
+            "silero_vad_threshold": float(self.silero_vad_threshold),
         }
 
     def update_from_dict(self, updates: Mapping[str, Any]) -> "LLMConfig":
         """
         Applies partial runtime updates from the admin HTTP API.
-        Rejects any attempt to set `subscription_command` over HTTP (must come from env or file).
+        Rejects any attempt to set `subscription_command` or `silero_onnx_path` over HTTP.
         """
         if "subscription_command" in updates:
             raise ValueError(
                 "subscription_command cannot be set via HTTP API; "
                 "configure GOTCHI_LLM_SUBSCRIPTION_CMD in gateway environment or config file"
+            )
+        if "silero_onnx_path" in updates:
+            raise ValueError(
+                "silero_onnx_path cannot be set via HTTP API; "
+                "configure GOTCHI_SILERO_ONNX_PATH in gateway environment or config file"
             )
 
         raw_node_map = updates.get("node_turn_log_webhooks", self.node_turn_log_webhooks)
@@ -321,6 +333,11 @@ class LLMConfig:
             ),
             async_handoff_ms=int(updates.get("async_handoff_ms", self.async_handoff_ms)),
             min_voiced_ms=int(updates.get("min_voiced_ms", self.min_voiced_ms)),
+            use_silero_vad=bool(updates.get("use_silero_vad", self.use_silero_vad)),
+            silero_vad_threshold=float(
+                updates.get("silero_vad_threshold", self.silero_vad_threshold)
+            ),
+            silero_onnx_path=self.silero_onnx_path,
         )
         candidate.validate()
         self.auth_mode = candidate.auth_mode
@@ -346,6 +363,8 @@ class LLMConfig:
         self.second_filler_delay_ms = candidate.second_filler_delay_ms
         self.async_handoff_ms = candidate.async_handoff_ms
         self.min_voiced_ms = candidate.min_voiced_ms
+        self.use_silero_vad = candidate.use_silero_vad
+        self.silero_vad_threshold = candidate.silero_vad_threshold
         return self
 
     @classmethod
@@ -424,6 +443,19 @@ class LLMConfig:
         min_voiced_ms = int(
             os.environ.get("GOTCHI_MIN_VOICED_MS", file_data.get("min_voiced_ms", 400))
         )
+        raw_use_silero = os.environ.get("GOTCHI_USE_SILERO_VAD", "")
+        if raw_use_silero.strip():
+            use_silero_vad = raw_use_silero.strip().lower() not in ("0", "false", "no")
+        else:
+            use_silero_vad = bool(file_data.get("use_silero_vad", True))
+        silero_vad_threshold = float(
+            os.environ.get(
+                "GOTCHI_SILERO_VAD_THRESHOLD", file_data.get("silero_vad_threshold", 0.5)
+            )
+        )
+        silero_onnx_path = os.environ.get(
+            "GOTCHI_SILERO_ONNX_PATH", file_data.get("silero_onnx_path", "")
+        )
 
         cfg = cls(
             auth_mode=auth_mode,
@@ -450,6 +482,9 @@ class LLMConfig:
             second_filler_delay_ms=second_filler_delay_ms,
             async_handoff_ms=async_handoff_ms,
             min_voiced_ms=min_voiced_ms,
+            use_silero_vad=use_silero_vad,
+            silero_vad_threshold=silero_vad_threshold,
+            silero_onnx_path=silero_onnx_path,
         )
         cfg.validate()
         return cfg

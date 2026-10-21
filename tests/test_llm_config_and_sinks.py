@@ -890,4 +890,97 @@ def test_hpf_frame_rms_ghost_gate_node_webhook_routing_and_async_handoff_supervi
     assert "Upstream provider timed out after handoff" in dispatched[1]["payload"]["content"]
 
 
+def test_silero_vad_gate_and_live_sentence_stream_splitter():
+    """
+    Verify:
+    1. `SileroVADGate` Tier-2 speech probability & transient/broadband clatter rejection in `is_stt_ghost`:
+       - Rejects broadband high-ZCR clatter (1-sample sign alternation, ZCR ~ 1.0 > 0.78) even when >=400 ms RMS passes Tier 1.
+       - Rejects when an injected Silero ONNX `frame_prob_scorer` returns speech probabilities below `threshold`.
+       - Accepts sustained voiced harmonic speech (400 Hz tone or custom scorer >= threshold).
+    2. `SentenceStreamSplitter` streams token deltas into complete sentences without breaking on abbreviations (`Dr.`, `v2.5`).
+    3. `VoiceGatewayService.generate_sse_stream` streams live sentences emitted via `_on_sentence` before `turn_handler` finishes.
+    """
+    import struct
+    from backend.voice_gateway import SentenceStreamSplitter, SileroVADGate
+
+    sr = 16000
+    n_500ms = int(sr * 0.5)
+
+    # 1a. High-crest-factor mechanical clatter (12000 spike once every 320-sample 20ms frame -> RMS ~670 >= 250, crest_factor ~17.9 > 4.0)
+    one_frame_clatter = [12000, -12000] + [0] * 318
+    clatter_samples = one_frame_clatter * 25  # 25 frames = 500 ms
+    clatter_pcm = struct.pack(f"<{len(clatter_samples)}h", *clatter_samples)
+    clatter_wav = wrap_pcm16_to_wav(clatter_pcm, sample_rate=sr)
+    is_g_clatter, reason_clatter = is_stt_ghost(
+        "Random clatter transcript",
+        audio_bytes=clatter_wav,
+        min_voiced_ms=400,
+        use_silero_vad=True,
+    )
+    assert is_g_clatter is True
+    assert "silero_vad_rejected" in reason_clatter
+
+    # 1b. Injected Silero scorer returning low speech probability (0.12 < 0.5) rejects audio
+    low_prob_gate = SileroVADGate(threshold=0.5, frame_prob_scorer=lambda samples, rate: 0.12)
+    voiced_wav = wrap_pcm16_to_wav(b"\x00\x08\x00\xf8" * 4000, sample_rate=sr)
+    is_g_low, reason_low = is_stt_ghost(
+        "Hello world",
+        audio_bytes=voiced_wav,
+        min_voiced_ms=400,
+        use_silero_vad=True,
+        silero_vad_gate=low_prob_gate,
+    )
+    assert is_g_low is True
+    assert "silero_vad_rejected" in reason_low
+
+    # 1c. Injected Silero scorer returning high speech probability (0.92 >= 0.5) accepts audio
+    high_prob_gate = SileroVADGate(threshold=0.5, frame_prob_scorer=lambda samples, rate: 0.92)
+    is_g_high, _ = is_stt_ghost(
+        "Hello world",
+        audio_bytes=voiced_wav,
+        min_voiced_ms=400,
+        use_silero_vad=True,
+        silero_vad_gate=high_prob_gate,
+    )
+    assert is_g_high is False
+
+    # 2. SentenceStreamSplitter incremental token feed
+    splitter = SentenceStreamSplitter()
+    emitted: List[str] = []
+    for delta in ["Let me check ", "Dr. ", "Cole's v2.4 ", "sensor logs. ", "Temp is 68F!"]:
+        emitted.extend(splitter.feed(delta))
+    emitted.extend(splitter.flush())
+    assert emitted == [
+        "Let me check Dr. Cole's v2.4 sensor logs.",
+        "Temp is 68F!",
+    ]
+
+    # 3. Live _on_sentence callback during turn_handler streams SSE sentence events before handler finishes
+    async def streaming_brain(turn: Dict[str, Any]) -> Dict[str, Any]:
+        on_s = turn.get("_on_sentence")
+        assert callable(on_s)
+        on_s("Checking the garage sensor now.")
+        await asyncio.sleep(0.04)
+        on_s("It is 68 degrees inside.")
+        return {
+            "transcript": "Check garage",
+            "reply": "Checking the garage sensor now. It is 68 degrees inside.",
+            "stt_ms": 10,
+        }
+
+    cfg = LLMConfig(filler_delay_ms=200, second_filler_delay_ms=5000)
+    srv = VoiceGatewayService(llm_config=cfg, turn_handler=streaming_brain)
+    client = TestClient(create_app(service=srv))
+    resp = client.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi-stream-01", "prompt": "Check garage"},
+        files={"audio": ("ptt.wav", voiced_wav, "audio/wav")},
+    )
+    assert resp.status_code == 200
+    assert resp.text.count('"text": "Checking the garage sensor now."') == 1
+    assert resp.text.count('"text": "It is 68 degrees inside."') == 1
+    assert '"filler": true' not in resp.text
+
+
+
 
