@@ -84,7 +84,7 @@ def test_f17_cold_start_hotspot_turn():
     app = create_app()
     client = TestClient(app)
 
-    pcm = b"\x10\x00" * 8000  # 0.5s audio
+    pcm = b"\x00\x08\x00\xf8" * 4000  # 0.5s AC voiced audio (±2048 at 4 kHz)
     wav = wrap_pcm16_to_wav(pcm, sample_rate=16000, channels=1)
 
     files = {"audio": ("ptt.wav", wav, "audio/wav")}

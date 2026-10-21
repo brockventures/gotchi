@@ -367,12 +367,12 @@ def test_mirrormere_section_5c_filler_sentence_tts_ghost_filter_and_timing_log()
     ]
 
     # 2. Ghost filter: drops Whisper hallucinations and <400ms audio clips
-    short_wav = wrap_pcm16_to_wav(b"\x10\x00" * 1600)  # 100 ms (< 400 ms)
+    short_wav = wrap_pcm16_to_wav(b"\x00\x08\x00\xf8" * 800)  # 100 ms AC voiced (< 400 ms)
     ghost, reason = is_stt_ghost("Hello world", audio_bytes=short_wav, min_voiced_ms=400)
     assert ghost is True
     assert "short_voiced_audio" in reason
 
-    good_wav = wrap_pcm16_to_wav(b"\x10\x00" * 8000)  # 500 ms (>= 400 ms)
+    good_wav = wrap_pcm16_to_wav(b"\x00\x08\x00\xf8" * 4000)  # 500 ms AC voiced (>= 400 ms)
     ghost_phrase, reason_p = is_stt_ghost("Thanks for watching.", audio_bytes=good_wav, min_voiced_ms=400)
     assert ghost_phrase is True
     assert "ghost_phrase" in reason_p
@@ -463,7 +463,12 @@ def test_cpp_ble_transport_and_voice_client_invariants():
 
     assert "BLEDevice::init" in ble_cpp
     assert "BLEDevice::setMTU((uint16_t)512)" in ble_cpp
-    assert "IDLE_TIMEOUT_MS    = 60000;" in voice_cpp
+    assert "IDLE_TIMEOUT_MS          = 60000;" in voice_cpp
+    assert "WRITE_STALL_TIMEOUT_MS   = 5000;" in voice_cpp
+    assert "SSE_READ_IDLE_TIMEOUT_MS = 15000;" in voice_cpp
+    assert "if (checkAbortFlag() || !c.connected() || millis() - t0 > WRITE_STALL_TIMEOUT_MS) return false;" in voice_cpp
+    assert "applyHighPass100HzSample(" in audio_cpp
+    assert "applyHighPass100HzBuffer(" in audio_cpp
     assert "turn_timing stt_ms=" in voice_cpp
     assert "setLiveAecEnabled(bool enabled" in audio_h
     assert "processLiveAecSample(" in audio_cpp
@@ -564,7 +569,7 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert "Achird" in v_data["gemini_hd_voices"]
     assert "am_michael" in v_data["kokoro_voices"]
 
-    wav = wrap_pcm16_to_wav(b"\x15\x00" * 8000)
+    wav = wrap_pcm16_to_wav(b"\x00\x08\x00\xf8" * 4000)
     resp = client.post(
         "/api/voice/interact",
         data={"node_id": "gotchi_schedar_01"},
@@ -727,4 +732,162 @@ def test_t6_4_whisper_stt_agy_subscription_brain_and_schedar_gemini_kokoro_tts()
     assert seen_sentences == ["First streamed sentence.", "Second streamed sentence."]
     assert parsed_sents == ["First streamed sentence.", "Second streamed sentence."]
     assert final_rep == "First streamed sentence. Second streamed sentence."
+
+    # 10. Verify TurnTranscriptSink logs speaker/journal turns & dispatches to turn_log_webhook_url
+    turn_log_posts: List[Dict[str, Any]] = []
+    routed_entries: List[Dict[str, Any]] = []
+    from backend.voice_gateway import TurnTranscriptSink
+
+    cfg_log = LLMConfig(
+        turn_log_webhook_url="https://discord.com/api/webhooks/999999/turnlogtoken",
+        voice_name="Schedar",
+    )
+    sink_log = TurnTranscriptSink(
+        llm_config=cfg_log,
+        webhook_poster=lambda u, p: turn_log_posts.append({"url": u, "payload": p}),
+    )
+    srv_log = VoiceGatewayService(
+        llm_config=cfg_log,
+        turn_log_sink=sink_log,
+        turn_log_router=routed_entries.append,
+    )
+    client_log = TestClient(create_app(service=srv_log))
+    resp_spk = client_log.post(
+        "/api/voice/interact",
+        data={"node_id": "gotchi-ryan-01", "audio_out_mode": "speaker", "prompt": "Check garage temp"},
+        files={"audio": ("ptt.wav", wav, "audio/wav")},
+    )
+    assert resp_spk.status_code == 200
+    assert len(turn_log_posts) == 1
+    assert turn_log_posts[0]["url"] == "https://discord.com/api/webhooks/999999/turnlogtoken"
+    assert "🎙️ **[gotchi-ryan-01]:** Check garage temp" in turn_log_posts[0]["payload"]["content"]
+    assert "🔊 **Zero (Schedar):**" in turn_log_posts[0]["payload"]["content"]
+    assert len(routed_entries) == 1
+
+    logs_resp = client_log.get("/api/voice/logs")
+    assert logs_resp.status_code == 200
+    assert logs_resp.json()["count"] == 1
+    assert logs_resp.json()["logs"][0]["transcript"] == "Check garage temp"
+
+
+def test_hpf_frame_rms_ghost_gate_node_webhook_routing_and_async_handoff_supervision():
+    """
+    Verify:
+    1. `measure_voiced_audio_ms` 1st-order 100 Hz HPF + 20 ms frame RMS gate:
+       - Rejects 800 ms of low-level room hiss (±20 LSB thermal noise).
+       - Rejects 800 ms of 20 Hz outdoor wind rumble (amplitude 1000, attenuated below 250 RMS by 100 Hz HPF).
+       - Accepts 500 ms of 400 Hz speech energy above the 250 RMS floor.
+    2. `TurnTranscriptSink` routes per-`node_id` via `node_turn_log_webhooks` so Mike's unit and Ryan's unit
+       post to separate Discord webhooks.
+    3. `async_handoff_ms` streams a spoken handoff and supervises the detached `handler_task` after `done`,
+       dispatching both normal completions and post-`done` exceptions to `TurnTranscriptSink`.
+    """
+    import math
+    import struct
+    from backend.voice_gateway import TurnTranscriptSink, measure_voiced_audio_ms
+
+    sr = 16000
+    n_800ms = int(sr * 0.8)
+
+    # 1a. Room hiss (±20 LSB) -> 0 ms voiced (rejected by 20 ms frame RMS gate)
+    hiss_pcm = struct.pack(f"<{n_800ms}h", *([20, -20] * (n_800ms // 2)))
+    hiss_wav = wrap_pcm16_to_wav(hiss_pcm, sample_rate=sr)
+    assert measure_voiced_audio_ms(hiss_wav) == 0.0
+    is_g_hiss, reason_hiss = is_stt_ghost("Hello there", audio_bytes=hiss_wav, min_voiced_ms=400)
+    assert is_g_hiss is True
+    assert "short_voiced_audio" in reason_hiss
+
+    # 1b. 20 Hz outdoor wind rumble (amplitude 1000 -> un-filtered RMS 707, post-100Hz-HPF RMS ~136 < 250)
+    wind_samples = [int(1000.0 * math.sin(2.0 * math.pi * 20.0 * (i / sr))) for i in range(n_800ms)]
+    wind_wav = wrap_pcm16_to_wav(struct.pack(f"<{n_800ms}h", *wind_samples), sample_rate=sr)
+    assert measure_voiced_audio_ms(wind_wav, apply_hpf=False) >= 700.0
+    assert measure_voiced_audio_ms(wind_wav, apply_hpf=True) == 0.0
+    is_g_wind, _ = is_stt_ghost("Hello there", audio_bytes=wind_wav, min_voiced_ms=400)
+    assert is_g_wind is True
+
+    # 1c. 400 Hz speech energy (amplitude 1200 -> post-HPF RMS ~830 >= 250)
+    n_500ms = int(sr * 0.5)
+    speech_samples = [int(1200.0 * math.sin(2.0 * math.pi * 400.0 * (i / sr))) for i in range(n_500ms)]
+    speech_wav = wrap_pcm16_to_wav(struct.pack(f"<{n_500ms}h", *speech_samples), sample_rate=sr)
+    assert measure_voiced_audio_ms(speech_wav) >= 480.0
+    is_g_speech, _ = is_stt_ghost("What time is it?", audio_bytes=speech_wav, min_voiced_ms=400)
+    assert is_g_speech is False
+
+    # 2. Per-node webhook routing (`node_turn_log_webhooks`)
+    dispatched: List[Dict[str, Any]] = []
+    cfg = LLMConfig(
+        turn_log_webhook_url="https://discord.com/api/webhooks/111111/default",
+        node_turn_log_webhooks={
+            "gotchi-ryan-01": "https://discord.com/api/webhooks/222222/ryan",
+            "gotchi-mike-01": "https://discord.com/api/webhooks/333333/mike",
+        },
+        filler_delay_ms=0,
+        second_filler_delay_ms=0,
+        async_handoff_ms=40,
+    )
+    sink = TurnTranscriptSink(
+        llm_config=cfg,
+        webhook_poster=lambda u, p: dispatched.append({"url": u, "payload": p}),
+    )
+    assert sink.resolve_webhook_url("gotchi-ryan-01") == "https://discord.com/api/webhooks/222222/ryan"
+    assert sink.resolve_webhook_url("gotchi-mike-01") == "https://discord.com/api/webhooks/333333/mike"
+    assert sink.resolve_webhook_url("gotchi-other") == "https://discord.com/api/webhooks/111111/default"
+
+    # 3a. Async handoff success supervision
+    async def slow_success_brain(turn: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.10)
+        return {"transcript": "Deep repo audit", "reply": "Audit finished cleanly.", "stt_ms": 12}
+
+    async def _run_handoff_success():
+        srv = VoiceGatewayService(llm_config=cfg, turn_log_sink=sink, turn_handler=slow_success_brain)
+        events = []
+        async for ev in srv.generate_sse_stream({
+            "node_id": "gotchi-mike-01",
+            "session_id": "sess-h1",
+            "mode": "interact",
+            "audio_out_mode": "speaker",
+            "prompt": "Deep repo audit",
+            "audio_bytes": speech_wav,
+            "image_bytes": None,
+            "burst_images": [],
+        }):
+            events.append(ev)
+        await asyncio.sleep(0.12)
+        return events
+
+    evs = asyncio.run(_run_handoff_success())
+    joined = "".join(evs)
+    assert '"async_handoff": true' in joined
+    assert len(dispatched) == 1
+    assert dispatched[0]["url"] == "https://discord.com/api/webhooks/333333/mike"
+    assert "Async Handoff" in dispatched[0]["payload"]["content"]
+    assert "Audit finished cleanly." in dispatched[0]["payload"]["content"]
+
+    # 3b. Async handoff failure supervision (exception raised after SSE `done`)
+    async def slow_failing_brain(turn: Dict[str, Any]) -> Dict[str, Any]:
+        await asyncio.sleep(0.10)
+        raise RuntimeError("Upstream provider timed out after handoff")
+
+    async def _run_handoff_failure():
+        srv = VoiceGatewayService(llm_config=cfg, turn_log_sink=sink, turn_handler=slow_failing_brain)
+        async for _ in srv.generate_sse_stream({
+            "node_id": "gotchi-ryan-01",
+            "session_id": "sess-h2",
+            "mode": "interact",
+            "audio_out_mode": "speaker",
+            "prompt": "Check upstream",
+            "audio_bytes": speech_wav,
+            "image_bytes": None,
+            "burst_images": [],
+        }):
+            pass
+        await asyncio.sleep(0.12)
+
+    asyncio.run(_run_handoff_failure())
+    assert len(dispatched) == 2
+    assert dispatched[1]["url"] == "https://discord.com/api/webhooks/222222/ryan"
+    assert "Async Handoff Failed" in dispatched[1]["payload"]["content"]
+    assert "Upstream provider timed out after handoff" in dispatched[1]["payload"]["content"]
+
+
 

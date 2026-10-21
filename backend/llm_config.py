@@ -19,7 +19,7 @@ Satisfies:
   `second_filler_delay_ms`, `min_voiced_ms`).
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -174,6 +174,8 @@ class LLMConfig:
     session_token: str = ""
     discord_voice_bot: str = "zero"
     discord_voice_webhook_url: str = ""
+    turn_log_webhook_url: str = ""
+    node_turn_log_webhooks: Dict[str, str] = field(default_factory=dict)
     voice_name: str = DEFAULT_VOICE_NAME
     tts_engine: str = "kokoro"
     tts_model: str = "gemini-3.8-flash-tts"
@@ -184,6 +186,7 @@ class LLMConfig:
     reply_cap_words: int = 0
     filler_delay_ms: int = 1200
     second_filler_delay_ms: int = 5000
+    async_handoff_ms: int = 0
     min_voiced_ms: int = 400
 
     def validate(self) -> None:
@@ -224,10 +227,21 @@ class LLMConfig:
             validate_subscription_command(self.subscription_command)
         if self.discord_voice_webhook_url.strip():
             validate_discord_webhook_url(self.discord_voice_webhook_url)
+        if self.turn_log_webhook_url.strip():
+            validate_discord_webhook_url(self.turn_log_webhook_url)
+        if not isinstance(self.node_turn_log_webhooks, dict):
+            raise ValueError("node_turn_log_webhooks must be a dict mapping node_id to webhook URL")
+        for n_id, wh_url in self.node_turn_log_webhooks.items():
+            if not str(n_id).strip():
+                raise ValueError("node_turn_log_webhooks keys must be non-empty node_id strings")
+            if str(wh_url).strip():
+                validate_discord_webhook_url(str(wh_url))
         if self.reply_cap_words < 0:
             raise ValueError("reply_cap_words must be non-negative (0 disables word cap)")
         if self.filler_delay_ms < 0 or self.second_filler_delay_ms < 0:
             raise ValueError("filler_delay_ms values must be non-negative")
+        if self.async_handoff_ms < 0:
+            raise ValueError("async_handoff_ms must be non-negative (0 disables async handoff)")
         if self.min_voiced_ms < 0:
             raise ValueError("min_voiced_ms must be non-negative")
 
@@ -244,6 +258,8 @@ class LLMConfig:
             "session_token_set": bool(self.session_token.strip()),
             "discord_voice_bot": self.discord_voice_bot,
             "discord_voice_webhook_url": self.discord_voice_webhook_url,
+            "turn_log_webhook_url": self.turn_log_webhook_url,
+            "node_turn_log_webhooks": dict(self.node_turn_log_webhooks),
             "voice_name": self.voice_name,
             "tts_engine": self.tts_engine,
             "tts_model": self.tts_model,
@@ -254,6 +270,7 @@ class LLMConfig:
             "reply_cap_words": self.reply_cap_words,
             "filler_delay_ms": self.filler_delay_ms,
             "second_filler_delay_ms": self.second_filler_delay_ms,
+            "async_handoff_ms": self.async_handoff_ms,
             "min_voiced_ms": self.min_voiced_ms,
         }
 
@@ -268,6 +285,11 @@ class LLMConfig:
                 "configure GOTCHI_LLM_SUBSCRIPTION_CMD in gateway environment or config file"
             )
 
+        raw_node_map = updates.get("node_turn_log_webhooks", self.node_turn_log_webhooks)
+        if not isinstance(raw_node_map, Mapping):
+            raise ValueError("node_turn_log_webhooks must be an object mapping node_id to webhook URL")
+        clean_node_map = {str(k).strip(): str(v).strip() for k, v in raw_node_map.items()}
+
         candidate = LLMConfig(
             auth_mode=str(updates.get("auth_mode", self.auth_mode)),
             provider=str(updates.get("provider", self.provider)),
@@ -281,6 +303,10 @@ class LLMConfig:
             discord_voice_webhook_url=str(
                 updates.get("discord_voice_webhook_url", self.discord_voice_webhook_url)
             ),
+            turn_log_webhook_url=str(
+                updates.get("turn_log_webhook_url", self.turn_log_webhook_url)
+            ),
+            node_turn_log_webhooks=clean_node_map,
             voice_name=str(updates.get("voice_name", self.voice_name)).strip(),
             tts_engine=str(updates.get("tts_engine", self.tts_engine)).strip(),
             tts_model=str(updates.get("tts_model", self.tts_model)).strip(),
@@ -293,6 +319,7 @@ class LLMConfig:
             second_filler_delay_ms=int(
                 updates.get("second_filler_delay_ms", self.second_filler_delay_ms)
             ),
+            async_handoff_ms=int(updates.get("async_handoff_ms", self.async_handoff_ms)),
             min_voiced_ms=int(updates.get("min_voiced_ms", self.min_voiced_ms)),
         )
         candidate.validate()
@@ -305,6 +332,8 @@ class LLMConfig:
         self.session_token = candidate.session_token
         self.discord_voice_bot = candidate.discord_voice_bot
         self.discord_voice_webhook_url = candidate.discord_voice_webhook_url
+        self.turn_log_webhook_url = candidate.turn_log_webhook_url
+        self.node_turn_log_webhooks = candidate.node_turn_log_webhooks
         self.voice_name = candidate.voice_name
         self.tts_engine = candidate.tts_engine
         self.tts_model = candidate.tts_model
@@ -315,6 +344,7 @@ class LLMConfig:
         self.reply_cap_words = candidate.reply_cap_words
         self.filler_delay_ms = candidate.filler_delay_ms
         self.second_filler_delay_ms = candidate.second_filler_delay_ms
+        self.async_handoff_ms = candidate.async_handoff_ms
         self.min_voiced_ms = candidate.min_voiced_ms
         return self
 
@@ -352,6 +382,14 @@ class LLMConfig:
         discord_voice_webhook_url = os.environ.get(
             "GOTCHI_DISCORD_VOICE_URL", file_data.get("discord_voice_webhook_url", "")
         )
+        turn_log_webhook_url = os.environ.get(
+            "GOTCHI_TURN_LOG_WEBHOOK_URL", file_data.get("turn_log_webhook_url", "")
+        )
+        raw_node_webhooks = os.environ.get("GOTCHI_NODE_TURN_LOG_WEBHOOKS", "")
+        if raw_node_webhooks.strip():
+            node_turn_log_webhooks = json.loads(raw_node_webhooks)
+        else:
+            node_turn_log_webhooks = dict(file_data.get("node_turn_log_webhooks") or {})
         voice_name = os.environ.get(
             "GOTCHI_VOICE_NAME", file_data.get("voice_name", DEFAULT_VOICE_NAME)
         )
@@ -380,6 +418,9 @@ class LLMConfig:
                 "GOTCHI_SECOND_FILLER_DELAY_MS", file_data.get("second_filler_delay_ms", 5000)
             )
         )
+        async_handoff_ms = int(
+            os.environ.get("GOTCHI_ASYNC_HANDOFF_MS", file_data.get("async_handoff_ms", 0))
+        )
         min_voiced_ms = int(
             os.environ.get("GOTCHI_MIN_VOICED_MS", file_data.get("min_voiced_ms", 400))
         )
@@ -395,6 +436,8 @@ class LLMConfig:
             session_token=session_token,
             discord_voice_bot=discord_voice_bot,
             discord_voice_webhook_url=discord_voice_webhook_url,
+            turn_log_webhook_url=turn_log_webhook_url,
+            node_turn_log_webhooks=node_turn_log_webhooks,
             voice_name=voice_name,
             tts_engine=tts_engine,
             tts_model=tts_model,
@@ -405,6 +448,7 @@ class LLMConfig:
             reply_cap_words=reply_cap_words,
             filler_delay_ms=filler_delay_ms,
             second_filler_delay_ms=second_filler_delay_ms,
+            async_handoff_ms=async_handoff_ms,
             min_voiced_ms=min_voiced_ms,
         )
         cfg.validate()
