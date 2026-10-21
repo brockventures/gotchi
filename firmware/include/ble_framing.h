@@ -1,14 +1,16 @@
 #pragma once
 // ============================================================================
-// GOTCHI BLE 5.0 Packet Framing Protocol (T4.1 / F18)
+// GOTCHI BLE 5.0 Packet Framing & 4-Bit IMA ADPCM Codec (T4.1 / F18)
 //   - High-throughput binary framing over BLE 5.0 2M PHY (GATT / L2CAP CoC).
 //   - Frame types:
-//       AUDIO_CHUNK (0x01): 16 kHz 16-bit mono PCM chunks.
+//       AUDIO_CHUNK (0x01): 16 kHz mono audio (4-bit IMA ADPCM GAD1 or 16-bit PCM WAV).
 //       IMAGE_FRAME (0x02): JPEG snapshot chunks (with burst frame_index 0..4).
 //       TURN_COMMIT (0x03): Marks end of user input / interaction dispatch.
 //       SSE_EVENT   (0x04): Return events from gateway (state, audio, reply).
 //       ACK         (0x05): Acknowledgment of packet / sequence receipt.
 //       CANCEL      (0x06): Interaction abort / cancellation.
+//   - 4-bit IMA ADPCM Smart Pipe compression (4:1 ratio; 64 kbps @ 16 kHz uplink,
+//     96 kbps @ 24 kHz downlink) with 12-byte `GAD1` header (`magic`, `sample_rate`, `num_samples`).
 //   - Sequence numbers, burst frame_index, & chunk indices for reliable reassembly.
 //   - CRC16-CCITT header check (14 bytes) and CRC32 payload check for link integrity.
 // ============================================================================
@@ -25,6 +27,9 @@ constexpr size_t BLE_TRAILER_SIZE = 4; // CRC32 (4 bytes)
 constexpr size_t BLE_MAX_PAYLOAD = 512 - BLE_HEADER_SIZE - BLE_TRAILER_SIZE; // 492 bytes for 512 MTU
 constexpr size_t BLE_L2CAP_MAX_PAYLOAD = 2048; // Supported for L2CAP CoC
 
+constexpr uint32_t ADPCM_MAGIC = 0x31444147; // "GAD1" in little-endian
+constexpr size_t ADPCM_HEADER_SIZE = 12;     // magic (4B) + sample_rate (4B) + num_samples (4B)
+
 enum class FrameType : uint8_t {
     AUDIO_CHUNK = 0x01,
     IMAGE_FRAME = 0x02,
@@ -40,6 +45,7 @@ enum class FrameFlags : uint8_t {
     LAST_CHUNK   = 0x02,
     SINGLE_CHUNK = 0x03, // FIRST | LAST
     REQUIRES_ACK = 0x04,
+    ADPCM        = 0x08, // 4-bit IMA ADPCM compressed audio stream (GAD1)
 };
 
 inline FrameFlags operator|(FrameFlags a, FrameFlags b) {
@@ -69,6 +75,24 @@ static_assert(sizeof(PacketHeader) == BLE_HEADER_SIZE, "PacketHeader must be exa
 // CRC calculation helpers
 uint16_t calcCrc16(const uint8_t* data, size_t length);
 uint32_t calcCrc32(const uint8_t* data, size_t length);
+
+// 4-bit IMA ADPCM Codec (4:1 audio compression over BLE)
+size_t encodeImaAdpcm(const int16_t* pcm, size_t num_samples, uint8_t* out_adpcm, size_t out_cap);
+size_t decodeImaAdpcm(const uint8_t* adpcm, size_t adpcm_len, size_t num_samples, int16_t* out_pcm, size_t out_max_samples);
+
+// Encodes a 16-bit mono RIFF WAV buffer into a 12-byte `GAD1` header + 4-bit IMA ADPCM nibbles.
+// Returns total encoded bytes written to `out_buf`, or 0 on error.
+size_t encodeWavToAdpcm(const uint8_t* wav_data, size_t wav_len, uint8_t* out_buf, size_t out_cap);
+
+// Decodes a `GAD1` container (or raw 4-bit IMA ADPCM buffer) into 16-bit signed mono PCM samples.
+// Returns number of decoded PCM samples written to `out_pcm`.
+size_t decodeAdpcmToPcm(
+    const uint8_t* adpcm_buf,
+    size_t adpcm_len,
+    int16_t* out_pcm,
+    size_t out_max_samples,
+    uint32_t* out_sample_rate = nullptr
+);
 
 struct Packet {
     PacketHeader header;

@@ -1,5 +1,5 @@
 // ============================================================================
-// GOTCHI BLE 5.0 Packet Framing Protocol (T4.1 / F18) Implementation
+// GOTCHI BLE 5.0 Packet Framing & 4-Bit IMA ADPCM Implementation (T4.1 / F18)
 // ============================================================================
 
 #include "ble_framing.h"
@@ -10,6 +10,182 @@
 #include <stdlib.h>
 
 namespace gotchi_ble {
+
+namespace {
+
+static const int8_t kImaIndexTable[16] = {
+    -1, -1, -1, -1, 2, 4, 6, 8,
+    -1, -1, -1, -1, 2, 4, 6, 8
+};
+
+static const int16_t kImaStepTable[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17,
+    19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+    130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
+    337, 371, 408, 449, 494, 544, 598, 658, 724, 796,
+    876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
+    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899,
+    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+};
+
+static inline uint8_t encodeImaSample(int16_t sample, int32_t& predictor, int32_t& step_index) {
+    int32_t step = kImaStepTable[step_index];
+    int32_t diff = static_cast<int32_t>(sample) - predictor;
+    uint8_t nibble = 0;
+    if (diff < 0) {
+        nibble = 8;
+        diff = -diff;
+    }
+    if (diff >= step) {
+        nibble |= 4;
+        diff -= step;
+    }
+    if (diff >= (step >> 1)) {
+        nibble |= 2;
+        diff -= (step >> 1);
+    }
+    if (diff >= (step >> 2)) {
+        nibble |= 1;
+    }
+
+    int32_t vpdiff = step >> 3;
+    if (nibble & 4) vpdiff += step;
+    if (nibble & 2) vpdiff += (step >> 1);
+    if (nibble & 1) vpdiff += (step >> 2);
+
+    if (nibble & 8) predictor -= vpdiff;
+    else predictor += vpdiff;
+
+    if (predictor > 32767) predictor = 32767;
+    else if (predictor < -32768) predictor = -32768;
+
+    step_index += kImaIndexTable[nibble & 0x0F];
+    if (step_index < 0) step_index = 0;
+    else if (step_index > 88) step_index = 88;
+
+    return nibble & 0x0F;
+}
+
+static inline int16_t decodeImaNibble(uint8_t nibble, int32_t& predictor, int32_t& step_index) {
+    int32_t step = kImaStepTable[step_index];
+    int32_t vpdiff = step >> 3;
+    if (nibble & 4) vpdiff += step;
+    if (nibble & 2) vpdiff += (step >> 1);
+    if (nibble & 1) vpdiff += (step >> 2);
+
+    if (nibble & 8) predictor -= vpdiff;
+    else predictor += vpdiff;
+
+    if (predictor > 32767) predictor = 32767;
+    else if (predictor < -32768) predictor = -32768;
+
+    step_index += kImaIndexTable[nibble & 0x0F];
+    if (step_index < 0) step_index = 0;
+    else if (step_index > 88) step_index = 88;
+
+    return static_cast<int16_t>(predictor);
+}
+
+} // namespace
+
+size_t encodeImaAdpcm(const int16_t* pcm, size_t num_samples, uint8_t* out_adpcm, size_t out_cap) {
+    if (!pcm || num_samples == 0 || !out_adpcm) return 0;
+    size_t needed = (num_samples + 1) / 2;
+    if (out_cap < needed) return 0;
+
+    int32_t predictor = 0;
+    int32_t step_index = 0;
+    for (size_t i = 0; i < num_samples; i += 2) {
+        uint8_t lo = encodeImaSample(pcm[i], predictor, step_index);
+        uint8_t hi = (i + 1 < num_samples) ? encodeImaSample(pcm[i + 1], predictor, step_index) : 0;
+        out_adpcm[i / 2] = static_cast<uint8_t>((lo & 0x0F) | ((hi & 0x0F) << 4));
+    }
+    return needed;
+}
+
+size_t decodeImaAdpcm(const uint8_t* adpcm, size_t adpcm_len, size_t num_samples, int16_t* out_pcm, size_t out_max_samples) {
+    if (!adpcm || adpcm_len == 0 || !out_pcm || out_max_samples == 0) return 0;
+    size_t max_possible = adpcm_len * 2;
+    size_t target = (num_samples > 0 && num_samples < max_possible) ? num_samples : max_possible;
+    if (target > out_max_samples) target = out_max_samples;
+
+    int32_t predictor = 0;
+    int32_t step_index = 0;
+    size_t written = 0;
+    for (size_t i = 0; i < adpcm_len && written < target; ++i) {
+        uint8_t b = adpcm[i];
+        out_pcm[written++] = decodeImaNibble(b & 0x0F, predictor, step_index);
+        if (written >= target) break;
+        out_pcm[written++] = decodeImaNibble((b >> 4) & 0x0F, predictor, step_index);
+    }
+    return written;
+}
+
+size_t encodeWavToAdpcm(const uint8_t* wav_data, size_t wav_len, uint8_t* out_buf, size_t out_cap) {
+    if (!wav_data || wav_len < 44 || !out_buf) return 0;
+    uint32_t sample_rate = 16000;
+    const uint8_t* pcm_ptr = wav_data;
+    size_t pcm_bytes = wav_len;
+
+    if (memcmp(wav_data, "RIFF", 4) == 0 && memcmp(wav_data + 8, "WAVE", 4) == 0) {
+        memcpy(&sample_rate, wav_data + 24, sizeof(uint32_t));
+        if (sample_rate < 4000 || sample_rate > 96000) sample_rate = 16000;
+        pcm_ptr = wav_data + 44;
+        pcm_bytes = wav_len - 44;
+    }
+
+    size_t num_samples = pcm_bytes / sizeof(int16_t);
+    size_t adpcm_bytes = (num_samples + 1) / 2;
+    if (out_cap < ADPCM_HEADER_SIZE + adpcm_bytes) return 0;
+
+    uint32_t magic = ADPCM_MAGIC;
+    uint32_t sr_u32 = sample_rate;
+    uint32_t ns_u32 = static_cast<uint32_t>(num_samples);
+    memcpy(out_buf + 0, &magic, 4);
+    memcpy(out_buf + 4, &sr_u32, 4);
+    memcpy(out_buf + 8, &ns_u32, 4);
+
+    size_t encoded = encodeImaAdpcm(
+        reinterpret_cast<const int16_t*>(pcm_ptr),
+        num_samples,
+        out_buf + ADPCM_HEADER_SIZE,
+        out_cap - ADPCM_HEADER_SIZE
+    );
+    return encoded > 0 ? (ADPCM_HEADER_SIZE + encoded) : 0;
+}
+
+size_t decodeAdpcmToPcm(
+    const uint8_t* adpcm_buf,
+    size_t adpcm_len,
+    int16_t* out_pcm,
+    size_t out_max_samples,
+    uint32_t* out_sample_rate
+) {
+    if (!adpcm_buf || adpcm_len == 0 || !out_pcm || out_max_samples == 0) return 0;
+    uint32_t sr = 24000;
+    size_t num_samples = 0;
+    const uint8_t* raw_adpcm = adpcm_buf;
+    size_t raw_len = adpcm_len;
+
+    if (adpcm_len >= ADPCM_HEADER_SIZE) {
+        uint32_t magic = 0;
+        memcpy(&magic, adpcm_buf, 4);
+        if (magic == ADPCM_MAGIC) {
+            uint32_t parsed_sr = 0;
+            uint32_t parsed_ns = 0;
+            memcpy(&parsed_sr, adpcm_buf + 4, 4);
+            memcpy(&parsed_ns, adpcm_buf + 8, 4);
+            if (parsed_sr >= 4000 && parsed_sr <= 96000) sr = parsed_sr;
+            num_samples = static_cast<size_t>(parsed_ns);
+            raw_adpcm = adpcm_buf + ADPCM_HEADER_SIZE;
+            raw_len = adpcm_len - ADPCM_HEADER_SIZE;
+        }
+    }
+    if (out_sample_rate) *out_sample_rate = sr;
+    return decodeImaAdpcm(raw_adpcm, raw_len, num_samples, out_pcm, out_max_samples);
+}
 
 // CRC16-CCITT (Polynomial 0x1021, init 0xFFFF)
 uint16_t calcCrc16(const uint8_t* data, size_t length) {

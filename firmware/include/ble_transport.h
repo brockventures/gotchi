@@ -36,7 +36,8 @@ bool sendFramedPayload(
     const uint8_t* payload,
     size_t payload_len,
     uint8_t frame_index = 0,
-    bool requires_ack = false
+    bool requires_ack = false,
+    FrameFlags extra_flags = FrameFlags::NONE
 );
 
 // Feeds a raw packet written to CHAR_RX into the transport reassembler.

@@ -12,6 +12,8 @@ Covers:
 import pathlib
 import pytest
 from backend.ble_framing import (
+    ADPCM_HEADER_SIZE,
+    ADPCM_MAGIC,
     BLE_HEADER_SIZE,
     BLE_MAGIC,
     BLE_TRAILER_SIZE,
@@ -21,6 +23,10 @@ from backend.ble_framing import (
     FrameType,
     calc_crc16,
     calc_crc32,
+    decode_adpcm_to_wav,
+    decode_ima_adpcm,
+    encode_ima_adpcm,
+    encode_wav_to_adpcm,
     fragment_payload,
 )
 
@@ -58,6 +64,14 @@ def test_firmware_ble_framing_source_invariants():
 
     # Burst frame_index consistency check
     assert "hdr.frame_index != current_frame_index_" in cpp_src
+
+    # 4-bit IMA ADPCM Smart Pipe support in C++ firmware
+    assert "ADPCM        = 0x08" in h_src
+    assert "ADPCM_MAGIC = 0x31444147" in h_src
+    assert "encodeWavToAdpcm" in h_src
+    assert "decodeAdpcmToPcm" in h_src
+    assert "encodeImaAdpcm" in cpp_src
+    assert "decodeImaAdpcm" in cpp_src
 
 
 def test_crc16_and_crc32_vectors():
@@ -194,3 +208,41 @@ def test_reassembler_detects_seq_num_and_chunk_discontinuities():
     reassembler2.push(pkt1)
     with pytest.raises(ValueError, match="sequence number discontinuity"):
         reassembler2.push(pkt3)
+
+
+def test_ima_adpcm_4x_compression_and_wav_roundtrip():
+    """Verify 4-bit IMA ADPCM achieves 4:1 audio compression and preserves waveform fidelity."""
+    import math
+    import struct
+
+    sample_rate = 16000
+    num_samples = 1600  # 100 ms @ 16 kHz = 3,200 bytes PCM16
+    orig_samples = [
+        int(12000.0 * math.sin(2.0 * math.pi * 440.0 * (i / sample_rate)))
+        for i in range(num_samples)
+    ]
+    pcm_bytes = struct.pack(f"<{num_samples}h", *orig_samples)
+
+    adpcm_bytes = encode_ima_adpcm(pcm_bytes)
+    assert len(adpcm_bytes) == num_samples // 2  # 800 bytes (exact 4:1 reduction vs 3,200 bytes)
+
+    decoded_pcm = decode_ima_adpcm(adpcm_bytes, num_samples=num_samples)
+    assert len(decoded_pcm) == len(pcm_bytes)
+    decoded_samples = struct.unpack(f"<{num_samples}h", decoded_pcm)
+
+    # Verify low reconstruction error after initial step adaptation
+    mse = sum((a - b) ** 2 for a, b in zip(orig_samples[32:], decoded_samples[32:])) / (num_samples - 32)
+    rmse = math.sqrt(mse)
+    assert rmse < 650.0
+
+    # Verify GAD1 container roundtrip to standard 44-byte RIFF WAV
+    gad1_blob = encode_wav_to_adpcm(pcm_bytes, default_sample_rate=sample_rate)
+    assert gad1_blob[:4] == ADPCM_MAGIC
+    assert len(gad1_blob) == ADPCM_HEADER_SIZE + len(adpcm_bytes)
+
+    wav_out = decode_adpcm_to_wav(gad1_blob)
+    assert wav_out[:4] == b"RIFF"
+    assert wav_out[8:12] == b"WAVE"
+    assert len(wav_out) == 44 + len(pcm_bytes)
+    assert wav_out[44:] == decoded_pcm
+

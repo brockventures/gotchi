@@ -89,6 +89,9 @@ bool playPcmChunk(const int16_t* samples, size_t sample_count, uint32_t sample_r
 // Play base64-encoded PCM chunk directly from Mirrormere `sentence` / `audio_chunk` SSE event
 bool playBase64PcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate = 24000);
 
+// Play base64-encoded 4-bit IMA ADPCM (`GAD1` or raw nibbles) chunk transcoded by GotchiBleRelayService
+bool playBase64AdpcmChunk(const char* b64_data, size_t b64_len, uint32_t sample_rate = 24000);
+
 // Play short synthesized Tamagotchi UI chime ("ptt_start", "ptt_stop", "ready", "error")
 void playChime(const char* kind);
 

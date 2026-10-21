@@ -277,15 +277,21 @@ bool handleEvent(const char* event, const char* line, const JsonDocument& filter
         }
         if (s_first_audio_ms < 0) s_first_audio_ms = (int32_t)(millis() - s_turn_start_ms);
         uint32_t rate = doc["sample_rate"] | DEFAULT_RATE_HZ;
+        const char* fmt = doc["format"] | "pcm";
+        const bool is_adpcm = (strcmp(fmt, "adpcm") == 0);
         size_t pad = (b64[b64_len - 1] == '=') + (b64[b64_len >= 2 ? b64_len - 2 : 0] == '=');
-        ui.audio_bytes_received += (uint32_t)((b64_len / 4) * 3 - pad);
+        size_t raw_decoded_bytes = (b64_len / 4) * 3 - pad;
+        ui.audio_bytes_received += (uint32_t)(is_adpcm ? (raw_decoded_bytes * 4) : raw_decoded_bytes);
         ui.last_sample_rate = rate;
         if (ui.state != UiState::SPEAKING) {
             ui.state = UiState::SPEAKING;
             if (cb) cb(ui);
         }
         if (!mute_local_speaker) {
-            if (!gotchi_audio::playBase64PcmChunk(b64, b64_len, rate) && checkAbortFlag()) {
+            bool played = is_adpcm
+                ? gotchi_audio::playBase64AdpcmChunk(b64, b64_len, rate)
+                : gotchi_audio::playBase64PcmChunk(b64, b64_len, rate);
+            if (!played && checkAbortFlag()) {
                 return true;
             }
         } else {
@@ -315,6 +321,7 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb, bool mut
     filter["status"] = true;
     filter["reply"] = true;
     filter["sample_rate"] = true;
+    filter["format"] = true;
     filter["error"] = true;
     filter["message"] = true;
 
@@ -351,6 +358,29 @@ bool streamEvents(Reader& rd, char* buf, GotchiUIState& ui, StateCb cb, bool mut
     }
 }
 
+static bool sendBleAudioCompressedOrRaw(const gotchi_audio::WavView& wav) {
+    if (!wav.data || wav.length == 0) return true;
+    size_t adpcm_cap = gotchi_ble::ADPCM_HEADER_SIZE + (wav.length / 4) + 16;
+    uint8_t* adpcm_buf = (uint8_t*)(psramFound() ? ps_malloc(adpcm_cap) : malloc(adpcm_cap));
+    if (adpcm_buf) {
+        size_t adpcm_len = gotchi_ble::encodeWavToAdpcm(wav.data, wav.length, adpcm_buf, adpcm_cap);
+        if (adpcm_len > 0) {
+            bool ok = gotchi_ble::sendFramedPayload(
+                gotchi_ble::FrameType::AUDIO_CHUNK,
+                adpcm_buf,
+                adpcm_len,
+                0,
+                false,
+                gotchi_ble::FrameFlags::ADPCM
+            );
+            free(adpcm_buf);
+            return ok;
+        }
+        free(adpcm_buf);
+    }
+    return gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::AUDIO_CHUNK, wav.data, wav.length, 0);
+}
+
 bool interactOverBle(const gotchi_audio::WavView& wav, const String& url, const String& node_id,
                      GotchiUIState& ui, StateCb cb, const ImageAttachment* image,
                      InteractResult* out_result, const String& audio_out_mode) {
@@ -361,7 +391,7 @@ bool interactOverBle(const gotchi_audio::WavView& wav, const String& url, const 
     gotchi_ble::clearIncomingQueue();
 
     if (has_audio) {
-        if (!gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::AUDIO_CHUNK, wav.data, wav.length, 0)) {
+        if (!sendBleAudioCompressedOrRaw(wav)) {
             setFailure(ui, UiState::ERROR, "ble_tx", "BLE TX FAIL", cb);
             return false;
         }
@@ -425,6 +455,7 @@ bool interactOverBle(const gotchi_audio::WavView& wav, const String& url, const 
     filter["status"] = true;
     filter["reply"] = true;
     filter["sample_rate"] = true;
+    filter["format"] = true;
     filter["error"] = true;
     filter["message"] = true;
     filter["event"] = true;
@@ -736,7 +767,7 @@ bool uploadJournalSegment(const gotchi_audio::WavView& wav, const String& url,
 
     // Priority 1: BLE companion link (allows Wi-Fi radio to stay powered off all day)
     if (gotchi_ble::isBlePeerConnected()) {
-        if (!gotchi_ble::sendFramedPayload(gotchi_ble::FrameType::AUDIO_CHUNK, wav.data, wav.length, 0)) {
+        if (!sendBleAudioCompressedOrRaw(wav)) {
             gotchi_log::RingLogger.warn("journal", "BLE journal AUDIO_CHUNK send failed");
             return false;
         }
