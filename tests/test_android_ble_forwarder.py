@@ -181,7 +181,9 @@ def test_gotchi_ble_relay_service_capabilities():
     assert "enum class PostOutcome" in service_src
     assert "PERMANENT_FAILURE" in service_src
     assert "responseStarted = true" in service_src
-    assert "if (!isReplay && !responseStarted)" in service_src
+    assert "if (responseStarted)" in service_src
+    assert "e is IllegalArgumentException" in service_src
+    assert "catch (e: JSONException)" in service_src
     assert "encodePcmToGad1WithState" in codec_src
     assert "downlinkAdpcmPredictor" in service_src
     assert "downlinkAdpcmStepIndex" in service_src

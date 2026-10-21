@@ -48,6 +48,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
@@ -449,7 +450,7 @@ class GotchiBleRelayService : Service() {
             ?: return@withLock
 
         for (file in queuedFiles) {
-            val outcome = runCatching {
+            val outcome = try {
                 val obj = JSONObject(file.readText(Charsets.UTF_8))
                 val wavB64 = obj.optString("wav_b64", "")
                 val wavBytes = if (wavB64.isNotEmpty()) Base64.decode(wavB64, Base64.DEFAULT) else ByteArray(0)
@@ -471,7 +472,13 @@ class GotchiBleRelayService : Service() {
                     locationMeta = locationMeta,
                     isReplay = true
                 )
-            }.getOrDefault(PostOutcome.PERMANENT_FAILURE)
+            } catch (e: JSONException) {
+                PostOutcome.PERMANENT_FAILURE
+            } catch (e: IllegalArgumentException) {
+                PostOutcome.PERMANENT_FAILURE
+            } catch (e: Exception) {
+                PostOutcome.RETRYABLE_FAILURE
+            }
 
             when (outcome) {
                 PostOutcome.DELIVERED,
@@ -651,17 +658,22 @@ class GotchiBleRelayService : Service() {
                 PostOutcome.DELIVERED
             }
         } catch (e: IOException) {
-            if (!isReplay && !responseStarted) {
+            if (responseStarted) {
+                // Once HTTP 200 is received, the gateway has already accepted and started executing
+                // the turn (both live and replay). Treat mid-stream SSE drops as DELIVERED so
+                // neither live turns nor replayed spool items are executed a second time.
+                if (!isReplay) {
+                    val errPayload = JSONObject()
+                        .put("event", "error")
+                        .put("detail", "stream_interrupted")
+                        .toString()
+                    sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
+                }
+                PostOutcome.DELIVERED
+            } else if (!isReplay) {
                 spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
                 emitOfflineQueuedToBle()
                 PostOutcome.RETRYABLE_FAILURE
-            } else if (!isReplay && responseStarted) {
-                val errPayload = JSONObject()
-                    .put("event", "error")
-                    .put("detail", "stream_interrupted")
-                    .toString()
-                sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
-                PostOutcome.DELIVERED
             } else {
                 PostOutcome.RETRYABLE_FAILURE
             }
@@ -673,7 +685,13 @@ class GotchiBleRelayService : Service() {
                     .toString()
                 sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
             }
-            PostOutcome.PERMANENT_FAILURE
+            if (responseStarted) {
+                PostOutcome.DELIVERED
+            } else if (e is IllegalArgumentException) {
+                PostOutcome.PERMANENT_FAILURE
+            } else {
+                PostOutcome.RETRYABLE_FAILURE
+            }
         }
     }
 
