@@ -39,6 +39,27 @@ static size_t   s_preroll_head    = 0;
 static bool     s_preroll_full    = false;
 static bool     s_preroll_enabled = true;
 
+// 1st-order single-pole 100 Hz high-pass filter state at 16 kHz (y[n] = x[n] - x[n-1] + 0.96 * y[n-1])
+static float    s_hpf_prev_x      = 0.0f;
+static float    s_hpf_prev_y      = 0.0f;
+
+static inline int16_t applyHighPass100HzSample(int16_t sample) {
+    float x = static_cast<float>(sample);
+    float y = (x - s_hpf_prev_x) + 0.96f * s_hpf_prev_y;
+    s_hpf_prev_x = x;
+    s_hpf_prev_y = y;
+    if (y > 32767.0f) y = 32767.0f;
+    if (y < -32768.0f) y = -32768.0f;
+    return static_cast<int16_t>(y);
+}
+
+static void applyHighPass100HzBuffer(int16_t* samples, size_t count) {
+    if (!samples) return;
+    for (size_t i = 0; i < count; ++i) {
+        samples[i] = applyHighPass100HzSample(samples[i]);
+    }
+}
+
 static uint8_t*        s_wav_buf      = nullptr;
 static volatile size_t s_rec_samples  = 0;
 static size_t          s_max_samples  = MAX_REC_SAMPLES;
@@ -226,7 +247,7 @@ void pumpPreroll() {
     if (i2s_read(PORT_PDM_RX, chunk, sizeof(chunk), &bytes_read, 0) == ESP_OK && bytes_read > 0) {
         size_t n = bytes_read / sizeof(int16_t);
         for (size_t i = 0; i < n; ++i) {
-            s_preroll_ring[s_preroll_head] = chunk[i];
+            s_preroll_ring[s_preroll_head] = applyHighPass100HzSample(chunk[i]);
             s_preroll_head = (s_preroll_head + 1) % PREROLL_SAMPLES;
             if (s_preroll_head == 0) s_preroll_full = true;
         }
@@ -243,6 +264,7 @@ size_t readLivePcmChunk(int16_t* dst, size_t max_samples, float* out_rms) {
     size_t n = bytes_read / sizeof(int16_t);
     double sum_sq = 0.0;
     for (size_t i = 0; i < n; ++i) {
+        dst[i] = applyHighPass100HzSample(dst[i]);
         if (s_live_aec_enabled) {
             dst[i] = processLiveAecSample(dst[i], popAecReferenceSample());
         }
@@ -272,6 +294,8 @@ bool beginPttRecording() {
             s_rec_samples = s_preroll_head;
         }
     } else {
+        s_hpf_prev_x = 0.0f;
+        s_hpf_prev_y = 0.0f;
         flushRxDmaBuffer();
     }
     return true;
@@ -284,7 +308,9 @@ size_t pollPttRecording() {
     size_t to_read = room_bytes < 1024 ? room_bytes : 1024;
     size_t bytes_read = 0;
     if (i2s_read(PORT_PDM_RX, dst + s_rec_samples, to_read, &bytes_read, pdMS_TO_TICKS(10)) == ESP_OK) {
-        s_rec_samples += bytes_read / sizeof(int16_t);
+        size_t got_samples = bytes_read / sizeof(int16_t);
+        applyHighPass100HzBuffer(dst + s_rec_samples, got_samples);
+        s_rec_samples += got_samples;
     }
     return s_rec_samples;
 }

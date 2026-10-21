@@ -17,12 +17,14 @@
 namespace gotchi_voice {
 namespace {
 
-constexpr const char* BOUNDARY           = "----GotchiBoundary7MA4YWxkTrZu0gW";
-constexpr size_t      SSE_BUF_BYTES      = 256 * 1024;
-constexpr uint32_t    CONNECT_TIMEOUT_MS = 5000;
-constexpr uint32_t    IDLE_TIMEOUT_MS    = 60000;
-constexpr size_t      UPLOAD_CHUNK       = 1460;
-constexpr uint32_t    DEFAULT_RATE_HZ    = 24000;
+constexpr const char* BOUNDARY                 = "----GotchiBoundary7MA4YWxkTrZu0gW";
+constexpr size_t      SSE_BUF_BYTES            = 256 * 1024;
+constexpr uint32_t    CONNECT_TIMEOUT_MS       = 5000;
+constexpr uint32_t    WRITE_STALL_TIMEOUT_MS   = 5000;
+constexpr uint32_t    SSE_READ_IDLE_TIMEOUT_MS = 15000;
+constexpr uint32_t    IDLE_TIMEOUT_MS          = 60000;
+constexpr size_t      UPLOAD_CHUNK             = 1460;
+constexpr uint32_t    DEFAULT_RATE_HZ          = 24000;
 
 static AbortPollFn    s_active_abort_poll = nullptr;
 static InteractResult s_active_abort_kind = InteractResult::DONE;
@@ -121,7 +123,7 @@ private:
                 return true;
             }
             if (!c_.connected()) return false;
-            if (millis() - t0 > IDLE_TIMEOUT_MS) return false;
+            if (millis() - t0 > SSE_READ_IDLE_TIMEOUT_MS) return false;
             delay(1);
         }
     }
@@ -163,14 +165,15 @@ bool parseUrl(const String& url, String& host, uint16_t& port, String& path, boo
     return host.length() > 0 && port > 0;
 }
 
-// Blocking write of n bytes; gives up if the peer goes away or stalls for IDLE_TIMEOUT_MS.
+// Blocking write of n bytes; gives up if user aborts, peer disconnects, or stalls for WRITE_STALL_TIMEOUT_MS.
 bool writeAll(WiFiClient& c, const uint8_t* p, size_t n) {
     size_t sent = 0;
     uint32_t t0 = millis();
     while (sent < n) {
+        if (checkAbortFlag()) return false;
         size_t w = c.write(p + sent, n - sent);
         if (w == 0) {
-            if (!c.connected() || millis() - t0 > IDLE_TIMEOUT_MS) return false;
+            if (checkAbortFlag() || !c.connected() || millis() - t0 > WRITE_STALL_TIMEOUT_MS) return false;
             delay(1);
             continue;
         }
@@ -612,6 +615,13 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     if (is_tls) tls_client.setCACert(GOTCHI_TLS_ROOT_CA_PEM);
     WiFiClient& client = is_tls ? static_cast<WiFiClient&>(tls_client) : plain_client;
     if (!client.connect(host.c_str(), port, CONNECT_TIMEOUT_MS)) {
+        if (s_active_abort_kind != InteractResult::DONE) {
+            if (out_result) *out_result = s_active_abort_kind;
+            return true;
+        }
+        if (gotchi_ble::isBlePeerConnected()) {
+            return interactOverBle(wav, url, node_id, ui, cb, image, out_result, audio_out_mode);
+        }
         setFailure(ui, UiState::OFFLINE, "connect", "NO HUB", cb);
         return false;
     }
@@ -644,6 +654,13 @@ bool interact(const gotchi_audio::WavView& wav, const String& url, const String&
     sent = sent && writeAll(client, (const uint8_t*)post.c_str(), post.length());
     if (!sent) {
         client.stop();
+        if (s_active_abort_kind != InteractResult::DONE) {
+            if (out_result) *out_result = s_active_abort_kind;
+            return true;
+        }
+        if (gotchi_ble::isBlePeerConnected()) {
+            return interactOverBle(wav, url, node_id, ui, cb, image, out_result, audio_out_mode);
+        }
         setFailure(ui, UiState::ERROR, "send", "UPLOAD FAILED", cb);
         return false;
     }

@@ -30,6 +30,7 @@ import inspect
 import io
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -89,14 +90,45 @@ def normalize_transcript_for_ghost_check(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned)
 
 
+def apply_highpass_100hz_pcm16(pcm_bytes: bytes, alpha: float = 0.96) -> List[int]:
+    """
+    Applies a 1st-order single-pole 100 Hz high-pass filter (`y[n] = x[n] - x[n-1] + alpha * y[n-1]`
+    at 16 kHz) to 16-bit signed little-endian PCM samples, stripping DC offset and sub-100 Hz
+    outdoor wind buffeting before voice-activity energy scoring.
+    """
+    num_samples = len(pcm_bytes) // 2
+    if num_samples <= 0:
+        return []
+    unpack_len = num_samples * 2
+    out: List[int] = []
+    prev_x = 0.0
+    prev_y = 0.0
+    for (sample,) in struct.iter_unpack("<h", pcm_bytes[:unpack_len]):
+        x = float(sample)
+        y = (x - prev_x) + alpha * prev_y
+        prev_x = x
+        prev_y = y
+        if y > 32767.0:
+            y = 32767.0
+        elif y < -32768.0:
+            y = -32768.0
+        out.append(int(y))
+    return out
+
+
 def measure_voiced_audio_ms(
     wav_bytes: bytes,
     default_sample_rate: int = 16000,
-    sample_threshold: int = 1,
+    frame_ms: int = 20,
+    rms_threshold: float = 250.0,
+    apply_hpf: bool = True,
 ) -> float:
     """
-    Measures voiced audio duration in milliseconds from a 16-bit mono PCM WAV buffer.
-    Parses the RIFF/WAVE header if present (44+ bytes); otherwise treats raw bytes as 16 kHz PCM16.
+    Measures voiced audio duration in milliseconds from a 16-bit mono PCM WAV buffer using:
+    1. A 1st-order 100 Hz high-pass filter (`apply_highpass_100hz_pcm16`) to strip DC offset
+       and sub-100 Hz outdoor wind rumble.
+    2. 20 ms frame RMS energy gating (`frame_rms >= rms_threshold`, default 250.0 ~ -42 dBFS)
+       so low-amplitude room hiss and quantization noise are rejected rather than counted as speech.
     """
     if not wav_bytes:
         return 0.0
@@ -110,18 +142,31 @@ def measure_voiced_audio_ms(
                 sample_rate = parsed_sr
         except struct.error:
             pass
-        pcm_payload = wav_bytes[44:]
+        pcm_payload = extract_pcm_from_wav_or_raw(wav_bytes)
 
     num_samples = len(pcm_payload) // 2
     if num_samples <= 0:
         return 0.0
 
-    # Unpack 16-bit signed little-endian samples and count voiced samples
+    if apply_hpf:
+        samples = apply_highpass_100hz_pcm16(pcm_payload)
+    else:
+        unpack_len = num_samples * 2
+        samples = [s for (s,) in struct.iter_unpack("<h", pcm_payload[:unpack_len])]
+
+    frame_samples = max(1, int((sample_rate * max(1, frame_ms)) / 1000))
     voiced_samples = 0
-    unpack_len = num_samples * 2
-    for (sample,) in struct.iter_unpack("<h", pcm_payload[:unpack_len]):
-        if abs(sample) >= sample_threshold:
-            voiced_samples += 1
+    total = len(samples)
+    for start in range(0, total, frame_samples):
+        frame = samples[start : start + frame_samples]
+        if not frame:
+            break
+        sum_sq = 0.0
+        for s in frame:
+            sum_sq += float(s) * float(s)
+        frame_rms = math.sqrt(sum_sq / len(frame))
+        if frame_rms >= rms_threshold:
+            voiced_samples += len(frame)
 
     return (voiced_samples / float(sample_rate)) * 1000.0
 
@@ -556,6 +601,10 @@ class SubscriptionBrainAdapter:
         }
         if parsed_turn.get("image_bytes"):
             payload["image_b64"] = base64.b64encode(parsed_turn["image_bytes"]).decode("ascii")
+        if parsed_turn.get("burst_images"):
+            payload["burst_images_b64"] = [
+                base64.b64encode(img).decode("ascii") for img in parsed_turn["burst_images"]
+            ]
 
         cmd = self.llm_config.subscription_command.strip()
         if cmd:
@@ -735,6 +784,82 @@ class DiscordVoiceSink:
         return event
 
 
+class TurnTranscriptSink:
+    """
+    Protocol-level turn transcript recorder & standalone Discord channel webhook dispatcher.
+    Records every completed GOTCHI interaction (`speaker`, `discord_voice`, `ble_phone`, or `journal`)
+    and optionally POSTs a structured turn summary to `turn_log_webhook_url` in `loop.run_in_executor`
+    without blocking the real-time SSE audio stream.
+    """
+
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        webhook_poster: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
+    ):
+        self.llm_config = llm_config or LLMConfig.from_env_or_file()
+        self.webhook_poster = webhook_poster or _default_webhook_poster
+        self.logged_turns: List[Dict[str, Any]] = []
+
+    def resolve_webhook_url(self, node_id: str) -> str:
+        """Resolves a per-node Discord webhook URL first (`node_turn_log_webhooks`), falling back to `turn_log_webhook_url`."""
+        node_map = getattr(self.llm_config, "node_turn_log_webhooks", None) or {}
+        mapped = str(node_map.get(node_id, "")).strip()
+        if mapped:
+            return mapped
+        return self.llm_config.turn_log_webhook_url.strip()
+
+    def format_discord_content(self, entry: Mapping[str, Any]) -> str:
+        node_id = entry.get("node_id", "gotchi-device")
+        mode = entry.get("mode", "interact")
+        transcript = entry.get("transcript", "")
+        reply = entry.get("reply", "")
+        voice_name = entry.get("voice_name", DEFAULT_VOICE_NAME)
+        stt_ms = entry.get("stt_ms", 0)
+        first_audio_ms = entry.get("first_audio_ms", 0)
+        total_ms = entry.get("total_ms", 0)
+        img_tag = ""
+        if entry.get("burst_count", 0):
+            img_tag = f" 📸 *({entry['burst_count']}-frame burst)*"
+        elif entry.get("has_image"):
+            img_tag = " 📸 *(camera snapshot)*"
+        if mode == "journal":
+            return f"📓 **[{node_id} · Journal]{img_tag}:** {transcript}"
+        if mode == "error":
+            err_msg = entry.get("error", reply or "Background task failed")
+            return (
+                f"⚠️ **[{node_id} · Async Handoff Failed]{img_tag}:** {transcript}\n"
+                f"**Error:** {err_msg}"
+            )
+        if mode == "async_handoff":
+            return (
+                f"🎙️ **[{node_id} · Async Handoff]{img_tag}:** {transcript}\n"
+                f"🔊 **Zero ({voice_name}):** {reply}\n"
+                f"-# stt: {stt_ms}ms · total: {total_ms}ms"
+            )
+        return (
+            f"🎙️ **[{node_id}]{img_tag}:** {transcript}\n"
+            f"🔊 **Zero ({voice_name}):** {reply}\n"
+            f"-# stt: {stt_ms}ms · first_audio: {first_audio_ms}ms · total: {total_ms}ms"
+        )
+
+    async def adispatch(self, entry: Dict[str, Any]) -> Dict[str, Any]:
+        record = dict(entry)
+        node_id = str(record.get("node_id") or "gotchi-device")
+        url = self.resolve_webhook_url(node_id)
+        record["webhook_url"] = url
+        record["content"] = self.format_discord_content(record)
+        self.logged_turns.append(record)
+        if url:
+            validate_discord_webhook_url(url)
+            if inspect.iscoroutinefunction(self.webhook_poster):
+                await self.webhook_poster(url, record)
+            else:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.webhook_poster, url, record)
+        return record
+
+
 class VoiceGatewayService:
     """Core domain logic for parsing GOTCHI multipart turns and generating SSE events."""
 
@@ -751,8 +876,10 @@ class VoiceGatewayService:
         turn_handler: Optional[Callable[[Dict[str, Any]], Any]] = None,
         tts_synthesizer: Optional[Callable[[str, int], bytes]] = None,
         audio_sink_router: Optional[Callable[[str, str, bytes, int, str], None]] = None,
+        turn_log_router: Optional[Callable[[Dict[str, Any]], Any]] = None,
         llm_config: Optional[LLMConfig] = None,
         discord_sink: Optional[DiscordVoiceSink] = None,
+        turn_log_sink: Optional[TurnTranscriptSink] = None,
         stt_adapter: Optional[WhisperSTTAdapter] = None,
         gemini_tts: Optional[GeminiTTSAdapter] = None,
         kokoro_tts: Optional[KokoroTTSAdapter] = None,
@@ -772,6 +899,7 @@ class VoiceGatewayService:
         self.tts_synthesizer = tts_synthesizer
         self.llm_config = llm_config or LLMConfig.from_env_or_file()
         self.discord_sink = discord_sink or DiscordVoiceSink(llm_config=self.llm_config)
+        self.turn_log_sink = turn_log_sink or TurnTranscriptSink(llm_config=self.llm_config)
         self.stt_adapter = stt_adapter or WhisperSTTAdapter(llm_config=self.llm_config)
         self.gemini_tts = gemini_tts or GeminiTTSAdapter(llm_config=self.llm_config)
         self.kokoro_tts = kokoro_tts or KokoroTTSAdapter(llm_config=self.llm_config)
@@ -780,11 +908,14 @@ class VoiceGatewayService:
             stt_adapter=self.stt_adapter,
         )
         self.audio_sink_router = audio_sink_router
+        self.turn_log_router = turn_log_router
         self.routed_audio_events: List[Dict[str, Any]] = []
         self.turn_timings: List[Dict[str, Any]] = []
+        self.turn_logs: List[Dict[str, Any]] = []
         self.interactions_count = 0
         self.tts_fallback_cooldown_s: float = 600.0
         self._gemini_tts_backoff_until: float = 0.0
+        self._filler_pcm_cache: Dict[Tuple[str, str, str, int], bytes] = {}
 
     def verify_admin_auth(self, headers: Mapping[str, str]) -> Tuple[bool, int, Dict[str, Any]]:
         """
@@ -834,26 +965,42 @@ class VoiceGatewayService:
 
         return True, 200, {"ok": True}
 
-    def _synthesize_sentence_pcm(self, sentence_text: str) -> bytes:
+    def _synthesize_sentence_pcm(self, sentence_text: str, is_filler: bool = False) -> bytes:
         if self.tts_synthesizer is not None:
             return self.tts_synthesizer(sentence_text, self.mock_sample_rate)
+        cache_key = (
+            sentence_text,
+            self.llm_config.tts_engine,
+            self.llm_config.voice_name,
+            self.mock_sample_rate,
+        )
+        if is_filler and cache_key in self._filler_pcm_cache:
+            return self._filler_pcm_cache[cache_key]
+
+        pcm: Optional[bytes] = None
         if self.llm_config.tts_engine == "gemini":
             now = time.monotonic()
             if now < self._gemini_tts_backoff_until:
-                return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
-            try:
-                return self.gemini_tts.synthesize(sentence_text, self.mock_sample_rate)
-            except Exception as exc:
-                logger.warning(
-                    "Gemini TTS failed (%s); falling back to local Kokoro TTS for %.0fs",
-                    exc,
-                    self.tts_fallback_cooldown_s,
-                )
-                self._gemini_tts_backoff_until = now + self.tts_fallback_cooldown_s
-                return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
-        if self.llm_config.tts_engine == "kokoro":
-            return self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
-        return generate_synthetic_pcm(duration_s=0.25, sample_rate=self.mock_sample_rate)
+                pcm = self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
+            else:
+                try:
+                    pcm = self.gemini_tts.synthesize(sentence_text, self.mock_sample_rate)
+                except Exception as exc:
+                    logger.warning(
+                        "Gemini TTS failed (%s); falling back to local Kokoro TTS for %.0fs",
+                        exc,
+                        self.tts_fallback_cooldown_s,
+                    )
+                    self._gemini_tts_backoff_until = now + self.tts_fallback_cooldown_s
+                    pcm = self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
+        elif self.llm_config.tts_engine == "kokoro":
+            pcm = self.kokoro_tts.synthesize(sentence_text, self.mock_sample_rate)
+        else:
+            pcm = generate_synthetic_pcm(duration_s=0.25, sample_rate=self.mock_sample_rate)
+
+        if is_filler and pcm:
+            self._filler_pcm_cache[cache_key] = pcm
+        return pcm
 
     def parse_multipart_data(
         self,
@@ -1040,6 +1187,7 @@ class VoiceGatewayService:
             first_audio_ms = None
             filler_1_s = self.llm_config.filler_delay_ms / 1000.0
             filler_2_s = self.llm_config.second_filler_delay_ms / 1000.0
+            handoff_s = self.llm_config.async_handoff_ms / 1000.0
 
             while not handler_task.done():
                 elapsed_s = time.monotonic() - brain_start
@@ -1049,7 +1197,7 @@ class VoiceGatewayService:
                     and elapsed_s >= filler_1_s
                 ):
                     filler_1_sent = True
-                    filler_pcm = self._synthesize_sentence_pcm("One moment.")
+                    filler_pcm = self._synthesize_sentence_pcm("One moment.", is_filler=True)
                     if first_audio_ms is None:
                         first_audio_ms = int((time.monotonic() - t_start) * 1000)
                     yield build_sse_event(
@@ -1072,7 +1220,7 @@ class VoiceGatewayService:
                     and elapsed_s >= filler_2_s
                 ):
                     filler_2_sent = True
-                    filler_pcm_2 = self._synthesize_sentence_pcm("Still working on that.")
+                    filler_pcm_2 = self._synthesize_sentence_pcm("Still working on that.", is_filler=True)
                     yield build_sse_event(
                         "sentence",
                         {
@@ -1087,6 +1235,95 @@ class VoiceGatewayService:
                             "audio_b64": base64.b64encode(filler_pcm_2).decode("ascii"),
                         },
                     )
+                if (
+                    self.llm_config.async_handoff_ms > 0
+                    and elapsed_s >= handoff_s
+                ):
+                    handoff_text = "Still pulling those details. I will drop the full breakdown in Discord."
+                    handoff_pcm = self._synthesize_sentence_pcm(handoff_text, is_filler=True)
+                    if first_audio_ms is None:
+                        first_audio_ms = int((time.monotonic() - t_start) * 1000)
+                    yield build_sse_event("state", {"state": "speaking"})
+                    yield build_sse_event(
+                        "sentence",
+                        {
+                            "text": handoff_text,
+                            "filler": True,
+                            "async_handoff": True,
+                            "engine": self.llm_config.tts_engine or "kokoro",
+                            "format": "pcm",
+                            "sample_rate": self.mock_sample_rate,
+                            "channels": 1,
+                            "is_final": True,
+                            "audio_out_mode": audio_out_mode,
+                            "audio_b64": base64.b64encode(handoff_pcm).decode("ascii"),
+                        },
+                    )
+                    handoff_ms = int((time.monotonic() - t_start) * 1000)
+                    yield build_sse_event(
+                        "done",
+                        {
+                            "duration_ms": handoff_ms,
+                            "async_handoff": True,
+                            "first_audio_ms": first_audio_ms,
+                            "total_ms": handoff_ms,
+                        },
+                    )
+
+                    async def _supervise_detached_turn() -> None:
+                        try:
+                            bg_res = await handler_task
+                            bg_total_ms = int((time.monotonic() - t_start) * 1000)
+                            bg_entry = {
+                                "node_id": node_id,
+                                "session_id": session_id,
+                                "mode": "async_handoff",
+                                "audio_out_mode": audio_out_mode,
+                                "transcript": bg_res.get("transcript", parsed_turn.get("prompt") or ""),
+                                "reply": bg_res.get("reply", ""),
+                                "voice_name": self.llm_config.voice_name or DEFAULT_VOICE_NAME,
+                                "tts_engine": self.llm_config.tts_engine or "kokoro",
+                                "has_image": bool(parsed_turn.get("image_bytes")),
+                                "burst_count": len(parsed_turn.get("burst_images") or []),
+                                "stt_ms": int(bg_res.get("stt_ms", 0)),
+                                "first_text_ms": bg_total_ms,
+                                "first_audio_ms": first_audio_ms,
+                                "total_ms": bg_total_ms,
+                            }
+                            rec = await self.turn_log_sink.adispatch(bg_entry)
+                            self.turn_logs.append(rec)
+                            if self.turn_log_router is not None:
+                                cb_res = self.turn_log_router(rec)
+                                if inspect.isawaitable(cb_res):
+                                    await cb_res
+                        except Exception as exc:
+                            logger.error("Detached async handoff task failed for node_id=%s: %s", node_id, exc)
+                            err_entry = {
+                                "node_id": node_id,
+                                "session_id": session_id,
+                                "mode": "error",
+                                "audio_out_mode": audio_out_mode,
+                                "transcript": parsed_turn.get("prompt") or "voice turn",
+                                "reply": "",
+                                "error": str(exc),
+                                "voice_name": self.llm_config.voice_name or DEFAULT_VOICE_NAME,
+                                "tts_engine": self.llm_config.tts_engine or "kokoro",
+                                "has_image": bool(parsed_turn.get("image_bytes")),
+                                "burst_count": len(parsed_turn.get("burst_images") or []),
+                                "stt_ms": 0,
+                                "first_text_ms": -1,
+                                "first_audio_ms": first_audio_ms or -1,
+                                "total_ms": int((time.monotonic() - t_start) * 1000),
+                            }
+                            rec = await self.turn_log_sink.adispatch(err_entry)
+                            self.turn_logs.append(rec)
+                            if self.turn_log_router is not None:
+                                cb_res = self.turn_log_router(rec)
+                                if inspect.isawaitable(cb_res):
+                                    await cb_res
+
+                    asyncio.create_task(_supervise_detached_turn())
+                    return
                 try:
                     await asyncio.wait_for(asyncio.shield(handler_task), timeout=0.02)
                 except asyncio.TimeoutError:
@@ -1264,6 +1501,28 @@ class VoiceGatewayService:
             "ghost_filtered": False,
         }
         self.turn_timings.append(timing_entry)
+        turn_log_entry = {
+            "node_id": node_id,
+            "session_id": session_id,
+            "mode": parsed_turn.get("mode", "interact"),
+            "audio_out_mode": audio_out_mode,
+            "transcript": transcript_text,
+            "reply": reply_text,
+            "voice_name": active_voice_name,
+            "tts_engine": active_tts_engine,
+            "has_image": bool(parsed_turn.get("image_bytes")),
+            "burst_count": len(parsed_turn.get("burst_images") or []),
+            "stt_ms": stt_ms,
+            "first_text_ms": first_text_ms,
+            "first_audio_ms": first_audio_ms,
+            "total_ms": total_ms,
+        }
+        logged_record = await self.turn_log_sink.adispatch(turn_log_entry)
+        self.turn_logs.append(logged_record)
+        if self.turn_log_router is not None:
+            res_cb = self.turn_log_router(logged_record)
+            if inspect.isawaitable(res_cb):
+                await res_cb
         logger.info(
             "turn_timing node_id=%s session_id=%s stt_ms=%d first_text_ms=%d first_audio_ms=%d total_ms=%d ghost_filtered=false",
             node_id,
@@ -1331,6 +1590,23 @@ def create_app(
             "kokoro_voices": list(KOKORO_VOICES),
         }
 
+    @app.get("/api/voice/logs")
+    def get_voice_turn_logs(request: Request, limit: int = 50):
+        if srv.auth_required or srv.verifier.device_tokens:
+            headers = dict(request.headers)
+            client_ip = request.client.host if request.client else "0.0.0.0"
+            ok, code, err = srv.verifier.verify(headers, client_ip=client_ip)
+            if not ok:
+                admin_ok, _, _ = srv.verify_admin_auth(headers)
+                if not admin_ok:
+                    return JSONResponse(status_code=code, content=err)
+        bounded = max(1, min(int(limit or 50), 200))
+        return {
+            "ok": True,
+            "count": len(srv.turn_logs[-bounded:]),
+            "logs": list(srv.turn_logs[-bounded:]),
+        }
+
     @app.get("/api/config/llm")
     def get_llm_config(request: Request):
         ok, code, err = srv.verify_admin_auth(request.headers)
@@ -1388,6 +1664,28 @@ def create_app(
                 session_id=parsed_turn.get("session_id"),
                 transport="ble_or_wifi_interact",
             )
+            if not j_res.get("ghost_filtered"):
+                j_log = await srv.turn_log_sink.adispatch({
+                    "node_id": parsed_turn["node_id"],
+                    "session_id": parsed_turn["session_id"],
+                    "mode": "journal",
+                    "audio_out_mode": parsed_turn.get("audio_out_mode", "speaker"),
+                    "transcript": j_res.get("transcript", ""),
+                    "reply": "",
+                    "voice_name": srv.llm_config.voice_name or DEFAULT_VOICE_NAME,
+                    "tts_engine": srv.llm_config.tts_engine or "kokoro",
+                    "has_image": bool(parsed_turn.get("image_bytes")),
+                    "burst_count": len(parsed_turn.get("burst_images") or []),
+                    "stt_ms": 0,
+                    "first_text_ms": 0,
+                    "first_audio_ms": 0,
+                    "total_ms": 0,
+                })
+                srv.turn_logs.append(j_log)
+                if srv.turn_log_router is not None:
+                    res_cb = srv.turn_log_router(j_log)
+                    if inspect.isawaitable(res_cb):
+                        await res_cb
 
             async def _journal_sse() -> AsyncGenerator[str, None]:
                 yield build_sse_event("status", {"status": "journal_logged", "journal": j_res})
