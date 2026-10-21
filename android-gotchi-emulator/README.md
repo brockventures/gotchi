@@ -9,6 +9,7 @@ Standalone Android hardware emulator app (`ventures.brock.gotchi.emulator`), for
 1. **Exact 200x200 1-Bit Monochrome E-Paper Viewport (`GotchiEpaperView.kt`):**
    - Renders the exact 200x200 pixel layout from `poc/gotchi_poc.py` and `firmware/src/epd_panel.cpp` across all 9 states (`idle`, `listening`, `transcribing`, `thinking`, `synthesizing`, `speaking`, `error`, `busy`, `offline`).
    - Includes both the default **Gotchi** vector companion face and the bundled 1-bit **Zero** sprite skin (`app/src/main/assets/zero_skin/zero_<state>_200x200_1bit.png`).
+   - Third skin `amos` (`app/src/main/assets/amos_skin/amos_<state>_200x200_1bit.png`) pairs with an amber chassis (the front plate, chin cavity, sheen and bezel swap from purple to amber when `skin == "amos"`).
    - Emulates the `RefreshTracker` partial/full refresh cadence (`maxConsecutivePartials = 8`, `fullRefreshMinutes = 15.0`) with realistic `300 ms` partial transitions and the `2.0 s` black/white inversion flash on full refreshes.
 
 2. **Tactile & Physical Button Emulation (`GotchiEmulatorActivity.kt`):**

@@ -263,7 +263,7 @@ class GotchiEmulatorActivity : Activity() {
         val skinBtn = Button(this).apply {
             text = "SKIN: ${epaperView.uiState.skin.uppercase()} (TAP TO SWITCH)"
             setOnClickListener {
-                epaperView.uiState.skin = if (epaperView.uiState.skin == "zero") "gotchi" else "zero"
+                epaperView.uiState.skin = when (epaperView.uiState.skin) { "zero" -> "amos"; "amos" -> "gotchi"; else -> "zero" }
                 text = "SKIN: ${epaperView.uiState.skin.uppercase()} (TAP TO SWITCH)"
                 epaperView.updateState(forceFullRefresh = true)
                 updateStatusPill()
@@ -513,6 +513,7 @@ class GotchiEmulatorActivity : Activity() {
         }
 
         override fun onDraw(canvas: Canvas) {
+            val amber = epdChild.uiState.skin == "amos"
             if (outerRailRect.isEmpty) return
             val caseW = outerRailRect.width()
             val cornerR = caseW * 0.105f
@@ -561,10 +562,10 @@ class GotchiEmulatorActivity : Activity() {
             paint.shader = LinearGradient(
                 purplePlateRect.left, purplePlateRect.top, purplePlateRect.right, purplePlateRect.bottom,
                 intArrayOf(
-                    Color.rgb(112, 78, 204),
-                    Color.rgb(84, 52, 168),
-                    Color.rgb(62, 36, 132),
-                    Color.rgb(74, 44, 154)
+                    if (amber) Color.rgb(224, 140, 40) else Color.rgb(112, 78, 204),
+                    if (amber) Color.rgb(196, 110, 24) else Color.rgb(84, 52, 168),
+                    if (amber) Color.rgb(150, 78, 14) else Color.rgb(62, 36, 132),
+                    if (amber) Color.rgb(176, 96, 20) else Color.rgb(74, 44, 154)
                 ),
                 floatArrayOf(0f, 0.42f, 0.82f, 1f),
                 Shader.TileMode.CLAMP
@@ -584,7 +585,7 @@ class GotchiEmulatorActivity : Activity() {
 
             // Recessed internal V2.5 Matte-Black / Deep-Indigo PCB Cavity visible through resin
             paint.shader = null
-            paint.color = Color.argb(120, 24, 14, 52)
+            paint.color = if (amber) Color.argb(120, 40, 22, 6) else Color.argb(120, 24, 14, 52)
             canvas.drawRoundRect(chinWindowRect, caseW * 0.03f, caseW * 0.03f, paint)
 
             // Left & Right Gold ENIG / Copper Sensor Bus Bars visible inside the translucent chin
@@ -603,10 +604,10 @@ class GotchiEmulatorActivity : Activity() {
             paint.shader = LinearGradient(
                 purplePlateRect.left, purplePlateRect.top, purplePlateRect.right, purplePlateRect.bottom,
                 intArrayOf(
-                    Color.argb(46, 216, 198, 255),
-                    Color.argb(12, 180, 150, 255),
-                    Color.argb(0, 120, 90, 220),
-                    Color.argb(28, 190, 165, 255)
+                    if (amber) Color.argb(46, 255, 220, 170) else Color.argb(46, 216, 198, 255),
+                    if (amber) Color.argb(12, 255, 200, 140) else Color.argb(12, 180, 150, 255),
+                    if (amber) Color.argb(0, 220, 150, 80) else Color.argb(0, 120, 90, 220),
+                    if (amber) Color.argb(28, 255, 210, 160) else Color.argb(28, 190, 165, 255)
                 ),
                 floatArrayOf(0f, 0.35f, 0.70f, 1f),
                 Shader.TileMode.CLAMP
@@ -617,13 +618,13 @@ class GotchiEmulatorActivity : Activity() {
             // Inner rabbet border around Arctic Purple plate
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = caseW * 0.007f
-            paint.color = Color.argb(170, 168, 140, 245)
+            paint.color = if (amber) Color.argb(170, 255, 190, 110) else Color.argb(170, 168, 140, 245)
             canvas.drawRoundRect(purplePlateRect, plateR, plateR, paint)
 
             // E-Paper 2.1mm Bezel Cutout Frame Shadow
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = caseW * 0.012f
-            paint.color = Color.rgb(22, 16, 42)
+            paint.color = if (amber) Color.rgb(40, 24, 8) else Color.rgb(22, 16, 42)
             canvas.drawRect(
                 screenCutoutRect.left - 2f,
                 screenCutoutRect.top - 2f,
