@@ -13,7 +13,7 @@
 - **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md):** End-to-end system design covering the GOTCHI `POST /api/voice/interact` wire contract (`backend/voice_gateway.py`), dual-transport JSON-RPC agent configuration, Android BLE-to-Tailscale packet forwarder, and future wake-word / tiny audio-intent classifier upgrade paths.
 - **[`docs/MIRRORMERE_VOICE_CLIENT.md`](docs/MIRRORMERE_VOICE_CLIENT.md):** `POST /api/voice/interact` SSE wire-format reference and `client/eink-node/` refresh policy notes carried over as design inspiration from Mirrormere.
 - **[`docs/TASKS.md`](docs/TASKS.md):** V1 software, firmware, mobile relay, and multi-part Blender/CAD enclosure task board across **Zero**, **Amos**, **Ryan**, and **Mike (Arbiter)**.
-- **[`android-gotchi-emulator/README.md`](android-gotchi-emulator/README.md):** Standalone forked Android Pocket Emulator app (`ventures.brock.gotchi.emulator`) with a 1:1 200x200 1-bit e-paper viewport, tactile/volume-key `BTN_TOP` & `BTN_BOT` controls, and live `/api/voice/interact` + `/api/live/ws` wiring.
+- **[`android-gotchi-emulator/README.md`](android-gotchi-emulator/README.md):** Standalone forked Android Pocket Emulator app (`ventures.brock.gotchi.emulator`) with a pre-compiled APK (`android-gotchi-emulator/releases/gotchi-emulator-debug.apk` & [Release `v0.1.0`](https://github.com/brockventures/gotchi/releases/tag/v0.1.0)), 1:1 200x200 1-bit e-paper viewport, tactile/volume-key `BTN_TOP` & `BTN_BOT` controls, and live `/api/voice/interact` + `/api/live/ws` wiring.
 - **[`AGENTS.md`](AGENTS.md):** Autonomous agent operating guide, USB-C/HTTP JSON-RPC provisioning protocol, `self_test` hardware verification contract, and security guardrails.
 
 ---
