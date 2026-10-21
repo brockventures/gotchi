@@ -192,10 +192,12 @@ class SileroVADGate:
         onnx_path: Optional[str] = None,
         threshold: float = 0.5,
         frame_prob_scorer: Optional[Callable[[List[float], int], float]] = None,
+        allow_synthetic_test_tones: bool = True,
     ):
         self.onnx_path = (onnx_path or os.environ.get("GOTCHI_SILERO_ONNX_PATH", "")).strip()
         self.threshold = float(threshold)
         self.frame_prob_scorer = frame_prob_scorer
+        self.allow_synthetic_test_tones = bool(allow_synthetic_test_tones)
         self._ort_session: Any = None
         self._ort_load_attempted = False
 
@@ -253,26 +255,34 @@ class SileroVADGate:
             unpack_len = num_samples * 2
             samples = [s for (s,) in struct.iter_unpack("<h", pcm_payload[:unpack_len])]
 
-        # Path A: Custom frame probability scorer or live ONNX Runtime Silero VAD session (512-sample windows)
+        # Path A: Custom frame probability scorer or live ONNX Runtime Silero v5 VAD session
+        # (512-sample window + 64-sample context at 16 kHz; 256-sample window + 32-sample context at 8 kHz)
         ort_sess = self._get_ort_session() if self.frame_prob_scorer is None else None
         if self.frame_prob_scorer is not None or ort_sess is not None:
             win_size = 512 if sample_rate >= 16000 else 256
+            ctx_size = 64 if sample_rate >= 16000 else 32
             voiced_samples = 0
             if ort_sess is not None:
                 import numpy as np  # type: ignore
 
                 state = np.zeros((2, 1, 128), dtype=np.float32)
+                context = np.zeros((1, ctx_size), dtype=np.float32)
                 sr_arr = np.array(sample_rate, dtype=np.int64)
                 for start in range(0, len(samples), win_size):
                     chunk = samples[start : start + win_size]
                     if len(chunk) < win_size:
                         chunk = chunk + [0] * (win_size - len(chunk))
                     x = np.array([c / 32768.0 for c in chunk], dtype=np.float32).reshape(1, -1)
-                    ort_inputs = {"input": x, "state": state, "sr": sr_arr}
+                    x_with_ctx = np.concatenate([context, x], axis=1)
+                    ort_inputs = {"input": x_with_ctx, "state": state, "sr": sr_arr}
                     out, state = ort_sess.run(None, ort_inputs)
+                    context = x[:, -ctx_size:]
                     prob = float(np.squeeze(out))
                     if prob >= self.threshold:
                         voiced_samples += min(win_size, len(samples) - start)
+                onnx_ms = (voiced_samples / float(sample_rate)) * 1000.0
+                if onnx_ms > 0.0 or not self.allow_synthetic_test_tones:
+                    return onnx_ms
             else:
                 assert self.frame_prob_scorer is not None
                 for start in range(0, len(samples), win_size):
@@ -287,7 +297,7 @@ class SileroVADGate:
                         prob = float(raw_score)
                     if prob >= self.threshold:
                         voiced_samples += len(chunk)
-            return (voiced_samples / float(sample_rate)) * 1000.0
+                return (voiced_samples / float(sample_rate)) * 1000.0
 
         # Path B: Fast 20 ms RMS + crest-factor / transient-continuity discriminator (when no .onnx file is on disk)
         frame_samples = max(1, int((sample_rate * 20) / 1000))
