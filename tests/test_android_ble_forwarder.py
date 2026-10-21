@@ -174,14 +174,22 @@ def test_gotchi_ble_relay_service_capabilities():
     assert "transcodeUplinkAudioIfNeeded" in service_src
     assert "transcodeDownlinkAudioEventToAdpcm" in service_src
 
-    # 2. Dead-zone store-and-forward offline spooling
+    # 2. Dead-zone store-and-forward offline spooling + 4xx poison-pill eviction + SSE mid-stream guard
     assert "spoolTurnForOfflineReplay" in service_src
     assert "drainOfflineSpool" in service_src
     assert '"offline_queued"' in service_src
+    assert "enum class PostOutcome" in service_src
+    assert "PERMANENT_FAILURE" in service_src
+    assert "responseStarted = true" in service_src
+    assert "if (!isReplay && !responseStarted)" in service_src
+    assert "encodePcmToGad1WithState" in codec_src
+    assert "downlinkAdpcmPredictor" in service_src
+    assert "downlinkAdpcmStepIndex" in service_src
 
     # 3. Passive coarse GPS location metadata tagging
     assert "readCoarseLocationMeta" in service_src
     assert 'addFormDataPart("lat"' in service_src
     assert 'addFormDataPart("lon"' in service_src
     assert 'addFormDataPart("location_accuracy_m"' in service_src
+    assert 'addFormDataPart("offline_replay", "true")' in service_src
 

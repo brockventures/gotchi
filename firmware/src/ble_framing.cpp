@@ -90,13 +90,25 @@ static inline int16_t decodeImaNibble(uint8_t nibble, int32_t& predictor, int32_
 
 } // namespace
 
-size_t encodeImaAdpcm(const int16_t* pcm, size_t num_samples, uint8_t* out_adpcm, size_t out_cap) {
+size_t encodeImaAdpcm(
+    const int16_t* pcm,
+    size_t num_samples,
+    uint8_t* out_adpcm,
+    size_t out_cap,
+    int32_t initial_predictor,
+    int32_t initial_step_index
+) {
     if (!pcm || num_samples == 0 || !out_adpcm) return 0;
     size_t needed = (num_samples + 1) / 2;
     if (out_cap < needed) return 0;
 
-    int32_t predictor = 0;
-    int32_t step_index = 0;
+    int32_t predictor = initial_predictor;
+    if (predictor > 32767) predictor = 32767;
+    else if (predictor < -32768) predictor = -32768;
+    int32_t step_index = initial_step_index;
+    if (step_index < 0) step_index = 0;
+    else if (step_index > 88) step_index = 88;
+
     for (size_t i = 0; i < num_samples; i += 2) {
         uint8_t lo = encodeImaSample(pcm[i], predictor, step_index);
         uint8_t hi = (i + 1 < num_samples) ? encodeImaSample(pcm[i + 1], predictor, step_index) : 0;
@@ -105,14 +117,27 @@ size_t encodeImaAdpcm(const int16_t* pcm, size_t num_samples, uint8_t* out_adpcm
     return needed;
 }
 
-size_t decodeImaAdpcm(const uint8_t* adpcm, size_t adpcm_len, size_t num_samples, int16_t* out_pcm, size_t out_max_samples) {
+size_t decodeImaAdpcm(
+    const uint8_t* adpcm,
+    size_t adpcm_len,
+    size_t num_samples,
+    int16_t* out_pcm,
+    size_t out_max_samples,
+    int32_t initial_predictor,
+    int32_t initial_step_index
+) {
     if (!adpcm || adpcm_len == 0 || !out_pcm || out_max_samples == 0) return 0;
     size_t max_possible = adpcm_len * 2;
     size_t target = (num_samples > 0 && num_samples < max_possible) ? num_samples : max_possible;
     if (target > out_max_samples) target = out_max_samples;
 
-    int32_t predictor = 0;
-    int32_t step_index = 0;
+    int32_t predictor = initial_predictor;
+    if (predictor > 32767) predictor = 32767;
+    else if (predictor < -32768) predictor = -32768;
+    int32_t step_index = initial_step_index;
+    if (step_index < 0) step_index = 0;
+    else if (step_index > 88) step_index = 88;
+
     size_t written = 0;
     for (size_t i = 0; i < adpcm_len && written < target; ++i) {
         uint8_t b = adpcm[i];
@@ -140,18 +165,28 @@ size_t encodeWavToAdpcm(const uint8_t* wav_data, size_t wav_len, uint8_t* out_bu
     size_t adpcm_bytes = (num_samples + 1) / 2;
     if (out_cap < ADPCM_HEADER_SIZE + adpcm_bytes) return 0;
 
+    const int16_t* samples = reinterpret_cast<const int16_t*>(pcm_ptr);
+    int16_t init_pred = (num_samples > 0) ? samples[0] : 0;
+    uint8_t init_idx = 0;
+    uint8_t reserved = 0;
+
     uint32_t magic = ADPCM_MAGIC;
     uint32_t sr_u32 = sample_rate;
     uint32_t ns_u32 = static_cast<uint32_t>(num_samples);
     memcpy(out_buf + 0, &magic, 4);
     memcpy(out_buf + 4, &sr_u32, 4);
     memcpy(out_buf + 8, &ns_u32, 4);
+    memcpy(out_buf + 12, &init_pred, 2);
+    out_buf[14] = init_idx;
+    out_buf[15] = reserved;
 
     size_t encoded = encodeImaAdpcm(
-        reinterpret_cast<const int16_t*>(pcm_ptr),
+        samples,
         num_samples,
         out_buf + ADPCM_HEADER_SIZE,
-        out_cap - ADPCM_HEADER_SIZE
+        out_cap - ADPCM_HEADER_SIZE,
+        init_pred,
+        init_idx
     );
     return encoded > 0 ? (ADPCM_HEADER_SIZE + encoded) : 0;
 }
@@ -166,10 +201,12 @@ size_t decodeAdpcmToPcm(
     if (!adpcm_buf || adpcm_len == 0 || !out_pcm || out_max_samples == 0) return 0;
     uint32_t sr = 24000;
     size_t num_samples = 0;
+    int32_t init_pred = 0;
+    int32_t init_idx = 0;
     const uint8_t* raw_adpcm = adpcm_buf;
     size_t raw_len = adpcm_len;
 
-    if (adpcm_len >= ADPCM_HEADER_SIZE) {
+    if (adpcm_len >= 12) {
         uint32_t magic = 0;
         memcpy(&magic, adpcm_buf, 4);
         if (magic == ADPCM_MAGIC) {
@@ -179,12 +216,22 @@ size_t decodeAdpcmToPcm(
             memcpy(&parsed_ns, adpcm_buf + 8, 4);
             if (parsed_sr >= 4000 && parsed_sr <= 96000) sr = parsed_sr;
             num_samples = static_cast<size_t>(parsed_ns);
-            raw_adpcm = adpcm_buf + ADPCM_HEADER_SIZE;
-            raw_len = adpcm_len - ADPCM_HEADER_SIZE;
+            size_t needed_bytes = (num_samples + 1) / 2;
+            if (adpcm_len >= ADPCM_HEADER_SIZE && (adpcm_len - ADPCM_HEADER_SIZE) >= needed_bytes) {
+                int16_t p16 = 0;
+                memcpy(&p16, adpcm_buf + 12, 2);
+                init_pred = p16;
+                init_idx = adpcm_buf[14];
+                raw_adpcm = adpcm_buf + ADPCM_HEADER_SIZE;
+                raw_len = adpcm_len - ADPCM_HEADER_SIZE;
+            } else {
+                raw_adpcm = adpcm_buf + 12;
+                raw_len = adpcm_len - 12;
+            }
         }
     }
     if (out_sample_rate) *out_sample_rate = sr;
-    return decodeImaAdpcm(raw_adpcm, raw_len, num_samples, out_pcm, out_max_samples);
+    return decodeImaAdpcm(raw_adpcm, raw_len, num_samples, out_pcm, out_max_samples, init_pred, init_idx);
 }
 
 // CRC16-CCITT (Polynomial 0x1021, init 0xFFFF)

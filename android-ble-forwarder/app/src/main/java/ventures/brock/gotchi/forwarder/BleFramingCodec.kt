@@ -228,8 +228,23 @@ object BleFramingCodec {
  * `encodeImaAdpcm` / `decodeImaAdpcm` in `firmware/src/ble_framing.cpp`.
  */
 object ImaAdpcmCodec {
-    const val GAD1_HEADER_BYTES: Int = 12
+    const val GAD1_HEADER_BYTES: Int = 16
+    private const val LEGACY_GAD1_HEADER_BYTES: Int = 12
     private val GAD1_MAGIC = byteArrayOf('G'.code.toByte(), 'A'.code.toByte(), 'D'.code.toByte(), '1'.code.toByte())
+
+    data class AdpcmEncodeResult(
+        val adpcmBytes: ByteArray,
+        val initialPredictor: Int,
+        val initialStepIndex: Int,
+        val finalPredictor: Int,
+        val finalStepIndex: Int
+    )
+
+    data class Gad1EncodeResult(
+        val gad1Bytes: ByteArray,
+        val finalPredictor: Int,
+        val finalStepIndex: Int
+    )
 
     private val INDEX_TABLE = intArrayOf(
         -1, -1, -1, -1, 2, 4, 6, 8,
@@ -249,20 +264,32 @@ object ImaAdpcmCodec {
     )
 
     fun isGad1Container(data: ByteArray): Boolean {
-        return data.size >= GAD1_HEADER_BYTES &&
+        return data.size >= LEGACY_GAD1_HEADER_BYTES &&
             data[0] == GAD1_MAGIC[0] &&
             data[1] == GAD1_MAGIC[1] &&
             data[2] == GAD1_MAGIC[2] &&
             data[3] == GAD1_MAGIC[3]
     }
 
-    fun encodePcm16(pcmBytes: ByteArray): ByteArray {
+    fun encodePcm16WithState(
+        pcmBytes: ByteArray,
+        initialPredictor: Int? = null,
+        initialStepIndex: Int = 0
+    ): AdpcmEncodeResult {
         val numSamples = pcmBytes.size / 2
-        if (numSamples <= 0) return ByteArray(0)
+        if (numSamples <= 0) {
+            val initP = (initialPredictor ?: 0).coerceIn(-32768, 32767)
+            val initIdx = initialStepIndex.coerceIn(0, 88)
+            return AdpcmEncodeResult(ByteArray(0), initP, initIdx, initP, initIdx)
+        }
         val inBuf = ByteBuffer.wrap(pcmBytes, 0, numSamples * 2).order(ByteOrder.LITTLE_ENDIAN)
+        val firstSample = inBuf.getShort(0).toInt()
+        val initP = (initialPredictor ?: firstSample).coerceIn(-32768, 32767)
+        val initIdx = initialStepIndex.coerceIn(0, 88)
+
         val out = ByteArray((numSamples + 1) / 2)
-        var predictor = 0
-        var stepIndex = 0
+        var predictor = initP
+        var stepIndex = initIdx
 
         fun encodeSample(sample: Int): Int {
             val step = STEP_TABLE[stepIndex]
@@ -302,15 +329,28 @@ object ImaAdpcmCodec {
             out[i / 2] = ((lo and 0x0F) or ((hi and 0x0F) shl 4)).toByte()
             i += 2
         }
-        return out
+        return AdpcmEncodeResult(out, initP, initIdx, predictor, stepIndex)
     }
 
-    fun decodeToPcm16(adpcmBytes: ByteArray, numSamples: Int = adpcmBytes.size * 2): ByteArray {
+    fun encodePcm16(
+        pcmBytes: ByteArray,
+        initialPredictor: Int = 0,
+        initialStepIndex: Int = 0
+    ): ByteArray {
+        return encodePcm16WithState(pcmBytes, initialPredictor, initialStepIndex).adpcmBytes
+    }
+
+    fun decodeToPcm16(
+        adpcmBytes: ByteArray,
+        numSamples: Int = adpcmBytes.size * 2,
+        initialPredictor: Int = 0,
+        initialStepIndex: Int = 0
+    ): ByteArray {
         if (adpcmBytes.isEmpty() || numSamples <= 0) return ByteArray(0)
         val target = minOf(numSamples, adpcmBytes.size * 2)
         val outBuf = ByteBuffer.allocate(target * 2).order(ByteOrder.LITTLE_ENDIAN)
-        var predictor = 0
-        var stepIndex = 0
+        var predictor = initialPredictor.coerceIn(-32768, 32767)
+        var stepIndex = initialStepIndex.coerceIn(0, 88)
         var written = 0
 
         fun decodeNibble(nibble: Int): Short {
@@ -338,15 +378,32 @@ object ImaAdpcmCodec {
         return outBuf.array()
     }
 
-    fun encodePcmToGad1(pcmBytes: ByteArray, sampleRate: Int = 24000): ByteArray {
+    fun encodePcmToGad1WithState(
+        pcmBytes: ByteArray,
+        sampleRate: Int = 24000,
+        initialPredictor: Int? = null,
+        initialStepIndex: Int = 0
+    ): Gad1EncodeResult {
         val numSamples = pcmBytes.size / 2
-        val adpcm = encodePcm16(pcmBytes)
-        val out = ByteBuffer.allocate(GAD1_HEADER_BYTES + adpcm.size).order(ByteOrder.LITTLE_ENDIAN)
+        val res = encodePcm16WithState(pcmBytes, initialPredictor, initialStepIndex)
+        val out = ByteBuffer.allocate(GAD1_HEADER_BYTES + res.adpcmBytes.size).order(ByteOrder.LITTLE_ENDIAN)
         out.put(GAD1_MAGIC)
         out.putInt(sampleRate)
         out.putInt(numSamples)
-        out.put(adpcm)
-        return out.array()
+        out.putShort(res.initialPredictor.toShort())
+        out.put(res.initialStepIndex.toByte())
+        out.put(0.toByte())
+        out.put(res.adpcmBytes)
+        return Gad1EncodeResult(out.array(), res.finalPredictor, res.finalStepIndex)
+    }
+
+    fun encodePcmToGad1(
+        pcmBytes: ByteArray,
+        sampleRate: Int = 24000,
+        initialPredictor: Int? = null,
+        initialStepIndex: Int = 0
+    ): ByteArray {
+        return encodePcmToGad1WithState(pcmBytes, sampleRate, initialPredictor, initialStepIndex).gad1Bytes
     }
 
     fun decodeGad1OrAdpcmToWav(payload: ByteArray, defaultSampleRate: Int = 16000): ByteArray {
@@ -357,8 +414,19 @@ object ImaAdpcmCodec {
             val parsedSr = hdr.int
             val numSamples = hdr.int
             sampleRate = if (parsedSr in 4000..96000) parsedSr else defaultSampleRate
-            val rawAdpcm = payload.copyOfRange(GAD1_HEADER_BYTES, payload.size)
-            pcmBytes = decodeToPcm16(rawAdpcm, numSamples)
+            val neededAdpcmBytes = (numSamples + 1) / 2
+            val (initPred, initIdx, rawAdpcm) = if (
+                payload.size >= GAD1_HEADER_BYTES &&
+                (payload.size - GAD1_HEADER_BYTES) >= neededAdpcmBytes
+            ) {
+                val ext = ByteBuffer.wrap(payload, 12, 4).order(ByteOrder.LITTLE_ENDIAN)
+                val p = ext.short.toInt()
+                val idx = ext.get().toInt() and 0xFF
+                Triple(p, idx, payload.copyOfRange(GAD1_HEADER_BYTES, payload.size))
+            } else {
+                Triple(0, 0, payload.copyOfRange(LEGACY_GAD1_HEADER_BYTES, payload.size))
+            }
+            pcmBytes = decodeToPcm16(rawAdpcm, numSamples, initPred, initIdx)
         } else {
             sampleRate = defaultSampleRate
             pcmBytes = decodeToPcm16(payload)

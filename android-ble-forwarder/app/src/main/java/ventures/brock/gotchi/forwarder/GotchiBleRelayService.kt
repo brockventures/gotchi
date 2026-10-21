@@ -113,6 +113,12 @@ class GotchiBleRelayService : Service() {
         const val MAX_OFFLINE_SPOOL_ITEMS = 64
     }
 
+    internal enum class PostOutcome {
+        DELIVERED,
+        RETRYABLE_FAILURE,
+        PERMANENT_FAILURE
+    }
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val spoolMutex = Mutex()
     private val httpClient = OkHttpClient.Builder()
@@ -124,6 +130,8 @@ class GotchiBleRelayService : Service() {
     private val reassembler = BleReassembler()
     private val audioStreamBuffer = ByteArrayOutputStream()
     private var audioStreamIsAdpcm: Boolean = false
+    private var downlinkAdpcmPredictor: Int? = null
+    private var downlinkAdpcmStepIndex: Int = 0
     private val imageFrames = mutableMapOf<Int, ByteArray>()
     private var downlinkSeqNum: Int = 0
     private var negotiatedMaxPayload: Int = BleFramingCodec.DEFAULT_MAX_PAYLOAD
@@ -441,7 +449,7 @@ class GotchiBleRelayService : Service() {
             ?: return@withLock
 
         for (file in queuedFiles) {
-            val ok = runCatching {
+            val outcome = runCatching {
                 val obj = JSONObject(file.readText(Charsets.UTF_8))
                 val wavB64 = obj.optString("wav_b64", "")
                 val wavBytes = if (wavB64.isNotEmpty()) Base64.decode(wavB64, Base64.DEFAULT) else ByteArray(0)
@@ -463,12 +471,18 @@ class GotchiBleRelayService : Service() {
                     locationMeta = locationMeta,
                     isReplay = true
                 )
-            }.getOrDefault(false)
+            }.getOrDefault(PostOutcome.PERMANENT_FAILURE)
 
-            if (ok) {
-                file.delete()
-            } else {
-                break
+            when (outcome) {
+                PostOutcome.DELIVERED,
+                PostOutcome.PERMANENT_FAILURE -> {
+                    // Delete delivered turns as well as corrupt/4xx poison-pill files so
+                    // one bad 4xx item never blocks subsequent turns in the offline spool.
+                    file.delete()
+                }
+                PostOutcome.RETRYABLE_FAILURE -> {
+                    break
+                }
             }
         }
     }
@@ -485,14 +499,14 @@ class GotchiBleRelayService : Service() {
             return
         }
 
-        val delivered = executeGatewayPost(
+        val outcome = executeGatewayPost(
             wavBytes = wavBytes,
             images = images,
             commitMeta = commitMeta,
             locationMeta = locationMeta,
             isReplay = false
         )
-        if (delivered) {
+        if (outcome == PostOutcome.DELIVERED) {
             drainOfflineSpool()
         }
     }
@@ -510,7 +524,7 @@ class GotchiBleRelayService : Service() {
         commitMeta: JSONObject?,
         locationMeta: JSONObject?,
         isReplay: Boolean
-    ): Boolean {
+    ): PostOutcome {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val gatewayUrl = (commitMeta?.optString("hub_url")?.takeIf { it.isNotBlank() }
             ?: prefs.getString(KEY_GATEWAY_URL, DEFAULT_GATEWAY_URL)
@@ -529,6 +543,9 @@ class GotchiBleRelayService : Service() {
             .addFormDataPart("node_id", nodeId)
             .addFormDataPart("audio_out_mode", audioOutMode)
             .addFormDataPart("mode", mode)
+        if (isReplay) {
+            multipart.addFormDataPart("offline_replay", "true")
+        }
 
         if (!prompt.isNullOrBlank()) {
             multipart.addFormDataPart("prompt", prompt)
@@ -580,25 +597,36 @@ class GotchiBleRelayService : Service() {
             reqBuilder.header("Authorization", "Bearer $bearerToken")
         }
 
+        if (!isReplay) {
+            downlinkAdpcmPredictor = null
+            downlinkAdpcmStepIndex = 0
+        }
+
+        var responseStarted = false
         return try {
             httpClient.newCall(reqBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful) {
-                    if (response.code in listOf(502, 503, 504) && !isReplay) {
+                    val code = response.code
+                    val isRetryableStatus = code in listOf(408, 429, 502, 503, 504) || code >= 500
+                    if (isRetryableStatus && !isReplay) {
                         spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
                         emitOfflineQueuedToBle()
-                        return false
+                        return PostOutcome.RETRYABLE_FAILURE
                     }
                     if (!isReplay) {
                         val errPayload = JSONObject()
                             .put("event", "error")
-                            .put("status", response.code)
+                            .put("status", code)
                             .toString()
                         sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
                     }
-                    return false
+                    return if (isRetryableStatus) PostOutcome.RETRYABLE_FAILURE else PostOutcome.PERMANENT_FAILURE
                 }
 
-                val body = response.body ?: return true
+                // HTTP 200 headers received: gateway has accepted and started executing the turn.
+                // Never spool after this point if the SSE read drops mid-stream, avoiding duplicate execution.
+                responseStarted = true
+                val body = response.body ?: return PostOutcome.DELIVERED
                 val reader = BufferedReader(InputStreamReader(body.byteStream(), Charsets.UTF_8))
                 var currentEvent = "message"
                 val dataLines = mutableListOf<String>()
@@ -620,14 +648,23 @@ class GotchiBleRelayService : Service() {
                         dataLines.add(line.removePrefix("data:").trim())
                     }
                 }
-                true
+                PostOutcome.DELIVERED
             }
         } catch (e: IOException) {
-            if (!isReplay) {
+            if (!isReplay && !responseStarted) {
                 spoolTurnForOfflineReplay(wavBytes, images, commitMeta, locationMeta)
                 emitOfflineQueuedToBle()
+                PostOutcome.RETRYABLE_FAILURE
+            } else if (!isReplay && responseStarted) {
+                val errPayload = JSONObject()
+                    .put("event", "error")
+                    .put("detail", "stream_interrupted")
+                    .toString()
+                sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
+                PostOutcome.DELIVERED
+            } else {
+                PostOutcome.RETRYABLE_FAILURE
             }
-            false
         } catch (e: Exception) {
             if (!isReplay) {
                 val errPayload = JSONObject()
@@ -636,7 +673,7 @@ class GotchiBleRelayService : Service() {
                     .toString()
                 sendBleFrame(BleFramingCodec.FrameType.SSE_EVENT, errPayload.toByteArray(Charsets.UTF_8))
             }
-            false
+            PostOutcome.PERMANENT_FAILURE
         }
     }
 
@@ -656,9 +693,16 @@ class GotchiBleRelayService : Service() {
             if (b64.isEmpty()) return@runCatching rawData
             val sampleRate = obj.optInt("sample_rate", 24000)
             val pcmBytes = Base64.decode(b64, Base64.DEFAULT)
-            val gad1Bytes = ImaAdpcmCodec.encodePcmToGad1(pcmBytes, sampleRate)
+            val encoded = ImaAdpcmCodec.encodePcmToGad1WithState(
+                pcmBytes = pcmBytes,
+                sampleRate = sampleRate,
+                initialPredictor = downlinkAdpcmPredictor,
+                initialStepIndex = downlinkAdpcmStepIndex
+            )
+            downlinkAdpcmPredictor = encoded.finalPredictor
+            downlinkAdpcmStepIndex = encoded.finalStepIndex
             obj.put("format", "adpcm")
-            obj.put(key, Base64.encodeToString(gad1Bytes, Base64.NO_WRAP))
+            obj.put(key, Base64.encodeToString(encoded.gad1Bytes, Base64.NO_WRAP))
             obj.toString()
         }.getOrDefault(rawData)
     }
