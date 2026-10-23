@@ -339,12 +339,17 @@ def build_front_shell():
         p['disp_fpc_y0'] - 0.2, p['disp_fpc_y1'] + 0.2,
         -2.6, -0.8
     )
+    fpc_cut_bot = make_box(
+        -p['disp_fpc_w'] / 2.0 - 0.5, p['disp_fpc_w'] / 2.0 + 0.5,
+        p['disp_y0'] - 0.2, p['disp_y0'] + 4.8,
+        -2.6, -0.8
+    )
 
     # Centered camera lens opening in top crown (x = 0.0, y = 26.78 mm) + forward PDM mic port (x = -6.5, y = 25.2 mm)
     cam_cut = make_cyl_z(p['cam_lens_d'] / 2.0, -3.0, 1.0, cx=p['cam_cx'], cy=p['cam_cy'])
     mic_cut = make_cyl_z(p['mic_d'] / 2.0, -3.0, 1.0, cx=p['mic_cx'], cy=p['mic_cy'])
 
-    part = trimesh.boolean.difference([part, rabbet_cut, win_cut, fpc_cut, cam_cut, mic_cut] + snap_cuts, engine='manifold')
+    part = trimesh.boolean.difference([part, rabbet_cut, win_cut, fpc_cut, fpc_cut_bot, cam_cut, mic_cut] + snap_cuts, engine='manifold')
     return part
 
 
