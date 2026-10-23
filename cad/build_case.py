@@ -76,7 +76,7 @@ P = dict(
     # 3. Option 1A Flat Under-Tucked XIAO + Sense (24.3 mm installed bay: y = +6.8..+31.1 mm):
     xiao_x0=-8.9,
     xiao_x1=8.9,
-    xiao_y0=6.8,
+    xiao_y0=6.55,
     xiao_y_shield0=11.5,
     xiao_y1=31.1,
     xiao_z_back=-16.8,
@@ -139,11 +139,11 @@ P = dict(
     # 9. Shifted 1.8 mm Rear Twin-Mortise Hinge Saddle Anchor (y = -1.2..+6.1 mm, z = -17.1..-15.3 mm):
     mortise_x_in=3.0,
     mortise_x_out=6.6,
-    mortise_y0=-1.2,
-    mortise_y1=6.1,
+    mortise_y0=-1.35,
+    mortise_y1=5.95,
     mortise_z_flat=-16.6,
     mortise_z_apex=-15.8,
-    hinge_pin_y=1.5,
+    hinge_pin_y=1.35,
     hinge_pin_z=-22.1,
     saddle_pin_d=2.05,
     clip_pin_d=2.20,
@@ -401,8 +401,8 @@ def build_back_shell():
     ])
 
     # 2. Extended Low-Profile XIAO Side Guide Rails on Back Floor (x = ±(9.15..10.25 mm), y = +6.8..+30.2 mm)
-    adds.append(make_box(-10.25, -9.15, 6.8, 30.2, floor_z, floor_z + 1.8))
-    adds.append(make_box(9.15, 10.25, 6.8, 30.2, floor_z, floor_z + 1.8))
+    adds.append(make_box(-10.25, -9.15, 6.55, 30.2, floor_z, floor_z + 1.8))
+    adds.append(make_box(9.15, 10.25, 6.55, 30.2, floor_z, floor_z + 1.8))
 
     # 3. Grounded Right-Side Button Alignment Cradles
     cradle_base = make_box(iw / 2.0 - 4.4, iw / 2.0 + 0.1, p['snap_cy'] - 4.65, p['ptt_cy'] + 4.65, floor_z, floor_z + 1.0)
@@ -433,7 +433,7 @@ def build_back_shell():
     ))
 
     # 6. Shifted 1.8 mm Internal Hinge Anchor Boss (y = -1.8..+6.4 mm, z = -17.1..-15.3 mm)
-    anchor_boss = make_box(-8.2, 8.2, -1.8, 6.4, floor_z - 0.3, -15.3)
+    anchor_boss = make_box(-8.2, 8.2, -1.95, 6.25, floor_z - 0.3, -15.3)
     adds.append(anchor_boss)
 
     mortise_l = make_mortise_cutter(
