@@ -1,12 +1,30 @@
 #!/usr/bin/env python3
 """
-GOTCHI V4.2 Printable Enclosure — Revision 8.2:
-1. Concentric rounded inner cavity & tongue corners (eliminates 45° corner wall pinching & tearing).
-2. Extended 24.7 mm flat XIAO + Sense floor bay (y = +6.4..+31.1 mm) with shifted anchor_boss (y = -1.8..+6.4 mm).
-3. Curved stadium USB-C opening (9.2 x 3.5 mm, R = 1.75 mm ends + outer plug bevel) flush with floor_z = -17.1 mm.
-4. Upper-left SPDT slide switch slot & alignment cradle (y = +15.5 mm beside XIAO, 100% clear of 30.0 mm battery).
-5. Loosened hinge tolerances, 42.0 mm extended clip-stand arm, and 0.35 mm first-layer elephant-foot chamfers.
-6. Slices gotchi_back_v4_2.stl with hardened V4.2 OrcaSlicer profile and dispatches print to Ender-3 V2.
+GOTCHI V4.3 Printable Enclosure — Revision 8.4 (36.4 x 71.0 x 18.5 mm):
+1. Validated Control & Speaker Cradles + Dedicated Wire-Exit Channels:
+   - Right-Side Tactile Button Cradles (2x 6.0x6.0x5.0 mm switches, B07VSNN9S2):
+     * Raised button bore centers to cz = -13.90 mm (3.20 mm above floor_z = -17.10 mm) so the full 6.0 mm
+       vertical switch face sits cleanly on the floor inside a 6.30 (Y) x 6.45 (Z) x 3.70 (X) mm pocket.
+     * Replaced the solid rear cradle wall with a 2.10 mm center back-stop post (by ± 1.05 mm) flanked by
+       two 2.10 x 6.50 mm open rear wire/pin exit slots (by ± (1.05..3.15 mm)) so all 4 corner solder pins,
+       30 AWG hookup wires, and 220 kOhm sense resistors route unimpeded to the XIAO headers.
+   - Upper-Left Mini SPDT Slide Switch Cradle (8.5x3.5x4.0 mm 3-pin switch, B0FNK8B1YV at y = +15.5 mm):
+     * Expanded pocket length from 4.20 mm to 8.90 mm (Y) x 3.85 mm (X) x 4.50 mm (Z).
+     * Oriented exterior actuator slot horizontally along Y (4.6 mm Y x 2.4 mm Z at cz = -14.85 mm) for full
+       2.0 mm slider throw while keeping the switch body captured.
+     * Built cradle as two L-shaped end brackets with a 6.20 mm wide open rear window (y = +12.40..+18.60 mm)
+       so all 3 rear solder pins + heat-shrinked BAT+ wires exit straight inward without interference.
+   - Front-Chin 1510 Speaker Cradle (15.0x10.0x3.5 mm cavity speaker, B0D7S8FFKY at y = -31.70 mm):
+     * Expanded pocket from 15.2 x 8.45 mm to 15.40 (X) x 10.30 (Y) mm (y = -36.85..-26.55 mm, 1.05 mm clear
+       below the display PCB at y = -25.50 mm).
+     * Split cradle perimeter into L-corner brackets with 3.80 mm wide full-depth wire-exit channels on the
+       left (-X), right (+X), and top (+Y) sides so twisted-pair leads route cleanly around the battery to the
+       MAX98357A amp without pinching.
+2. Preserved V4.2 Bench Calibrations:
+   - Top-wall curved stadium USB-C port at z = -14.25 mm (9.3 x 3.7 mm) matching top-mounted XIAO receptacle.
+   - 25.00 mm XIAO + Sense Y-well (y = +6.10..+31.10 mm) with positive rear L-corner Y-stops (y = +4.95..+6.05 mm).
+   - 4 tapered display corner locator pins (x = ±14.0 mm, y = -23.0 & +20.0 mm), front camera cradle, and
+     uniform 1.40 mm front wall.
 """
 
 import argparse
@@ -20,16 +38,18 @@ import time
 import urllib.request
 import numpy as np
 import trimesh
+from PIL import Image, ImageDraw
 from trimesh.creation import box, cylinder
 
 sys.path.insert(0, "/workspace")
 sys.path.insert(0, "/workspace/tools")
+sys.path.insert(0, "/workspace/gotchi/cad")
 
 P = dict(
     W_out=36.4,
-    H_out=67.0,
+    H_out=71.0,
     D_out=18.5,
-    y_min=-34.4,
+    y_min=-38.4,
     y_max=32.6,
     wall=1.5,
     front_wall=1.4,
@@ -51,6 +71,10 @@ P = dict(
     disp_pcb_z0=-2.5,
     disp_pcb_z1=-4.1,
     disp_smd_z1=-5.4,
+    # 4 corner M2 mounting hole centers on the 33.0 x 48.0 mm Waveshare PCB (28.0 x 43.0 mm hole spacing)
+    disp_pin_x=14.0,
+    disp_pin_y_bot=-23.0,
+    disp_pin_y_top=20.0,
     win_w=28.0,
     win_h=28.0,
     win_cy=3.0,
@@ -63,35 +87,36 @@ P = dict(
     ph20_y1=22.4,
     ph20_z1=-4.9,
 
-    # 2. True LP803040 LiPo Battery (30.0 x 41.0 x 7.9 mm) nestled behind display PCB & front speaker
+    # 2. True LP803040 LiPo Battery (30.0 x 41.0 x 7.9 mm) at y = -35.9..+5.1 mm
     bat_w=30.0,
     bat_h=41.0,
     bat_d=7.9,
-    bat_cy=-12.2,
-    bat_y0=-32.7,
-    bat_y1=8.3,
+    bat_cy=-15.4,
+    bat_y0=-35.9,
+    bat_y1=5.1,
     bat_z0=-5.5,
     bat_z1=-13.4,
 
-    # 3. Option 1A Flat Under-Tucked XIAO + Sense (24.3 mm installed bay: y = +6.8..+31.1 mm):
+    # 3. Option 1A Flat Under-Tucked XIAO + Sense (24.85 mm installed bay: y = +6.25..+31.10 mm):
     xiao_x0=-8.9,
     xiao_x1=8.9,
-    xiao_y0=6.55,
+    xiao_y0=6.25,
     xiao_y_shield0=11.5,
     xiao_y1=31.1,
     xiao_z_back=-16.8,
     xiao_z_zif_low=-13.6,
     xiao_z_zif=-8.8,
-    mic_cx=-6.5,
+    # Forward-facing PDM MEMS microphone port in top crown (shifted to x = -7.2 mm to clear left camera bracket)
+    mic_cx=-7.2,
     mic_cy=25.2,
     mic_d=2.0,
-    # Top-wall Curved Stadium USB-C Port (+Y wall at x = 0.0, z = -14.25 mm: 2.85 mm above -17.1 mm floor to account for 1.25 mm XIAO PCB under top-mounted USB-C shell)
+    # Top-wall Curved Stadium USB-C Port (+Y wall at x = 0.0, z = -14.25 mm: 2.85 mm above -17.1 mm floor for top-mounted XIAO port)
     usb_cx=0.0,
     usb_cz=-14.25,
     usb_w=9.3,
     usb_h=3.7,
 
-    # 4. Forward-firing Camera (OV2640)
+    # 4. Forward-firing Camera (OV2640, 8.5 x 8.5 mm square body held by front-shell sidewall cradle)
     cam_w=8.5,
     cam_h=8.5,
     cam_cx=0.0,
@@ -101,49 +126,52 @@ P = dict(
     cam_z_shoulder=-1.45,
     cam_z1=-16.8,
 
-    # 5. Rear Slim Audio Amp Layer
+    # 5. Rear Slim Audio Amp Layer (underneath battery on back floor)
     amp_w=19.0,
     amp_h=17.8,
     amp_d=3.0,
     amp_cx=-4.5,
-    amp_cy=-13.5,
+    amp_cy=-15.5,
     amp_z0=-13.8,
     amp_z1=-16.8,
 
-    # 6. Front-Chin Direct-Firing Speaker
+    # 6. Front-Chin Direct-Firing 1510 Cavity Speaker (15.0 x 10.0 x 3.5 mm, y = -36.70..-26.70 mm)
     spk_w=15.0,
-    spk_h=7.3,
+    spk_h=10.0,
     spk_d=3.5,
     spk_cx=0.0,
-    spk_cy=-29.25,
+    spk_cy=-31.7,
     spk_z0=-1.45,
     spk_z1=-4.95,
 
-    # 7. Controls (all in upper XIAO zone y = +6.5..+25.5 mm, 100% clear of the 30.0 mm wide battery!):
+    # 7. Controls (all in upper XIAO zone y = +6.5..+25.5 mm, 100% clear of the 30.0 mm wide battery):
+    #    6.0 x 6.0 x 5.0 mm tactile buttons (3.5 mm body + 1.5 mm plunger) centered at cz = -13.90 mm
+    #    (3.20 mm above floor_z = -17.10 mm so the 6.0 mm vertical body clears the floor with 0.20 mm margin)
     ptt_cy=20.5,
-    ptt_cz=-14.6,
+    ptt_cz=-13.9,
     snap_cy=10.5,
-    snap_cz=-14.6,
+    snap_cz=-13.9,
     btn_hole_d=3.9,
-    # Mini SPDT Slide Switch: Upper-left side wall (-X wall at y = +15.5 mm beside XIAO, opposite buttons)
+    # Mini SPDT Slide Switch (8.5 x 3.5 x 4.0 mm body, B0FNK8B1YV):
+    # Upper-left side wall (-X wall at y = +15.5 mm beside XIAO, horizontal 4.6 x 2.4 mm actuator slot)
     sw_cy=15.5,
-    sw_cz=-14.2,
-    sw_slot_y=2.4,
-    sw_slot_z=4.8,
+    sw_cz=-14.85,
+    sw_slot_y=4.6,
+    sw_slot_z=2.4,
 
-    # 8. 360° Press-Fit / Snap-Bead Seam (100% compatible with V4.1 front shell):
+    # 8. 360° Press-Fit / Snap-Bead Seam:
     rabbet_lip_w=0.75,
     rabbet_lip_h=1.5,
     rabbet_clearance=0.05,
 
-    # 9. Shifted 1.8 mm Rear Twin-Mortise Hinge Saddle Anchor (y = -1.2..+6.1 mm, z = -17.1..-15.3 mm):
+    # 9. Rear Twin-Mortise Hinge Saddle Anchor (y = -1.6..+5.7 mm, z = -17.1..-15.3 mm):
     mortise_x_in=3.0,
     mortise_x_out=6.6,
-    mortise_y0=-1.35,
-    mortise_y1=5.95,
+    mortise_y0=-1.6,
+    mortise_y1=5.7,
     mortise_z_flat=-16.6,
     mortise_z_apex=-15.8,
-    hinge_pin_y=1.35,
+    hinge_pin_y=1.1,
     hinge_pin_z=-22.1,
     saddle_pin_d=2.05,
     clip_pin_d=2.20,
@@ -163,6 +191,15 @@ def make_cyl_z(r, z0, z1, cx=0.0, cy=0.0, sections=48):
     m = cylinder(radius=r, height=h, sections=sections)
     m.apply_translation([cx, cy, (z0 + z1) / 2.0])
     return m
+
+
+def make_cone_z(r0, r1, z0, z1, cx=0.0, cy=0.0, sections=48):
+    pts = []
+    angles = np.linspace(0, 2 * math.pi, sections, endpoint=False)
+    for z_val, rad in [(z0, r0), (z1, r1)]:
+        for a in angles:
+            pts.append([cx + rad * math.cos(a), cy + rad * math.sin(a), z_val])
+    return trimesh.PointCloud(pts).convex_hull
 
 
 def make_cyl_y(r, y0, y1, cx=0.0, cz=0.0, sections=48):
@@ -304,6 +341,36 @@ def build_front_shell():
 
     part = trimesh.boolean.difference([outer, cavity], engine='manifold')
 
+    # Internal self-retaining sub-assembly features on inside of front shell (`z = -1.40 mm` ceiling):
+    front_adds = []
+
+    # 1. Camera Sidewall Cradle Brackets (`x = ±(4.35..5.45 mm), y = 22.8..31.1 mm, z = -4.4..-1.35 mm`)
+    front_adds.append(make_box(-5.45, -4.35, 22.8, 31.15, -4.4, -1.30))
+    front_adds.append(make_box(4.35, 5.45, 22.8, 31.15, -4.4, -1.30))
+    front_adds.append(make_box(-5.45, -3.10, 21.6, 22.42, -2.45, -1.30))
+    front_adds.append(make_box(3.10, 5.45, 21.6, 22.42, -2.45, -1.30))
+
+    # 2. Four Display Corner Locator Pins + Standoff Shoulders (`x = ±14.0 mm, y = -23.0 & +20.0 mm`)
+    for px in (-p['disp_pin_x'], p['disp_pin_x']):
+        for py in (p['disp_pin_y_bot'], p['disp_pin_y_top']):
+            front_adds.append(make_cyl_z(1.65, -2.48, -1.30, cx=px, cy=py, sections=36))
+            front_adds.append(make_cone_z(0.70, 0.90, -4.60, -2.45, cx=px, cy=py, sections=36))
+
+    # 3. Dedicated Front-Chin 1510 Speaker Cradle (`15.40 x 10.30 mm` pocket at `x = ±7.70 mm, y = -36.85..-26.55 mm`)
+    #    Built as 4 L-shaped corner brackets with 3.80 mm wide open wire-exit channels on Left (-X), Right (+X),
+    #    and Top (+Y) sides so twisted-pair speaker leads exit cleanly without pinching against the battery!
+    #    - Bottom-left & top-left sidewall segments (leaving 3.80 mm open wire slot at y = -33.60..-29.80 mm):
+    front_adds.append(make_box(-8.80, -7.70, -36.95, -33.60, -4.6, -1.30))
+    front_adds.append(make_box(-8.80, -7.70, -29.80, -25.60, -4.6, -1.30))
+    #    - Bottom-right & top-right sidewall segments (leaving 3.80 mm open wire slot at y = -33.60..-29.80 mm):
+    front_adds.append(make_box(7.70, 8.80, -36.95, -33.60, -4.6, -1.30))
+    front_adds.append(make_box(7.70, 8.80, -29.80, -25.60, -4.6, -1.30))
+    #    - Top retention tabs at y = -26.55..-25.60 mm (leaving 5.00 mm center/left wire exit channel at x = -2.50..+2.50 mm):
+    front_adds.append(make_box(-8.80, -2.50, -26.55, -25.60, -4.6, -1.30))
+    front_adds.append(make_box(2.50, 8.80, -26.55, -25.60, -4.6, -1.30))
+
+    part = trimesh.boolean.union([part] + front_adds, engine='manifold')
+
     rabbet_w = iw + 2 * p['rabbet_lip_w']
     rabbet_y0 = p['y_min'] + p['wall'] - p['rabbet_lip_w']
     rabbet_y1 = p['y_max'] - p['wall'] + p['rabbet_lip_w']
@@ -317,8 +384,8 @@ def build_front_shell():
     snap_z1 = p['split_z'] + 1.25
     rx = rabbet_w / 2.0
     snap_cuts = [
-        make_box(-rx - 0.16, -rx + 0.2, -16.0, 13.0, snap_z0, snap_z1),
-        make_box(rx - 0.2, rx + 0.16, -16.0, 13.0, snap_z0, snap_z1),
+        make_box(-rx - 0.16, -rx + 0.2, -18.0, 13.0, snap_z0, snap_z1),
+        make_box(rx - 0.2, rx + 0.16, -18.0, 13.0, snap_z0, snap_z1),
         make_box(-9.0, 9.0, rabbet_y0 - 0.16, rabbet_y0 + 0.2, snap_z0, snap_z1),
         make_box(-9.0, 9.0, rabbet_y1 - 0.2, rabbet_y1 + 0.16, snap_z0, snap_z1),
     ]
@@ -326,12 +393,6 @@ def build_front_shell():
     wy0 = p['win_cy'] - p['win_h'] / 2.0
     wy1 = p['win_cy'] + p['win_h'] / 2.0
     win_cut = make_box(-p['win_w'] / 2.0, p['win_w'] / 2.0, wy0, wy1, -3.0, 1.0)
-
-    fpc_cut_bot = make_box(
-        -p['disp_fpc_w'] / 2.0 - 0.5, p['disp_fpc_w'] / 2.0 + 0.5,
-        p['disp_fpc_y0'] - 0.2, p['disp_fpc_y1'] + 0.2,
-        -2.6, -0.8
-    )
 
     cam_cut = make_cyl_z(p['cam_lens_d'] / 2.0, -3.0, 1.0, cx=p['cam_cx'], cy=p['cam_cy'])
     mic_cut = make_cyl_z(p['mic_d'] / 2.0, -3.0, 1.0, cx=p['mic_cx'], cy=p['mic_cy'])
@@ -345,7 +406,7 @@ def build_front_shell():
         grille_cuts.extend([slot_box, cap_top, cap_bot])
 
     part = trimesh.boolean.difference(
-        [part, rabbet_cut, win_cut, fpc_cut_bot, cam_cut, mic_cut] + snap_cuts + grille_cuts,
+        [part, rabbet_cut, win_cut, cam_cut, mic_cut] + snap_cuts + grille_cuts,
         engine='manifold'
     )
     return part
@@ -394,37 +455,51 @@ def build_back_shell():
     snap_z0 = p['split_z'] + 0.65
     snap_z1 = p['split_z'] + 1.15
     adds.extend([
-        make_box(-tx - 0.12, -tx + 0.2, -14.0, 11.0, snap_z0, snap_z1),
-        make_box(tx - 0.2, tx + 0.12, -14.0, 11.0, snap_z0, snap_z1),
+        make_box(-tx - 0.12, -tx + 0.2, -16.0, 11.0, snap_z0, snap_z1),
+        make_box(tx - 0.2, tx + 0.12, -16.0, 11.0, snap_z0, snap_z1),
         make_box(-8.0, 8.0, tongue_out_y0 - 0.12, tongue_out_y0 + 0.2, snap_z0, snap_z1),
         make_box(-8.0, 8.0, tongue_out_y1 - 0.2, tongue_out_y1 + 0.12, snap_z0, snap_z1),
     ])
 
-    # 2. Extended Low-Profile XIAO Side Guide Rails on Back Floor (x = ±(9.15..10.25 mm), y = +6.8..+30.2 mm)
-    adds.append(make_box(-10.25, -9.15, 6.55, 30.2, floor_z, floor_z + 1.8))
-    adds.append(make_box(9.15, 10.25, 6.55, 30.2, floor_z, floor_z + 1.8))
+    # 2. XIAO Side Guide Rails (y = +6.10..+30.20 mm) + Positive Rear Y-Stop Bumpers (y = +4.95..+6.10 mm)
+    adds.append(make_box(-10.25, -9.15, 6.10, 30.2, floor_z, floor_z + 1.8))
+    adds.append(make_box(9.15, 10.25, 6.10, 30.2, floor_z, floor_z + 1.8))
+    adds.append(make_box(-10.25, -5.80, 4.95, 6.10, floor_z, floor_z + 2.2))
+    adds.append(make_box(5.80, 10.25, 4.95, 6.10, floor_z, floor_z + 2.2))
 
-    # 3. Grounded Right-Side Button Alignment Cradles
-    cradle_base = make_box(iw / 2.0 - 4.4, iw / 2.0 + 0.1, p['snap_cy'] - 4.65, p['ptt_cy'] + 4.65, floor_z, floor_z + 1.0)
-    cradle_upper = make_box(iw / 2.0 - 4.4, iw / 2.0 - 0.85, p['snap_cy'] - 4.65, p['ptt_cy'] + 4.65, floor_z, p['ptt_cz'] + 0.9)
-    cradle_block = trimesh.boolean.union([cradle_base, cradle_upper], engine='manifold')
-    pocket_cuts = []
+    # 3. Validated Right-Side 6x6x5mm Tactile Button Cradles with Open Rear Wire & Pin Channels
+    #    - Each pocket is 6.30 mm wide in Y (by ± 3.15 mm), 6.45 mm tall in Z (floor_z = -17.10 to -10.65 mm,
+    #      open at top for vertical drop-in), and 3.70 mm deep in X (x = +13.00..+16.70 mm).
+    #    - Center back-stop post (by ± 1.05 mm, x = +11.90..+13.00 mm) braces the switch body while leaving
+    #      two 2.10 mm wide open rear wire/pin slots (by ± (1.05..3.15 mm)) for the 4 corner solder legs!
+    z_btn_top = -10.65
     for by, bz in [(p['ptt_cy'], p['ptt_cz']), (p['snap_cy'], p['snap_cz'])]:
-        pocket_cuts.append(make_box(iw / 2.0 - 3.65, iw / 2.0 + 0.5, by - 3.35, by + 3.35, bz - 2.4, bz + 1.2))
-        cutters.append(make_button_bore_x(p['btn_hole_d'] / 2.0, iw / 2.0 - 0.6, p['W_out'] / 2.0 + 1.0, cy=by, cz=bz))
-    adds.append(trimesh.boolean.difference([cradle_block] + pocket_cuts, engine='manifold'))
+        # Side guide walls (1.15 mm thick in Y, x = +11.90..+16.75 mm)
+        adds.append(make_box(iw / 2.0 - 4.80, iw / 2.0 + 0.05, by - 4.30, by - 3.15, floor_z, z_btn_top))
+        adds.append(make_box(iw / 2.0 - 4.80, iw / 2.0 + 0.05, by + 3.15, by + 4.30, floor_z, z_btn_top))
+        # Center rear back-stop post (2.10 mm wide in Y, leaves 2.10 mm open pin/wire slots at top & bottom corners!)
+        adds.append(make_box(iw / 2.0 - 4.80, iw / 2.0 - 3.70, by - 1.05, by + 1.05, floor_z, z_btn_top))
+        # Sidewall plunger hole (Ø 3.90 mm with self-supporting 45° top crown)
+        cutters.append(make_button_bore_x(p['btn_hole_d'] / 2.0, iw / 2.0 - 0.5, p['W_out'] / 2.0 + 1.0, cy=by, cz=bz))
 
-    # 4. Upper-Left SPDT Slide Switch Slot & Alignment Cradle (-X wall at y = +15.5 mm beside XIAO)
-    sw_cradle_outer = make_box(-iw / 2.0 - 0.1, -iw / 2.0 + 4.2, p['sw_cy'] - 3.6, p['sw_cy'] + 3.6, floor_z, p['sw_cz'] + 0.8)
-    sw_cradle_pocket = make_box(-iw / 2.0 - 0.5, -iw / 2.0 + 3.65, p['sw_cy'] - 2.1, p['sw_cy'] + 2.1, floor_z + 0.6, p['sw_cz'] + 1.0)
-    adds.append(trimesh.boolean.difference([sw_cradle_outer, sw_cradle_pocket], engine='manifold'))
+    # 4. Validated Upper-Left Mini SPDT Slide Switch Cradle (-X wall at y = +15.5 mm, 8.90 x 3.85 x 4.50 mm pocket)
+    #    - Built as two L-shaped end brackets at y = sw_cy ± (3.10..5.55 mm), leaving a 6.20 mm wide open rear
+    #      window (y = +12.40..+18.60 mm) so all 3 rear solder pins + wires exit straight inward (+X)!
+    z_sw_top = -12.60
+    # Bottom L-bracket (y = +9.95..+11.05 mm end wall + y = +9.95..+12.40 mm rear corner stop)
+    adds.append(make_box(-iw / 2.0 - 0.05, -iw / 2.0 + 4.95, p['sw_cy'] - 5.55, p['sw_cy'] - 4.45, floor_z, z_sw_top))
+    adds.append(make_box(-iw / 2.0 + 3.85, -iw / 2.0 + 4.95, p['sw_cy'] - 5.55, p['sw_cy'] - 3.10, floor_z, z_sw_top))
+    # Top L-bracket (y = +19.95..+21.05 mm end wall + y = +18.60..+21.05 mm rear corner stop)
+    adds.append(make_box(-iw / 2.0 - 0.05, -iw / 2.0 + 4.95, p['sw_cy'] + 4.45, p['sw_cy'] + 5.55, floor_z, z_sw_top))
+    adds.append(make_box(-iw / 2.0 + 3.85, -iw / 2.0 + 4.95, p['sw_cy'] + 3.10, p['sw_cy'] + 5.55, floor_z, z_sw_top))
+    # Horizontal actuator slot through -X wall (4.60 mm along Y x 2.40 mm along Z)
     cutters.append(make_box(
-        -p['W_out'] / 2.0 - 1.0, -iw / 2.0 + 1.0,
+        -p['W_out'] / 2.0 - 1.0, -iw / 2.0 + 0.5,
         p['sw_cy'] - p['sw_slot_y'] / 2.0, p['sw_cy'] + p['sw_slot_y'] / 2.0,
         p['sw_cz'] - p['sw_slot_z'] / 2.0, p['sw_cz'] + p['sw_slot_z'] / 2.0
     ))
 
-    # 5. Curved Stadium USB-C Opening (+Y top wall at x = usb_cx, z = usb_cz, bottom flush with floor_z = -17.1 mm)
+    # 5. Curved Stadium USB-C Opening (+Y top wall at x = 0.0, z = -14.25 mm for top-mounted XIAO receptacle)
     cutters.append(make_usb_c_stadium_cutter(
         cx=p['usb_cx'], cz=p['usb_cz'],
         w=p['usb_w'], h=p['usb_h'],
@@ -432,8 +507,8 @@ def build_back_shell():
         y_wall_out=p['y_max']
     ))
 
-    # 6. Shifted 1.8 mm Internal Hinge Anchor Boss (y = -1.8..+6.4 mm, z = -17.1..-15.3 mm)
-    anchor_boss = make_box(-8.2, 8.2, -1.95, 6.25, floor_z - 0.3, -15.3)
+    # 6. Shifted 1.8 mm Internal Hinge Anchor Boss (y = -2.2..+6.0 mm, z = -17.1..-15.3 mm)
+    anchor_boss = make_box(-8.2, 8.2, -2.2, 6.0, floor_z - 0.3, -15.3)
     adds.append(anchor_boss)
 
     mortise_l = make_mortise_cutter(
@@ -466,9 +541,9 @@ def build_button_cap():
     return trimesh.boolean.union([flange, stem], engine='manifold')
 
 
-def make_tapered_peg(x_center, y_top=5.92):
-    y0_base = P['mortise_y0'] + 0.20  # -1.00 mm
-    y_bed = y_top                     # 5.92 mm
+def make_tapered_peg(x_center, y_top=5.52):
+    y0_base = P['mortise_y0'] + 0.20  # -1.40 mm
+    y_bed = y_top                     # 5.52 mm
     y_ch = y_top - 0.35
     z_base = -P['D_out'] - 0.05       # -18.55 mm
     z_sh = -P['D_out'] + 1.50         # -17.00 mm
@@ -496,14 +571,14 @@ def make_tapered_peg(x_center, y_top=5.92):
 
 def build_hinge_saddle():
     p = P
-    y_top = p['mortise_y1'] - 0.18  # 5.92 mm
+    y_top = p['mortise_y1'] - 0.18  # 5.52 mm
     z_back = -p['D_out']            # -18.50 mm
     peg_l = make_tapered_peg(-4.80, y_top=y_top)
     peg_r = make_tapered_peg(4.80, y_top=y_top)
-    center_floor = make_box(-7.6, 7.6, -2.5, y_top, z_back - 0.95, z_back)
-    ear_l = make_box(-7.6, -4.0, -1.5, y_top, z_back - 5.80, z_back)
-    ear_r = make_box(4.0, 7.6, -1.5, y_top, z_back - 5.80, z_back)
-    stop_wall = make_box(-4.1, 4.1, 4.45, y_top, z_back - 5.80, z_back)
+    center_floor = make_box(-7.6, 7.6, -2.9, y_top, z_back - 0.95, z_back)
+    ear_l = make_box(-7.6, -4.0, -1.9, y_top, z_back - 5.80, z_back)
+    ear_r = make_box(4.0, 7.6, -1.9, y_top, z_back - 5.80, z_back)
+    stop_wall = make_box(-4.1, 4.1, 4.05, y_top, z_back - 5.80, z_back)
 
     saddle = trimesh.boolean.union([peg_l, peg_r, center_floor, ear_l, ear_r, stop_wall], engine='manifold')
     pin_bore = make_cyl_x(p['saddle_pin_d'] / 2.0, -8.5, 8.5, cy=p['hinge_pin_y'], cz=p['hinge_pin_z'])
@@ -521,9 +596,9 @@ def build_clip_stand_arm():
     z_back = -p['D_out']  # -18.50 mm
     knuckle = make_cyl_x(2.15, -hw, hw, cy=p['hinge_pin_y'], cz=p['hinge_pin_z'])
     stop_heel = make_box(-hw, hw, p['hinge_pin_y'], p['hinge_pin_y'] + 1.95, z_back - 5.70, p['hinge_pin_z'])
-    arm_beam = make_box(-hw, hw, -31.0, p['hinge_pin_y'], z_back - 5.65, z_back - 3.05)
-    pinch_jaw = make_box(-hw, hw, -27.5, -22.0, z_back - 3.25, z_back - 0.12)
-    ski_tip = make_box(-hw, hw, -33.8, -30.0, z_back - 6.45, z_back - 3.45)
+    arm_beam = make_box(-hw, hw, -33.5, p['hinge_pin_y'], z_back - 5.65, z_back - 3.05)
+    pinch_jaw = make_box(-hw, hw, -30.0, -24.0, z_back - 3.25, z_back - 0.12)
+    ski_tip = make_box(-hw, hw, -36.5, -32.5, z_back - 6.45, z_back - 3.45)
 
     arm = trimesh.boolean.union([knuckle, stop_heel, arm_beam, pinch_jaw, ski_tip], engine='manifold')
     pin_bore = make_cyl_x(p['clip_pin_d'] / 2.0, -hw - 1.0, hw + 1.0, cy=p['hinge_pin_y'], cz=p['hinge_pin_z'])
@@ -542,8 +617,17 @@ def build_internal_3d_components():
 
     ws_pcb = make_box(-p['disp_w']/2, p['disp_w']/2, p['disp_y0'], p['disp_y1'], p['disp_pcb_z1'], p['disp_pcb_z0'])
     ws_glass = make_box(-p['disp_glass_w']/2, p['disp_glass_w']/2, p['disp_glass_y0'], p['disp_glass_y1'], p['disp_glass_z1'], p['disp_glass_z0'])
-    ws_fpc = make_box(-p['disp_fpc_w']/2, p['disp_fpc_w']/2, p['disp_fpc_y0'], p['disp_fpc_y1'], p['disp_zif_z1'], -0.9)
-    ws_pads = make_box(-p['ph20_w']/2, p['ph20_w']/2, p['ph20_y0'], p['ph20_y1'], p['ph20_z1'], p['disp_pcb_z1'])
+    hole_cuts_pcb = []
+    hole_cuts_glass = []
+    for px in (-p['disp_pin_x'], p['disp_pin_x']):
+        for py in (p['disp_pin_y_bot'], p['disp_pin_y_top']):
+            hole_cuts_pcb.append(make_cyl_z(1.02, -5.0, -1.0, cx=px, cy=py, sections=36))
+            hole_cuts_glass.append(make_cyl_z(1.85, -3.0, -1.0, cx=px, cy=py, sections=36))
+    ws_pcb = trimesh.boolean.difference([ws_pcb] + hole_cuts_pcb, engine='manifold')
+    ws_glass = trimesh.boolean.difference([ws_glass] + hole_cuts_glass, engine='manifold')
+
+    ws_fpc = make_box(-p['disp_fpc_w']/2, p['disp_fpc_w']/2, p['disp_fpc_y0'], p['disp_fpc_y1'], p['disp_zif_z1'], p['disp_glass_z0'])
+    ws_pads = make_box(-p['ph20_w']/2, p['ph20_w']/2, p['ph20_y0'], p['disp_y1'] - 0.1, p['ph20_z1'], p['disp_pcb_z1'])
     comps['display_composite'] = trimesh.boolean.union([ws_pcb, ws_glass, ws_fpc, ws_pads], engine='manifold')
 
     assert abs((p['bat_y1'] - p['bat_y0']) - p['bat_h']) < 1e-6, "Battery Y bounds must match bat_h!"
@@ -571,16 +655,18 @@ def build_internal_3d_components():
         p['amp_z1'], p['amp_z0']
     )
 
-    ptt_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['ptt_cy'] - 3.0, p['ptt_cy'] + 3.0, p['ptt_cz'] - 2.3, p['ptt_cz'] + 0.8)
-    ptt_stem = make_cyl_x(1.6, iw / 2.0 - 0.2, iw / 2.0 + 1.3, cy=p['ptt_cy'], cz=p['ptt_cz'])
+    # True 6.0 x 6.0 x 5.0 mm tactile buttons (3.5 mm body + 1.5 mm Ø3.4 mm stem + rear corner pins)
+    ptt_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['ptt_cy'] - 3.0, p['ptt_cy'] + 3.0, p['ptt_cz'] - 3.0, p['ptt_cz'] + 3.0)
+    ptt_stem = make_cyl_x(1.65, iw / 2.0 - 0.2, iw / 2.0 + 1.4, cy=p['ptt_cy'], cz=p['ptt_cz'])
     comps['btn_top_tactile'] = trimesh.boolean.union([ptt_body, ptt_stem], engine='manifold')
 
-    snap_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['snap_cy'] - 3.0, p['snap_cy'] + 3.0, p['snap_cz'] - 2.3, p['snap_cz'] + 0.8)
-    snap_stem = make_cyl_x(1.6, iw / 2.0 - 0.2, iw / 2.0 + 1.3, cy=p['snap_cy'], cz=p['snap_cz'])
+    snap_body = make_box(iw / 2.0 - 3.6, iw / 2.0 - 0.1, p['snap_cy'] - 3.0, p['snap_cy'] + 3.0, p['snap_cz'] - 3.0, p['snap_cz'] + 3.0)
+    snap_stem = make_cyl_x(1.65, iw / 2.0 - 0.2, iw / 2.0 + 1.4, cy=p['snap_cy'], cz=p['snap_cz'])
     comps['btn_bot_tactile'] = trimesh.boolean.union([snap_body, snap_stem], engine='manifold')
 
-    sw_body = make_box(-iw / 2.0 + 0.1, -iw / 2.0 + 3.6, p['sw_cy'] - 1.75, p['sw_cy'] + 1.75, p['sw_cz'] - 2.2, p['sw_cz'] + 0.6)
-    sw_knob = make_box(-iw / 2.0 - 1.3, -iw / 2.0 + 0.2, p['sw_cy'] - 0.8, p['sw_cy'] + 0.8, p['sw_cz'] - 1.0, p['sw_cz'] + 0.5)
+    # True 8.5 x 3.5 x 4.0 mm Mini SPDT 3-Pin Slide Switch (with 3 rear pins through the 6.20 mm open window)
+    sw_body = make_box(-iw / 2.0 + 0.1, -iw / 2.0 + 3.6, p['sw_cy'] - 4.25, p['sw_cy'] + 4.25, p['sw_cz'] - 2.0, p['sw_cz'] + 2.0)
+    sw_knob = make_box(-iw / 2.0 - 1.3, -iw / 2.0 + 0.2, p['sw_cy'] - 0.8, p['sw_cy'] + 0.8, p['sw_cz'] - 0.8, p['sw_cz'] + 0.8)
     comps['spdt_slide_switch'] = trimesh.boolean.union([sw_body, sw_knob], engine='manifold')
 
     return comps
@@ -596,11 +682,12 @@ def export_stls(out_dir, front, back, cap, saddle, clip_stand):
     front_print.apply_transform(rot_x180)
     front_print.apply_translation([-front_print.centroid[0], -front_print.centroid[1], -front_print.bounds[0][2]])
     front_print.export(os.path.join(stl_dir, "gotchi_front.stl"))
+    front_print.export("/workspace/data/3dprint/gotchi_front_v4_3.stl")
 
     back_print = back.copy()
     back_print.apply_translation([-back_print.centroid[0], -back_print.centroid[1], -back_print.bounds[0][2]])
     back_print.export(os.path.join(stl_dir, "gotchi_back.stl"))
-    back_print.export("/workspace/data/3dprint/gotchi_back_v4_2.stl")
+    back_print.export("/workspace/data/3dprint/gotchi_back_v4_3.stl")
 
     cap_print = cap.copy()
     cap_print.apply_translation([-cap_print.centroid[0], -cap_print.centroid[1], -cap_print.bounds[0][2]])
@@ -611,19 +698,14 @@ def export_stls(out_dir, front, back, cap, saddle, clip_stand):
     saddle_print.apply_transform(rot_x_neg90)
     saddle_print.apply_translation([-saddle_print.centroid[0], -saddle_print.centroid[1], -saddle_print.bounds[0][2]])
     saddle_print.export(os.path.join(stl_dir, "gotchi_hinge_saddle.stl"))
+    saddle_print.export("/workspace/data/3dprint/gotchi_saddle_v4_3.stl")
 
     arm_print = clip_stand.copy()
     rot_y90 = trimesh.transformations.rotation_matrix(math.pi / 2.0, [0, 1, 0])
     arm_print.apply_transform(rot_y90)
     arm_print.apply_translation([-arm_print.centroid[0], -arm_print.centroid[1], -arm_print.bounds[0][2]])
     arm_print.export(os.path.join(stl_dir, "gotchi_clip_stand.stl"))
-
-    plate_3 = trimesh.util.concatenate([
-        back_print.copy(),
-        saddle_print.copy().apply_translation([-32.0, 14.0, 0.0]),
-        arm_print.copy().apply_translation([-32.0, -12.0, 0.0]),
-    ])
-    plate_3.export("/workspace/data/3dprint/gotchi_back_hinge_v4_2.stl")
+    arm_print.export("/workspace/data/3dprint/gotchi_clip_v4_3.stl")
 
     plate_parts = []
     f_p = front_print.copy()
@@ -644,30 +726,132 @@ def export_stls(out_dir, front, back, cap, saddle, clip_stand):
 
     plate = trimesh.util.concatenate(plate_parts)
     plate_out_v4 = "/workspace/data/3dprint/gotchi_case_v4_plate.stl"
+    plate_out_v4_3 = "/workspace/data/3dprint/gotchi_case_v4_3_plate.stl"
     plate.export(plate_out_v4)
+    plate.export(plate_out_v4_3)
 
-    print(f"Exported watertight print-oriented V4.2 STLs to {stl_dir}/ and /workspace/data/3dprint/gotchi_back_v4_2.stl")
+    print(f"Exported watertight print-oriented V4.3 STLs to {stl_dir}/ and {plate_out_v4_3}")
+
+
+def render_v4_3_preview(out_dir, front, back, saddle, clip_stand, comps):
+    import render_labeled as rl
+
+    renders_dir = os.path.join(out_dir, "renders")
+    os.makedirs(renders_dir, exist_ok=True)
+    out_path = os.path.join(renders_dir, "v4_3_build_preview.png")
+
+    stl_dir = os.path.join(out_dir, "stl")
+    f_p = trimesh.load(os.path.join(stl_dir, "gotchi_front.stl"))
+    b_p = trimesh.load(os.path.join(stl_dir, "gotchi_back.stl"))
+    s_p = trimesh.load(os.path.join(stl_dir, "gotchi_hinge_saddle.stl"))
+    a_p = trimesh.load(os.path.join(stl_dir, "gotchi_clip_stand.stl"))
+
+    scene_front_interior = [
+        (f_p, (0.85, 0.89, 0.94)),
+    ]
+
+    scene_back_interior = [
+        (back, (0.28, 0.34, 0.43)),
+        (comps["xiao_sense_camera_1a"], (0.18, 0.75, 0.48)),
+        (comps["battery_pack"], (0.92, 0.64, 0.16)),
+        (comps["spdt_slide_switch"], (0.94, 0.32, 0.32)),
+        (comps["btn_top_tactile"], (0.35, 0.68, 0.95)),
+        (comps["btn_bot_tactile"], (0.35, 0.68, 0.95)),
+    ]
+
+    f_plate = f_p.copy().apply_translation([-16.0, 0.0, 0.0])
+    b_plate = b_p.copy().apply_translation([26.0, 0.0, 0.0])
+    s_plate = s_p.copy().apply_translation([-48.0, 18.0, 0.0])
+    a_plate = a_p.copy().apply_translation([-48.0, -10.0, 0.0])
+    bed_pad = make_box(-64.0, 52.0, -38.0, 38.0, -0.8, -0.05)
+
+    scene_plate = [
+        (bed_pad, (0.16, 0.19, 0.24)),
+        (f_plate, (0.85, 0.89, 0.94)),
+        (b_plate, (0.28, 0.34, 0.43)),
+        (s_plate, (0.22, 0.62, 0.92)),
+        (a_plate, (0.28, 0.78, 0.52)),
+    ]
+
+    im1 = rl.rasterize_scene_zbuffer(
+        scene_front_interior, elev_deg=44.0, azim_deg=-26.0,
+        width=560, height=640, ssaa=2,
+        fixed_span=76.0, fixed_center=[0.0, 0.0, 3.5]
+    )
+    im2 = rl.rasterize_scene_zbuffer(
+        scene_back_interior, elev_deg=42.0, azim_deg=-24.0,
+        width=560, height=640, ssaa=2,
+        fixed_span=76.0, fixed_center=[0.0, -2.5, -12.5]
+    )
+    im3 = rl.rasterize_scene_zbuffer(
+        scene_plate, elev_deg=38.0, azim_deg=-28.0,
+        width=740, height=640, ssaa=2,
+        fixed_span=142.0, fixed_center=[-6.0, 0.0, 4.0]
+    )
+
+    W_tot = 560 + 560 + 740
+    H_tot = 96 + 640
+    canvas = Image.new("RGB", (W_tot, H_tot), (15, 19, 27))
+    d = ImageDraw.Draw(canvas)
+    f_title, f_sub, f_lbl, f_sm = rl.load_fonts()
+
+    d.rectangle([0, 0, W_tot, 92], fill=(22, 28, 40))
+    d.text(
+        (28, 14),
+        "GOTCHI V4.3 (Rev 8.4) — Validated 6x6mm Button, 8.5mm Switch & 15x10mm Speaker Cradles + Wire Slots",
+        fill=(244, 247, 252),
+        font=f_title,
+    )
+    d.text(
+        (28, 52),
+        "36.4 x 71.0 x 18.5mm | 6.3x6.45mm Btn Pockets + Dual Rear Wire Slots | 8.9mm Switch L-Brackets | 15.4x10.3mm Spk Cradle",
+        fill=(148, 185, 228),
+        font=f_sub,
+    )
+
+    canvas.paste(im1, (0, 96))
+    canvas.paste(im2, (560, 96))
+    canvas.paste(im3, (1120, 96))
+
+    d.line([(560, 96), (560, H_tot)], fill=(45, 55, 72), width=3)
+    d.line([(1120, 96), (1120, H_tot)], fill=(45, 55, 72), width=3)
+
+    d.rectangle([16, 110, 540, 146], fill=(20, 83, 45))
+    d.text((24, 117), "1. FRONT: Cam Cradle + 4 Pins + 15x10 Spk w/ 3 Wire Slots", fill=(220, 252, 231), font=f_sm)
+
+    d.rectangle([576, 110, 1104, 146], fill=(30, 58, 138))
+    d.text((584, 117), "2. BACK: 6x6mm Btn Wire Slots + 8.9mm Switch Window + Y-Stop", fill=(219, 234, 254), font=f_sm)
+
+    d.rectangle([1136, 110, 1840, 146], fill=(45, 55, 72))
+    d.text((1144, 117), "3. V4.3 4-PART PLATE (Z=0): Zero-Zit Sequential/Aligned Profile", fill=(241, 245, 249), font=f_sm)
+
+    canvas.save(out_path)
+    print(f"Wrote {out_path} ({canvas.size[0]}x{canvas.size[1]})")
+    return out_path
 
 
 def slice_and_dispatch():
     import nas_config
     import requests
 
-    with open("/workspace/data/3dprint/gotchi_v4_process.json") as f:
+    with open("/workspace/data/3dprint/gotchi_v4_2_process.json") as f:
         proc = json.load(f)
 
-    proc["name"] = "0.20mm Gotchi V4.2 Anti-Zit & Corner-Hardened @Creality Ender3V2"
+    # Preserve 100% of the zero-zit V4.2 settings AND harden multi-part travel moves:
+    proc["name"] = "0.20mm Gotchi V4.3 Zero-Zit & Corner-Hardened @Creality Ender3V2"
     proc["enable_support"] = "0"
     proc["elefant_foot_compensation"] = "0.18"
     proc["initial_layer_line_width"] = "0.42"
     proc["outer_wall_jerk"] = "6"
     proc["inner_wall_jerk"] = "7"
     proc["seam_position"] = "aligned"
+    proc["wall_infill_order"] = "inner wall/outer wall/infill"
     proc["retract_when_changing_layer"] = "1"
     proc["wipe_before_external_loop"] = "1"
     proc["wipe"] = "1"
     proc["wipe_distance"] = "2.0"
     proc["reduce_crossing_wall"] = "1"
+    proc["max_travel_detour_distance"] = "150%"
     proc["reduce_infill_retraction"] = "0"
     proc["brim_type"] = "no_brim"
     proc["brim_width"] = "0"
@@ -677,7 +861,7 @@ def slice_and_dispatch():
     proc["sparse_infill_density"] = "20%"
     proc["sparse_infill_pattern"] = "gyroid"
 
-    proc_path = "/workspace/data/3dprint/gotchi_v4_2_process.json"
+    proc_path = "/workspace/data/3dprint/gotchi_v4_3_process.json"
     with open(proc_path, "w") as f:
         json.dump(proc, f, indent=2)
 
@@ -697,13 +881,13 @@ def slice_and_dispatch():
 
     cmd = (
         "cp /volume1/docker/discord-agy-agent/workspace/data/3dprint/my_machine.json /volume1/docker/orcaslicer/prints/ && "
-        "cp /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_back_v4_2.stl /volume1/docker/orcaslicer/prints/ && "
-        "cp /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_v4_2_process.json /volume1/docker/orcaslicer/prints/ && "
+        "cp /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_case_v4_3_plate.stl /volume1/docker/orcaslicer/prints/ && "
+        "cp /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_v4_3_process.json /volume1/docker/orcaslicer/prints/ && "
         "nice -n 19 sudo docker exec orcaslicer /opt/orcaslicer/bin/orca-slicer "
-        "--load-settings \"/prints/my_machine.json;/prints/gotchi_v4_2_process.json\" "
+        "--load-settings \"/prints/my_machine.json;/prints/gotchi_v4_3_process.json\" "
         "--load-filaments \"/prints/my_filament.json\" "
-        "--slice 0 --outputdir /prints /prints/gotchi_back_v4_2.stl && "
-        "cp /volume1/docker/orcaslicer/prints/plate_1.gcode /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_back_v4_2.gcode"
+        "--slice 0 --outputdir /prints /prints/gotchi_case_v4_3_plate.stl && "
+        "cp /volume1/docker/orcaslicer/prints/plate_1.gcode /volume1/docker/discord-agy-agent/workspace/data/3dprint/gotchi_case_v4_3_plate.gcode"
     )
     rc, out, err = nas_config.run_ssh(nas_config.HOST_2_IP, cmd, timeout=60)
     print("Slice RC:", rc)
@@ -712,7 +896,7 @@ def slice_and_dispatch():
         print("STDERR:", err)
         sys.exit(1)
 
-    gcode_path = "/workspace/data/3dprint/gotchi_back_v4_2.gcode"
+    gcode_path = "/workspace/data/3dprint/gotchi_case_v4_3_plate.gcode"
     for line in open(gcode_path):
         if any(k in line for k in ["; filament used", "; estimated printing time", "; total layers count"]):
             print(line.strip())
@@ -742,7 +926,7 @@ def slice_and_dispatch():
         r = requests.post(
             f"{octo_url}/api/files/local",
             headers={"X-Api-Key": octo_key},
-            files={"file": ("gotchi_back_v4_2.gcode", f, "application/octet-stream")},
+            files={"file": ("gotchi_case_v4_3_plate.gcode", f, "application/octet-stream")},
             data={"select": "true", "print": "true"},
             timeout=30,
         )
@@ -755,6 +939,7 @@ def slice_and_dispatch():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", default="/workspace/gotchi/cad")
+    parser.add_argument("--deliver-channel", default="")
     parser.add_argument("--dispatch", action="store_true")
     args, _ = parser.parse_known_args()
 
@@ -815,7 +1000,16 @@ def main():
     print("ALL 3D COMPONENT, SHELL & HINGE CLEARANCES VERIFIED: 0 COLLISIONS (0.00 mm^3)")
 
     export_stls(args.out, front, back, cap, saddle, clip_stand)
-    shutil.copyfile(__file__, "/workspace/gotchi/cad/build_case.py")
+    preview_path = render_v4_3_preview(args.out, front, back, saddle, clip_stand, comps)
+
+    if args.deliver_channel:
+        from deliver_image import deliver_image
+        res = deliver_image(
+            preview_path,
+            channel_input=args.deliver_channel,
+            caption="📐 **Gotchi V4.3 (Rev 8.4 — Validated Cradles & Wire Channels)** — `6.3×6.45 mm` Tactile Button Pockets w/ Dual Rear Wire Slots, `8.9 mm` Slide Switch L-Brackets, and `15.4×10.3 mm` `1510` Speaker Cradle w/ 3-Side Wire Channels",
+        )
+        print("Deliver result:", res)
 
     if args.dispatch:
         slice_and_dispatch()
